@@ -363,8 +363,8 @@
     <nav class="nav">
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
       <a class="nav-item" data-view="leave-tracker"><span class="dot"></span>Leave Tracker</a>
+      <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <div class="nav-section-label">Coming soon</div>
-      <a class="nav-item disabled"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
       <a class="nav-item disabled"><span class="dot"></span>PrioList</a>
       <a class="nav-item disabled"><span class="dot"></span>LI Restriction Daily Report</a>
@@ -403,6 +403,19 @@
         <div id="leave-tracker-actions"></div>
       </div>
       <div id="leave-tracker-content"></div>
+    </section>
+
+    <!-- PAYROLL CONFIRMATION VIEW -->
+    <section class="view" id="view-payroll-confirmation">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>Payroll Confirmation</h1>
+          <p class="lede">Confirm receipt of your 1st and 2nd half payroll, with the date and time logged automatically.</p>
+        </div>
+        <div id="payroll-confirmation-actions"></div>
+      </div>
+      <div id="payroll-confirmation-content"></div>
     </section>
 
   </main>
@@ -465,6 +478,9 @@ const state = {
   profile: null,          // { username, role, employee_id }
   employees: [],          // all employee rows
   leaveEntries: [],        // all leave entries (loaded for the visible range)
+  payrollConfirmations: [], // payroll receipt confirmations
+  payrollPeriodYear: new Date().getFullYear(),
+  payrollPeriodMonth: new Date().getMonth() + 1, // 1-12
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
@@ -580,7 +596,7 @@ function initNav() {
     openChangePasswordModal();
   });
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker'];
+  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
@@ -596,6 +612,7 @@ function switchView(viewName) {
 
   if (viewName === 'dashboard') renderDashboard();
   if (viewName === 'leave-tracker') renderLeaveTracker();
+  if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
 }
 
 // =====================================================================
@@ -603,9 +620,15 @@ function switchView(viewName) {
 // =====================================================================
 
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations()]);
   renderDashboard();
   renderLeaveTracker();
+}
+
+async function loadPayrollConfirmations() {
+  const { data, error } = await sb.from('payroll_confirmations').select('*');
+  if (error) { showToast('Could not load payroll confirmations.', true); return; }
+  state.payrollConfirmations = data || [];
 }
 
 async function loadEmployees() {
@@ -1271,6 +1294,149 @@ async function saveCreditEdit(empId) {
   showToast('Credit balance updated.');
   await loadEmployees();
   renderLeaveTracker();
+}
+
+// =====================================================================
+// PAYROLL CONFIRMATION
+// =====================================================================
+
+const PAYROLL_MONTH_NAMES = MONTH_NAMES;
+
+function findConfirmation(employeeId, year, month, half) {
+  return state.payrollConfirmations.find(c =>
+    c.employee_id === employeeId &&
+    c.period_year === year &&
+    c.period_month === month &&
+    c.period_half === half
+  );
+}
+
+function renderPayrollConfirmation() {
+  const actionsEl = document.getElementById('payroll-confirmation-actions');
+  actionsEl.innerHTML = '';
+
+  const el = document.getElementById('payroll-confirmation-content');
+  if (!state.employees.length) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    return;
+  }
+
+  const admin = isAdmin();
+  const year = state.payrollPeriodYear;
+  const month = state.payrollPeriodMonth;
+
+  const rows = state.employees
+    .filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia')
+    .sort(byKristinaFirstThenName)
+    .map(emp => {
+      const half1 = findConfirmation(emp.id, year, month, 1);
+      const half2 = findConfirmation(emp.id, year, month, 2);
+      const canMark = admin || emp.id === state.profile.employee_id;
+
+      return `
+        <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+          <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
+          <span class="faint">${escapeHtml(emp.bank || '—')}</span>
+          ${renderPayrollCell(emp.id, year, month, 1, half1, canMark)}
+          ${renderPayrollCell(emp.id, year, month, 2, half2, canMark)}
+        </div>
+      `;
+    }).join('');
+
+  el.innerHTML = `
+    <div class="card" style="padding:22px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <button class="btn btn-ghost btn-sm" id="payroll-prev">←</button>
+          <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
+          <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
+        </div>
+      </div>
+      <div class="payroll-table">
+        <div style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+          <span>Agent</span>
+          <span>Bank</span>
+          <span>1st Half</span>
+          <span>2nd Half</span>
+        </div>
+        ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('payroll-prev').addEventListener('click', () => shiftPayrollPeriod(-1));
+  document.getElementById('payroll-next').addEventListener('click', () => shiftPayrollPeriod(1));
+  document.querySelectorAll('.mark-received-btn').forEach(b => {
+    b.addEventListener('click', () => markPayrollReceived(b.dataset.empId, parseInt(b.dataset.half, 10)));
+  });
+  document.querySelectorAll('.undo-received-btn').forEach(b => {
+    b.addEventListener('click', () => undoPayrollReceived(b.dataset.confId));
+  });
+}
+
+function renderPayrollCell(employeeId, year, month, half, confirmation, canMark) {
+  if (confirmation && confirmation.received) {
+    return `
+      <span style="display:flex; flex-direction:column; gap:2px;">
+        <span style="color:var(--green); font-weight:600; display:flex; align-items:center; gap:5px;">✓ Received</span>
+        <span class="faint" style="font-size:10.5px;">${formatDateTime(confirmation.received_at)}</span>
+        ${canMark ? `<button class="btn btn-ghost btn-sm undo-received-btn" data-conf-id="${confirmation.id}" style="align-self:flex-start; padding:2px 8px; font-size:10.5px; margin-top:2px;">Undo</button>` : ''}
+      </span>
+    `;
+  }
+  if (canMark) {
+    return `<button class="btn btn-primary btn-sm mark-received-btn" data-emp-id="${employeeId}" data-half="${half}" style="justify-self:start; padding:5px 12px; font-size:11.5px;">Mark received</button>`;
+  }
+  return `<span class="faint">Not yet</span>`;
+}
+
+function shiftPayrollPeriod(delta) {
+  let m = state.payrollPeriodMonth + delta;
+  let y = state.payrollPeriodYear;
+  if (m < 1) { m = 12; y--; }
+  if (m > 12) { m = 1; y++; }
+  state.payrollPeriodMonth = m;
+  state.payrollPeriodYear = y;
+  renderPayrollConfirmation();
+}
+
+async function markPayrollReceived(employeeId, half) {
+  const year = state.payrollPeriodYear;
+  const month = state.payrollPeriodMonth;
+  const nowIso = new Date().toISOString();
+
+  const { error } = await sb.from('payroll_confirmations').upsert({
+    employee_id: employeeId,
+    period_year: year,
+    period_month: month,
+    period_half: half,
+    received: true,
+    received_at: nowIso,
+    confirmed_by: state.profile.username,
+  }, { onConflict: 'employee_id,period_year,period_month,period_half' });
+
+  if (error) { showToast('Could not save the confirmation.', true); return; }
+  showToast('Marked as received.');
+  await loadPayrollConfirmations();
+  renderPayrollConfirmation();
+}
+
+async function undoPayrollReceived(confirmationId) {
+  if (!confirm('Undo this confirmation?')) return;
+  const { error } = await sb.from('payroll_confirmations').delete().eq('id', confirmationId);
+  if (error) { showToast('Could not undo the confirmation.', true); return; }
+  showToast('Confirmation removed.');
+  await loadPayrollConfirmations();
+  renderPayrollConfirmation();
+}
+
+function formatDateTime(isoString) {
+  if (!isoString) return '';
+  const d = new Date(isoString);
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
 }
 
 // =====================================================================
