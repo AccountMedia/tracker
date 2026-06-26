@@ -762,30 +762,34 @@ function renderLeaveTracker() {
 
 function renderMyRequestsPanel() {
   const myEntries = state.leaveEntries
-    .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED)
-    .sort((a,b) => b.leave_date.localeCompare(a.leave_date))
+    .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED);
+  const groups = groupLeaveEntries(myEntries)
+    .sort((a, b) => b.startDate.localeCompare(a.startDate))
     .slice(0, 10);
 
   return `
     <div class="card" style="padding:20px;">
       <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">My recent requests</h3>
-      ${myEntries.length ? `
+      ${groups.length ? `
         <div style="display:flex; flex-direction:column; gap:10px;">
-          ${myEntries.map(e => `
+          ${groups.map(g => {
+            const status = g.days[0].status;
+            return `
             <div style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
                 <div>
-                  <div class="faint" style="font-size:11.5px;">${formatPrettyDate(e.leave_date)}</div>
-                  ${e.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(e.note)}</div>` : ''}
+                  <div class="faint" style="font-size:11.5px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : ''}</div>
+                  ${g.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(g.note)}</div>` : ''}
                 </div>
-                <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
+                <span class="stamp ${status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
               </div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
-                <div class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</div>
-                ${canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px;">Cancel</button>` : ''}
+                <div class="faint" style="font-size:11px; text-transform:capitalize;">${status}</div>
+                ${canCancel(g.days[0]) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${g.firstId}" style="font-size:11px; padding:4px 10px;">Cancel</button>` : ''}
               </div>
             </div>
-          `).join('')}
+          `;
+          }).join('')}
         </div>
       ` : `<p class="muted" style="margin:0; font-size:13px;">You haven't requested any leave yet.</p>`}
     </div>
@@ -804,10 +808,20 @@ function attachMyRequestsHandlers() {
 }
 
 async function cancelLeave(id, closeAfter) {
-  if (!confirm('Cancel this leave? This cannot be undone.')) return;
-  const { error } = await sb.from('leave_entries').delete().eq('id', id);
+  const entry = state.leaveEntries.find(e => e.id === id);
+  const groupId = entry ? entry.request_group_id : null;
+  const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
+
+  const msg = groupCount > 1
+    ? `Cancel this leave? It covers ${groupCount} days and this cannot be undone.`
+    : 'Cancel this leave? This cannot be undone.';
+  if (!confirm(msg)) return;
+
+  const query = sb.from('leave_entries').delete();
+  const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+
   if (error) { showToast('Could not cancel the leave.', true); return; }
-  showToast('Leave cancelled.');
+  showToast(groupCount > 1 ? `Cancelled ${groupCount} days of leave.` : 'Leave cancelled.');
   if (closeAfter) closeModal();
   await loadLeaveEntries();
   renderLeaveTracker();
@@ -977,17 +991,20 @@ function capitalize(str) {
 function openDayPanel(dateIso) {
   const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status !== STATUS.DECLINED);
   const admin = isAdmin();
-  const body = dayEntries.length ? dayEntries.map(e => `
+  const body = dayEntries.length ? dayEntries.map(e => {
+    const groupSize = e.request_group_id ? state.leaveEntries.filter(g => g.request_group_id === e.request_group_id).length : 1;
+    return `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
       <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
       <div style="flex:1;">
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
-        <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}</div>
+        <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSize > 1 ? ` · part of a ${groupSize}-day request` : ''}</div>
       </div>
       <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
       ${admin && canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px; margin-left:8px;">Cancel</button>` : ''}
     </div>
-  `).join('') : `<p class="muted">No leave logged for this day.</p>`;
+  `;
+  }).join('') : `<p class="muted">No leave logged for this day.</p>`;
 
   openModal(formatPrettyDate(dateIso), `<div>${body}</div>`);
   document.querySelectorAll('.cancel-leave-btn').forEach(b => {
@@ -998,28 +1015,27 @@ function openDayPanel(dateIso) {
 // ---- Pending panel --------------------------------------------------
 
 function renderPendingPanel() {
-  const queue = state.leaveEntries
-    .filter(e => e.status === STATUS.PENDING)
-    .sort((a,b) => a.leave_date.localeCompare(b.leave_date));
+  const groups = groupLeaveEntries(state.leaveEntries.filter(e => e.status === STATUS.PENDING))
+    .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
   return `
     <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Pending requests</h3>
-      ${queue.length ? `
+      ${groups.length ? `
         <div class="pending-scroll">
-          ${queue.map(e => `
-            <div class="pending-card" data-id="${e.id}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
+          ${groups.map(g => `
+            <div class="pending-card" data-id="${g.firstId}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
                 <div>
-                  <div style="font-weight:600; font-size:13px;">${employeeName(e.employee_id)}</div>
-                  <div class="faint" style="font-size:11.5px; margin-top:2px;">${formatPrettyDate(e.leave_date)}</div>
+                  <div style="font-weight:600; font-size:13px;">${employeeName(g.employee_id)}</div>
+                  <div class="faint" style="font-size:11.5px; margin-top:2px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : ''}</div>
                 </div>
-                <span class="stamp pending">${LEAVE_TYPES[e.leave_type].short}</span>
+                <span class="stamp pending">${LEAVE_TYPES[g.leave_type].short}</span>
               </div>
-              ${e.note ? `<div class="muted" style="font-size:12px; margin-top:6px;">${escapeHtml(e.note)}</div>` : ''}
+              ${g.note ? `<div class="muted" style="font-size:12px; margin-top:6px;">${escapeHtml(g.note)}</div>` : ''}
               <div style="display:flex; gap:6px; margin-top:10px;">
-                <button class="btn btn-primary btn-sm approve-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Approve</button>
-                <button class="btn btn-ghost btn-sm decline-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Decline</button>
+                <button class="btn btn-primary btn-sm approve-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Approve</button>
+                <button class="btn btn-ghost btn-sm decline-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>
               </div>
             </div>
           `).join('')}
@@ -1037,6 +1053,56 @@ function renderPendingPanel() {
   `;
 }
 
+// Groups leave entries that belong to the same multi-day request (matching
+// request_group_id) into a single summary object. Ungrouped entries become
+// their own single-day group. Used so a week-long request shows as one
+// card instead of five separate ones.
+function groupLeaveEntries(entries) {
+  const byGroup = new Map();
+  const singles = [];
+
+  entries.forEach(e => {
+    if (e.request_group_id) {
+      if (!byGroup.has(e.request_group_id)) byGroup.set(e.request_group_id, []);
+      byGroup.get(e.request_group_id).push(e);
+    } else {
+      singles.push(e);
+    }
+  });
+
+  const groups = [];
+  byGroup.forEach(days => {
+    days.sort((a, b) => a.leave_date.localeCompare(b.leave_date));
+    const first = days[0];
+    groups.push({
+      firstId: first.id,
+      employee_id: first.employee_id,
+      leave_type: first.leave_type,
+      note: first.note,
+      startDate: days[0].leave_date,
+      endDate: days[days.length - 1].leave_date,
+      days,
+    });
+  });
+  singles.forEach(e => {
+    groups.push({
+      firstId: e.id,
+      employee_id: e.employee_id,
+      leave_type: e.leave_type,
+      note: e.note,
+      startDate: e.leave_date,
+      endDate: e.leave_date,
+      days: [e],
+    });
+  });
+  return groups;
+}
+
+function formatDateRange(startIso, endIso) {
+  if (startIso === endIso) return formatPrettyDate(startIso);
+  return `${formatPrettyDate(startIso)} – ${formatPrettyDate(endIso)}`;
+}
+
 function attachPendingHandlers() {
   document.querySelectorAll('.approve-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.APPROVED)));
   document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.DECLINED)));
@@ -1044,21 +1110,27 @@ function attachPendingHandlers() {
 
 async function decideRequest(id, decision) {
   if (!isAdmin()) { showToast('Only admins can approve or decline requests.', true); return; }
+
+  const entry = state.leaveEntries.find(e => e.id === id);
+  const groupId = entry ? entry.request_group_id : null;
+  const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
+  const label = groupCount > 1 ? `${groupCount} days of leave` : 'Leave';
+
   if (decision === STATUS.DECLINED) {
-    const { error } = await sb.from('leave_entries').delete().eq('id', id);
+    const query = sb.from('leave_entries').delete();
+    const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
     if (error) { showToast('Could not update the request.', true); return; }
-    showToast('Leave declined.');
+    showToast(`${label} declined.`);
   } else {
-    const { error } = await sb.from('leave_entries').update({ status: decision }).eq('id', id);
+    const query = sb.from('leave_entries').update({ status: decision });
+    const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
     if (error) { showToast('Could not update the request.', true); return; }
-    showToast('Leave approved.');
+    showToast(`${label} approved.`);
   }
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
 }
-
-// ---- Credit balance table --------------------------------------------
 
 // ---- Leave Credits table --------------------------------------------
 
@@ -1224,10 +1296,17 @@ function openRequestModal() {
           ${typeOptions}
         </select>
       </div>
-      <div class="field">
-        <label for="req-date">Date</label>
-        <input type="date" id="req-date" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label for="req-date-from">From</label>
+          <input type="date" id="req-date-from" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div style="flex:1;">
+          <label for="req-date-to">To</label>
+          <input type="date" id="req-date-to" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
       </div>
+      <p class="faint" style="font-size:11px; margin:-6px 0 0;">For a single day, use the same date for both fields. Weekends are skipped automatically.</p>
       <div class="field">
         <label for="req-note">Note <span class="faint">(optional)</span></label>
         <textarea id="req-note" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"></textarea>
@@ -1237,6 +1316,13 @@ function openRequestModal() {
   `;
 
   openModal('Request leave', formHtml);
+  const fromInput = document.getElementById('req-date-from');
+  const toInput = document.getElementById('req-date-to');
+  fromInput.addEventListener('change', () => {
+    if (!toInput.value || toInput.value < fromInput.value) {
+      toInput.value = fromInput.value;
+    }
+  });
   document.getElementById('request-form').addEventListener('submit', submitLeaveRequest);
 }
 
@@ -1245,23 +1331,52 @@ async function submitLeaveRequest(e) {
   const employeeSelect = document.getElementById('req-employee');
   const employee_id = employeeSelect ? employeeSelect.value : state.profile.employee_id;
   const leave_type = document.getElementById('req-type').value;
-  const leave_date = document.getElementById('req-date').value;
+  const fromDate = document.getElementById('req-date-from').value;
+  const toDate = document.getElementById('req-date-to').value;
   const note = document.getElementById('req-note').value.trim();
 
   if (!employee_id) { showToast('Your account is not linked to an employee record yet.', true); return; }
+  if (toDate < fromDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
 
-  const { error } = await sb.from('leave_entries').insert({
-    employee_id, leave_type, leave_date, note,
+  const dates = datesInRange(fromDate, toDate, { skipWeekends: true });
+  if (!dates.length) { showToast('That range has no workdays in it.', true); return; }
+  if (dates.length > 30) {
+    if (!confirm(`That's ${dates.length} workdays. Continue?`)) return;
+  }
+
+  const groupId = (crypto.randomUUID ? crypto.randomUUID() : null);
+  const rows = dates.map(d => ({
+    employee_id, leave_type, leave_date: d, note,
     status: STATUS.PENDING,
     requested_by: state.profile.username,
-  });
+    request_group_id: dates.length > 1 ? groupId : null,
+  }));
+
+  const { error } = await sb.from('leave_entries').insert(rows);
 
   if (error) { showToast('Could not submit the request.', true); return; }
   closeModal();
-  showToast('Leave request submitted.');
+  showToast(dates.length > 1 ? `Leave request submitted for ${dates.length} days.` : 'Leave request submitted.');
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
+}
+
+// Returns an array of ISO date strings from start to end (inclusive).
+// Weekends (Sat/Sun) are skipped when skipWeekends is true, matching how
+// the original spreadsheet only logged workdays.
+function datesInRange(startIso, endIso, { skipWeekends = false } = {}) {
+  const result = [];
+  let cursor = new Date(startIso + 'T00:00:00');
+  const end = new Date(endIso + 'T00:00:00');
+  while (cursor <= end) {
+    const dow = cursor.getDay();
+    if (!skipWeekends || (dow !== 0 && dow !== 6)) {
+      result.push(isoDate(cursor));
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return result;
 }
 
 // =====================================================================
