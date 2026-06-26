@@ -872,8 +872,8 @@ function renderCalendarCard() {
       return;
     }
     const dateIso = isoDate(new Date(year, month, d));
-    const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.APPROVED);
-    const pendingCount = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.PENDING).length;
+    const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.APPROVED && !e.request_group_id);
+    const pendingCount = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.PENDING && !e.request_group_id).length;
     const isToday = dateIso === todayIso;
     const isWeekend = [0,6].includes(new Date(year, month, d).getDay());
 
@@ -933,12 +933,12 @@ function renderCalendarCard() {
       .cal-marks{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
       .cal-multiday-stack{ display:flex; flex-direction:column; gap:3px; margin: -2px -10px 6px; }
       .cal-multiday-bar{
-        height: 6px;
+        height: 4px;
         margin: 0 -1px; /* slight overlap so adjacent days' bars visually touch */
       }
-      .cal-multiday-bar.bar-start{ margin-left:8px; border-radius:4px 0 0 4px; }
-      .cal-multiday-bar.bar-end{ margin-right:8px; border-radius:0 4px 4px 0; }
-      .cal-multiday-bar.bar-start.bar-end{ margin-left:8px; margin-right:8px; border-radius:4px; }
+      .cal-multiday-bar.bar-start{ margin-left:8px; border-radius:3px 0 0 3px; }
+      .cal-multiday-bar.bar-end{ margin-right:8px; border-radius:0 3px 3px 0; }
+      .cal-multiday-bar.bar-start.bar-end{ margin-left:8px; margin-right:8px; border-radius:3px; }
       .cal-multiday-bar.vl{ background: var(--green); }
       .cal-multiday-bar.sl{ background: var(--amber); }
       .cal-multiday-bar.el{ background: var(--coral); }
