@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>The Registry — PH Team Hub</title>
+<title>Account Media — Team Hub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
@@ -337,8 +337,8 @@
 
 <div id="login-screen" class="login-wrap">
   <div class="login-card">
-    <div class="login-mark">The Registry
-      <span class="sub">PH Team Hub</span>
+    <div class="login-mark">Account Media
+      <span class="sub">Team Hub</span>
     </div>
     <form class="login-form" id="login-form">
       <div class="field">
@@ -357,8 +357,8 @@
 
 <div id="app" class="hidden">
   <aside class="sidebar">
-    <div class="brand">The Registry
-      <span class="sub">PH Team Hub</span>
+    <div class="brand">Account Media
+      <span class="sub">Team Hub</span>
     </div>
     <nav class="nav">
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
@@ -410,6 +410,652 @@
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="app.js"></script>
+<script>
+// =====================================================================
+// ACCOUNT MEDIA — Team Hub
+// Leave Tracker module (first release)
+// =====================================================================
+
+// ---- Supabase config -------------------------------------------------
+// Replace these with your new Supabase project's values (Project Settings -> API)
+const SUPABASE_URL = 'https://hfndceismzgkmceotlus.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbmRjZWlzbXpna21jZW90bHVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0NjYzMTcsImV4cCI6MjA5ODA0MjMxN30.KeCuo8UABVODtoV_TP9BYetOeyYwd9kswKwWN-jtBSU';
+
+let sb = null;
+let SUPABASE_CONFIGURED = false;
+
+try {
+  if (SUPABASE_URL.startsWith('http') && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY') {
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    SUPABASE_CONFIGURED = true;
+  }
+} catch (err) {
+  console.error('Supabase failed to initialize:', err);
+}
+
+function showSetupNotice() {
+  const box = document.getElementById('login-error');
+  if (box) {
+    box.textContent = 'This app is not connected to a database yet. Open the file, find SUPABASE_URL and SUPABASE_ANON_KEY near the top of the script, and paste in your Supabase project values.';
+    box.style.display = 'block';
+  }
+}
+
+// ---- Constants ---------------------------------------------------------
+const LEAVE_TYPES = {
+  VL:  { label: 'Vacation Leave',   short: 'VL',  cls: 'vl', credit: 'vl' },
+  VLH: { label: 'Vacation (Half)',  short: 'VLH', cls: 'vl', credit: 'vl', half: true },
+  SL:  { label: 'Sick Leave',       short: 'SL',  cls: 'sl', credit: 'sl' },
+  SLH: { label: 'Sick (Half)',      short: 'SLH', cls: 'sl', credit: 'sl', half: true },
+  EL:  { label: 'Emergency Leave',  short: 'EL',  cls: 'el', credit: 'sl' }, // EL draws from SL credits per guidelines
+  ELH: { label: 'Emergency (Half)', short: 'ELH', cls: 'el', credit: 'sl', half: true },
+  LNP: { label: 'Leave No Pay',     short: 'LNP', cls: 'el', credit: null },
+  HLNP:{ label: 'Half-Day No Pay',  short: 'HLNP',cls: 'el', credit: null, half: true },
+};
+
+const STATUS = { PENDING: 'pending', APPROVED: 'approved', DECLINED: 'declined' };
+
+const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const WEEKDAY_LETTERS = ['S','M','T','W','T','F','S'];
+
+// ---- App state -----------------------------------------------------------
+const state = {
+  session: null,
+  profile: null,          // { username, role, employee_id }
+  employees: [],          // all employee rows
+  leaveEntries: [],        // all leave entries (loaded for the visible range)
+  calendarMonth: new Date().getMonth(),
+  calendarYear: new Date().getFullYear(),
+  currentView: 'dashboard',
+};
+
+// =====================================================================
+// AUTH
+// =====================================================================
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.toggle('error', !!isError);
+  t.classList.add('show');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove('show'), 3200);
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errorBox = document.getElementById('login-error');
+  errorBox.style.display = 'none';
+
+  if (!SUPABASE_CONFIGURED) {
+    showSetupNotice();
+    return;
+  }
+
+  try {
+    const { data: profileRow, error: profileErr } = await sb
+      .from('app_users')
+      .select('*')
+      .eq('username', username)
+      .single();
+
+    if (profileErr || !profileRow) {
+      throw new Error('Invalid username or password.');
+    }
+
+    // Simple password check against stored hash column (set up via Supabase function or stored hash)
+    const ok = await verifyPassword(password, profileRow.password_hash);
+    if (!ok) throw new Error('Invalid username or password.');
+
+    state.profile = profileRow;
+    sessionStorage.setItem('registry_profile', JSON.stringify(profileRow));
+    enterApp();
+  } catch (err) {
+    errorBox.textContent = err.message || 'Something went wrong. Please try again.';
+    errorBox.style.display = 'block';
+  }
+}
+
+async function verifyPassword(plain, hash) {
+  const enc = new TextEncoder().encode(plain);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  return hex === hash;
+}
+
+function enterApp() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.getElementById('current-user-label').textContent = state.profile.display_name || state.profile.username;
+  initNav();
+  loadAllData();
+}
+
+function checkExistingSession() {
+  const stored = sessionStorage.getItem('registry_profile');
+  if (stored) {
+    state.profile = JSON.parse(stored);
+    enterApp();
+  }
+}
+
+function logout() {
+  sessionStorage.removeItem('registry_profile');
+  state.profile = null;
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('login-screen').classList.remove('hidden');
+}
+
+// =====================================================================
+// NAVIGATION
+// =====================================================================
+
+function initNav() {
+  document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+    item.addEventListener('click', () => {
+      const view = item.getAttribute('data-view');
+      switchView(view);
+    });
+  });
+  document.getElementById('logout-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    logout();
+  });
+  switchView('dashboard');
+}
+
+function switchView(viewName) {
+  state.currentView = viewName;
+  document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+    item.classList.toggle('active', item.getAttribute('data-view') === viewName);
+  });
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  const target = document.getElementById('view-' + viewName);
+  if (target) target.classList.add('active');
+
+  if (viewName === 'dashboard') renderDashboard();
+  if (viewName === 'leave-tracker') renderLeaveTracker();
+}
+
+// =====================================================================
+// DATA LOADING
+// =====================================================================
+
+async function loadAllData() {
+  await Promise.all([loadEmployees(), loadLeaveEntries()]);
+  renderDashboard();
+  renderLeaveTracker();
+}
+
+async function loadEmployees() {
+  const { data, error } = await sb.from('employees').select('*').order('display_name');
+  if (error) { showToast('Could not load employees.', true); return; }
+  state.employees = data || [];
+}
+
+async function loadLeaveEntries() {
+  const { data, error } = await sb
+    .from('leave_entries')
+    .select('*')
+    .order('leave_date', { ascending: true });
+  if (error) { showToast('Could not load leave entries.', true); return; }
+  state.leaveEntries = data || [];
+}
+
+// =====================================================================
+// CREDIT CALCULATIONS
+// (mirrors the Excel formulas: VL balance = starting balance - used;
+//  SL balance = 6 - used SL/SLH - used EL/ELH, since EL draws on SL credits)
+// =====================================================================
+
+function entriesForEmployee(employeeId) {
+  return state.leaveEntries.filter(e => e.employee_id === employeeId && e.status === STATUS.APPROVED);
+}
+
+function getVLBalance(employee) {
+  const asOf = employee.balance_as_of_date;
+  const used = entriesForEmployee(employee.id)
+    .filter(e => e.leave_date > asOf)
+    .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === 'vl')
+    .reduce((sum, e) => sum + (LEAVE_TYPES[e.leave_type].half ? 0.5 : 1), 0);
+  return round2((employee.vl_balance ?? 0) - used);
+}
+
+function getSLBalance(employee) {
+  const asOf = employee.balance_as_of_date;
+  const used = entriesForEmployee(employee.id)
+    .filter(e => e.leave_date > asOf)
+    .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === 'sl')
+    .reduce((sum, e) => sum + (LEAVE_TYPES[e.leave_type].half ? 0.5 : 1), 0);
+  return round2((employee.sl_balance ?? 0) - used);
+}
+
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// =====================================================================
+// DASHBOARD VIEW
+// =====================================================================
+
+function renderDashboard() {
+  const el = document.getElementById('dashboard-content');
+  if (!state.employees.length) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    return;
+  }
+
+  const today = isoDate(new Date());
+  const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED);
+  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
+
+  el.innerHTML = `
+    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; margin-bottom:28px;">
+      ${dashboardStatCard('Out today', todayEntries.length, todayEntries.map(e => employeeName(e.employee_id)).join(', ') || 'No one is out today.', 'vl')}
+      ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl')}
+      ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
+    </div>
+
+    <div class="card" style="padding:22px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Who's out today</h3>
+        <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
+      </div>
+      ${todayEntries.length ? `
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          ${todayEntries.map(e => `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+              <span class="stamp ${LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
+              <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
+              <span class="faint" style="margin-left:auto; font-size:12px;">${escapeHtml(e.note || '')}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : `<p class="muted" style="margin:0;">Everyone's in today.</p>`}
+    </div>
+  `;
+}
+
+function dashboardStatCard(label, value, sub, accentCls) {
+  return `
+    <div class="card" style="padding:20px;">
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+        <span class="dot-mark ${accentCls}"></span>
+        <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">${label}</span>
+      </div>
+      <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${value}</div>
+      <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(String(sub))}</div>
+    </div>
+  `;
+}
+
+// =====================================================================
+// LEAVE TRACKER VIEW
+// =====================================================================
+
+function renderLeaveTracker() {
+  const actionsEl = document.getElementById('leave-tracker-actions');
+  actionsEl.innerHTML = `<button class="btn btn-primary" id="btn-new-request">+ Request leave</button>`;
+  document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
+
+  const el = document.getElementById('leave-tracker-content');
+  if (!state.employees.length) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    return;
+  }
+
+  el.innerHTML = `
+    <div style="display:grid; grid-template-columns: 1fr 320px; gap:24px; align-items:start;">
+      <div>
+        ${renderCalendarCard()}
+      </div>
+      <div style="display:flex; flex-direction:column; gap:18px;">
+        ${renderPendingPanel()}
+        ${renderCreditTableCard()}
+      </div>
+    </div>
+  `;
+
+  attachCalendarHandlers();
+  attachPendingHandlers();
+}
+
+// ---- Calendar -----------------------------------------------------------
+
+function renderCalendarCard() {
+  const year = state.calendarYear;
+  const month = state.calendarMonth;
+  const firstDay = new Date(year, month, 1);
+  const startWeekday = firstDay.getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const cells = [];
+  for (let i = 0; i < startWeekday; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const todayIso = isoDate(new Date());
+
+  let gridHtml = '';
+  cells.forEach(d => {
+    if (d === null) {
+      gridHtml += `<div class="cal-cell cal-cell-empty"></div>`;
+      return;
+    }
+    const dateIso = isoDate(new Date(year, month, d));
+    const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.APPROVED);
+    const pendingCount = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.PENDING).length;
+    const isToday = dateIso === todayIso;
+    const isWeekend = [0,6].includes(new Date(year, month, d).getDay());
+
+    gridHtml += `
+      <div class="cal-cell ${isToday ? 'cal-cell-today' : ''} ${isWeekend ? 'cal-cell-weekend' : ''}" data-date="${dateIso}">
+        <div class="cal-daynum">${d}</div>
+        <div class="cal-marks">
+          ${dayEntries.slice(0,4).map(e => `<span class="dot-mark ${LEAVE_TYPES[e.leave_type].cls}" title="${escapeHtml(employeeName(e.employee_id))} — ${LEAVE_TYPES[e.leave_type].label}"></span>`).join('')}
+          ${dayEntries.length > 4 ? `<span class="faint" style="font-size:10px;">+${dayEntries.length-4}</span>` : ''}
+          ${pendingCount ? `<span class="dot-mark pending" title="${pendingCount} pending"></span>` : ''}
+        </div>
+      </div>
+    `;
+  });
+
+  return `
+    <div class="card" style="padding:22px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <button class="btn btn-ghost btn-sm" id="cal-prev">←</button>
+          <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:170px; text-align:center;">${MONTH_NAMES[month]} ${year}</h3>
+          <button class="btn btn-ghost btn-sm" id="cal-next">→</button>
+        </div>
+        <div style="display:flex; gap:14px; font-size:11.5px;" class="muted">
+          <span><span class="dot-mark vl" style="margin-right:5px;"></span>Vacation</span>
+          <span><span class="dot-mark sl" style="margin-right:5px;"></span>Sick</span>
+          <span><span class="dot-mark el" style="margin-right:5px;"></span>Emergency</span>
+          <span><span class="dot-mark pending" style="margin-right:5px;"></span>Pending</span>
+        </div>
+      </div>
+      <div class="cal-weekdays">
+        ${WEEKDAY_LETTERS.map(w => `<div class="cal-weekday">${w}</div>`).join('')}
+      </div>
+      <div class="cal-grid">
+        ${gridHtml}
+      </div>
+    </div>
+    <style>
+      .cal-weekdays{ display:grid; grid-template-columns: repeat(7,1fr); margin-bottom:6px; }
+      .cal-weekday{ text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); letter-spacing:0.06em; text-transform:uppercase; padding-bottom:6px; }
+      .cal-grid{ display:grid; grid-template-columns: repeat(7,1fr); gap:6px; }
+      .cal-cell{ min-height:74px; border-radius:8px; padding:7px; background:var(--paper); border:1px solid var(--line-soft); cursor:pointer; transition: background 0.12s ease; }
+      .cal-cell:hover{ background: var(--teal-wash); }
+      .cal-cell-empty{ background:transparent; border:none; cursor:default; }
+      .cal-cell-weekend{ background: #F3EFE4; }
+      .cal-cell-today{ border-color: var(--gold-line); border-width:1.5px; }
+      .cal-daynum{ font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:6px; }
+      .cal-marks{ display:flex; flex-wrap:wrap; gap:3px; align-items:center; }
+    </style>
+  `;
+}
+
+function attachCalendarHandlers() {
+  const prev = document.getElementById('cal-prev');
+  const next = document.getElementById('cal-next');
+  if (prev) prev.addEventListener('click', () => shiftMonth(-1));
+  if (next) next.addEventListener('click', () => shiftMonth(1));
+  document.querySelectorAll('.cal-cell[data-date]').forEach(cell => {
+    cell.addEventListener('click', () => openDayPanel(cell.getAttribute('data-date')));
+  });
+}
+
+function shiftMonth(delta) {
+  let m = state.calendarMonth + delta;
+  let y = state.calendarYear;
+  if (m < 0) { m = 11; y--; }
+  if (m > 11) { m = 0; y++; }
+  state.calendarMonth = m;
+  state.calendarYear = y;
+  renderLeaveTracker();
+}
+
+function openDayPanel(dateIso) {
+  const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso);
+  const body = dayEntries.length ? dayEntries.map(e => `
+    <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+      <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
+      <div style="flex:1;">
+        <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
+        <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}</div>
+      </div>
+      <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
+    </div>
+  `).join('') : `<p class="muted">No leave logged for this day.</p>`;
+
+  openModal(formatPrettyDate(dateIso), `<div>${body}</div>`);
+}
+
+// ---- Pending panel --------------------------------------------------
+
+function renderPendingPanel() {
+  const pending = state.leaveEntries
+    .filter(e => e.status === STATUS.PENDING)
+    .sort((a,b) => a.leave_date.localeCompare(b.leave_date));
+
+  return `
+    <div class="card" style="padding:20px;">
+      <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Pending requests</h3>
+      ${pending.length ? `
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          ${pending.map(e => `
+            <div class="pending-card" data-id="${e.id}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                <div>
+                  <div style="font-weight:600; font-size:13px;">${employeeName(e.employee_id)}</div>
+                  <div class="faint" style="font-size:11.5px; margin-top:2px;">${formatPrettyDate(e.leave_date)}</div>
+                </div>
+                <span class="stamp pending">${LEAVE_TYPES[e.leave_type].short}</span>
+              </div>
+              ${e.note ? `<div class="muted" style="font-size:12px; margin-top:8px;">${escapeHtml(e.note)}</div>` : ''}
+              <div style="display:flex; gap:6px; margin-top:10px;">
+                <button class="btn btn-primary btn-sm approve-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Approve</button>
+                <button class="btn btn-ghost btn-sm decline-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Decline</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      ` : `<p class="muted" style="margin:0; font-size:13px;">Nothing waiting on review.</p>`}
+    </div>
+  `;
+}
+
+function attachPendingHandlers() {
+  document.querySelectorAll('.approve-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.APPROVED)));
+  document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.DECLINED)));
+}
+
+async function decideRequest(id, decision) {
+  const { error } = await sb.from('leave_entries').update({ status: decision }).eq('id', id);
+  if (error) { showToast('Could not update the request.', true); return; }
+  showToast(decision === STATUS.APPROVED ? 'Leave approved.' : 'Leave declined.');
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
+}
+
+// ---- Credit balance table --------------------------------------------
+
+function renderCreditTableCard() {
+  const rows = state.employees
+    .filter(e => e.active !== false)
+    .sort((a,b) => a.display_name.localeCompare(b.display_name))
+    .map(emp => {
+      const vl = getVLBalance(emp);
+      const sl = getSLBalance(emp);
+      return `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+          <span>${escapeHtml(emp.display_name)}</span>
+          <span style="display:flex; gap:10px;">
+            <span class="faint" title="Vacation credits">VL ${vl}</span>
+            <span class="faint" title="Sick credits">SL ${sl}</span>
+          </span>
+        </div>
+      `;
+    }).join('');
+
+  return `
+    <div class="card" style="padding:20px; max-height:420px; overflow-y:auto;">
+      <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Credit balances</h3>
+      ${rows || '<p class="muted">No employees yet.</p>'}
+    </div>
+  `;
+}
+
+// =====================================================================
+// REQUEST MODAL
+// =====================================================================
+
+function openRequestModal() {
+  const empOptions = state.employees
+    .filter(e => e.active !== false)
+    .map(e => `<option value="${e.id}">${escapeHtml(e.display_name)}</option>`).join('');
+  const typeOptions = Object.entries(LEAVE_TYPES)
+    .filter(([k]) => !['LNP','HLNP'].includes(k))
+    .map(([k,v]) => `<option value="${k}">${v.label}</option>`).join('');
+
+  const formHtml = `
+    <form id="request-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="req-employee">Employee</label>
+        <select id="req-employee" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          ${empOptions}
+        </select>
+      </div>
+      <div class="field">
+        <label for="req-type">Leave type</label>
+        <select id="req-type" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          ${typeOptions}
+        </select>
+      </div>
+      <div class="field">
+        <label for="req-date">Date</label>
+        <input type="date" id="req-date" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="req-note">Note <span class="faint">(reason for the leave — required)</span></label>
+        <textarea id="req-note" required rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Submit request</button>
+    </form>
+  `;
+
+  openModal('Request leave', formHtml);
+  document.getElementById('request-form').addEventListener('submit', submitLeaveRequest);
+}
+
+async function submitLeaveRequest(e) {
+  e.preventDefault();
+  const employee_id = document.getElementById('req-employee').value;
+  const leave_type = document.getElementById('req-type').value;
+  const leave_date = document.getElementById('req-date').value;
+  const note = document.getElementById('req-note').value.trim();
+
+  const { error } = await sb.from('leave_entries').insert({
+    employee_id, leave_type, leave_date, note,
+    status: STATUS.PENDING,
+    requested_by: state.profile.username,
+  });
+
+  if (error) { showToast('Could not submit the request.', true); return; }
+  closeModal();
+  showToast('Leave request submitted.');
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
+}
+
+// =====================================================================
+// MODAL (lightweight, shared)
+// =====================================================================
+
+function openModal(title, bodyHtml) {
+  let overlay = document.getElementById('modal-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'modal-overlay';
+    overlay.style.cssText = `
+      position:fixed; inset:0; background:rgba(31,61,58,0.35); z-index:998;
+      display:flex; align-items:center; justify-content:center; padding:20px;
+    `;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML = `
+    <div class="card" style="width:420px; max-width:100%; max-height:80vh; overflow-y:auto; padding:24px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal);">${escapeHtml(title)}</h3>
+        <button class="btn btn-ghost btn-sm" id="modal-close-btn">Close</button>
+      </div>
+      ${bodyHtml}
+    </div>
+  `;
+  document.getElementById('modal-close-btn').addEventListener('click', closeModal);
+  overlay.style.display = 'flex';
+}
+
+function closeModal() {
+  const overlay = document.getElementById('modal-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+// =====================================================================
+// HELPERS
+// =====================================================================
+
+function employeeName(id) {
+  const emp = state.employees.find(e => e.id === id);
+  return emp ? emp.display_name : 'Unknown';
+}
+
+function isoDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatPrettyDate(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// =====================================================================
+// INIT
+// =====================================================================
+
+window.addEventListener('error', function (e) {
+  console.error('Unhandled error:', e.error || e.message);
+  const box = document.getElementById('login-error');
+  if (box && document.getElementById('login-screen') && !document.getElementById('login-screen').classList.contains('hidden')) {
+    box.textContent = 'Something went wrong loading the app. Check the browser console for details, or make sure SUPABASE_URL / SUPABASE_ANON_KEY are filled in near the top of the script.';
+    box.style.display = 'block';
+  }
+});
+
+document.getElementById('login-form').addEventListener('submit', handleLogin);
+
+if (!SUPABASE_CONFIGURED) {
+  showSetupNotice();
+}
+
+checkExistingSession();
+
+</script>
 </body>
 </html>
