@@ -485,7 +485,7 @@ function showToast(msg, isError) {
 
 async function handleLogin(e) {
   e.preventDefault();
-  const username = document.getElementById('login-username').value.trim();
+  const username = document.getElementById('login-username').value.trim().toLowerCase();
   const password = document.getElementById('login-password').value;
   const errorBox = document.getElementById('login-error');
   errorBox.style.display = 'none';
@@ -499,10 +499,14 @@ async function handleLogin(e) {
     const { data: profileRow, error: profileErr } = await sb
       .from('app_users')
       .select('*')
-      .eq('username', username)
-      .single();
+      .ilike('username', username)
+      .maybeSingle();
 
-    if (profileErr || !profileRow) {
+    if (profileErr) {
+      console.error('Login query error:', profileErr);
+      throw new Error('Something went wrong checking your account. Please try again.');
+    }
+    if (!profileRow) {
       throw new Error('Invalid username or password.');
     }
 
