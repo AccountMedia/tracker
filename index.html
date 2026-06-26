@@ -822,7 +822,21 @@ function renderMyRequestsPanel() {
 
 function canCancel(entry) {
   if (entry.status === STATUS.PENDING) return true; // a pending request was never taken, so it can always be withdrawn
-  return entry.status === STATUS.APPROVED && entry.leave_date >= isoDate(new Date());
+  if (entry.status !== STATUS.APPROVED) return false;
+
+  // For a multi-day request, the relevant date is the END of the whole
+  // stretch, not just whichever single day happened to be clicked — a
+  // request that runs from the past into the future should still be
+  // cancellable.
+  let latestDate = entry.leave_date;
+  if (entry.request_group_id) {
+    const groupDates = state.leaveEntries
+      .filter(g => g.request_group_id === entry.request_group_id && g.status !== STATUS.DECLINED)
+      .map(g => g.leave_date);
+    if (groupDates.length) latestDate = groupDates.sort().slice(-1)[0];
+  }
+
+  return latestDate >= isoDate(new Date());
 }
 
 function attachMyRequestsHandlers() {
@@ -1632,11 +1646,11 @@ function openRequestModal() {
       <div class="field" style="display:flex; gap:10px;">
         <div style="flex:1;">
           <label for="req-date-from">From</label>
-          <input type="date" id="req-date-from" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <input type="date" id="req-date-from" required min="${isoDate(new Date())}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
         </div>
         <div style="flex:1;">
           <label for="req-date-to">To</label>
-          <input type="date" id="req-date-to" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <input type="date" id="req-date-to" required min="${isoDate(new Date())}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
         </div>
       </div>
       <p class="faint" style="font-size:11px; margin:-6px 0 0;">For a single day, use the same date for both fields. Weekends are skipped automatically.</p>
@@ -1676,6 +1690,7 @@ async function submitLeaveRequest(e) {
   toInput.style.borderColor = toDate ? 'var(--line)' : 'var(--coral)';
   if (!fromDate || !toDate) { showToast('Please fill in both the "From" and "To" dates.', true); return; }
   if (toDate < fromDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
+  if (fromDate < isoDate(new Date())) { showToast('You can\'t request leave for a date that has already passed.', true); return; }
 
   const dates = datesInRange(fromDate, toDate, { skipWeekends: true });
   if (!dates.length) { showToast('That range has no workdays in it.', true); return; }
