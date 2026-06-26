@@ -877,9 +877,17 @@ function renderCalendarCard() {
     const isToday = dateIso === todayIso;
     const isWeekend = [0,6].includes(new Date(year, month, d).getDay());
 
+    // Multi-day leave bars: one per distinct request_group_id active on this
+    // day (pending or approved), with rounded caps only where the stretch
+    // actually starts/ends, so consecutive days read as one connected bar.
+    const groupBars = multiDayBarsForDate(dateIso).map(bar => `
+      <div class="cal-multiday-bar ${bar.cls} ${bar.isStart ? 'bar-start' : ''} ${bar.isEnd ? 'bar-end' : ''}" title="${escapeHtml(bar.title)}"></div>
+    `).join('');
+
     gridHtml += `
       <div class="cal-cell ${isToday ? 'cal-cell-today' : ''} ${isWeekend ? 'cal-cell-weekend' : ''}" data-date="${dateIso}">
         <div class="cal-daynum">${d}</div>
+        ${groupBars ? `<div class="cal-multiday-stack">${groupBars}</div>` : ''}
         <div class="cal-marks">
           ${dayEntries.slice(0,4).map(e => `<span class="dot-mark ${LEAVE_TYPES[e.leave_type].cls}" title="${escapeHtml(employeeName(e.employee_id))} — ${LEAVE_TYPES[e.leave_type].label}"></span>`).join('')}
           ${dayEntries.length > 4 ? `<span class="faint" style="font-size:10px;">+${dayEntries.length-4}</span>` : ''}
@@ -923,6 +931,17 @@ function renderCalendarCard() {
       .cal-cell-today{ border-color: var(--gold-line); border-width:1.5px; }
       .cal-daynum{ font-size:13.5px; font-weight:600; color:var(--ink-soft); margin-bottom:8px; }
       .cal-marks{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
+      .cal-multiday-stack{ display:flex; flex-direction:column; gap:3px; margin: -2px -10px 6px; }
+      .cal-multiday-bar{
+        height: 6px;
+        margin: 0 -1px; /* slight overlap so adjacent days' bars visually touch */
+      }
+      .cal-multiday-bar.bar-start{ margin-left:8px; border-radius:4px 0 0 4px; }
+      .cal-multiday-bar.bar-end{ margin-right:8px; border-radius:0 4px 4px 0; }
+      .cal-multiday-bar.bar-start.bar-end{ margin-left:8px; margin-right:8px; border-radius:4px; }
+      .cal-multiday-bar.vl{ background: var(--green); }
+      .cal-multiday-bar.sl{ background: var(--amber); }
+      .cal-multiday-bar.el{ background: var(--coral); }
     </style>
   `;
 }
@@ -1134,9 +1153,55 @@ function groupLeaveEntries(entries) {
   return groups;
 }
 
+function formatShortDate(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${mm}/${dd}`;
+}
+
+// Returns one entry per distinct multi-day request_group_id active on the
+// given date (pending or approved, never declined since those are deleted).
+// Single-day requests are excluded — they're already shown via the dot
+// marks, and don't need a connecting bar.
+function multiDayBarsForDate(dateIso) {
+  const onThisDay = state.leaveEntries.filter(e =>
+    e.leave_date === dateIso &&
+    e.status !== STATUS.DECLINED &&
+    e.request_group_id
+  );
+
+  const seenGroups = new Set();
+  const bars = [];
+
+  onThisDay.forEach(e => {
+    if (seenGroups.has(e.request_group_id)) return;
+    seenGroups.add(e.request_group_id);
+
+    const groupDays = state.leaveEntries
+      .filter(g => g.request_group_id === e.request_group_id && g.status !== STATUS.DECLINED)
+      .map(g => g.leave_date)
+      .sort();
+
+    if (groupDays.length < 2) return; // shouldn't happen, but guard anyway
+
+    const startDate = groupDays[0];
+    const endDate = groupDays[groupDays.length - 1];
+
+    bars.push({
+      cls: LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].cls : '',
+      isStart: dateIso === startDate,
+      isEnd: dateIso === endDate,
+      title: `${employeeName(e.employee_id)} — ${LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type} (${formatDateRange(startDate, endDate)})`,
+    });
+  });
+
+  return bars;
+}
+
 function formatDateRange(startIso, endIso) {
   if (startIso === endIso) return formatPrettyDate(startIso);
-  return `${formatPrettyDate(startIso)} – ${formatPrettyDate(endIso)}`;
+  return `${formatShortDate(startIso)}–${formatShortDate(endIso)}`;
 }
 
 function attachPendingHandlers() {
