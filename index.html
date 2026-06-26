@@ -1349,6 +1349,12 @@ async function submitLeaveRequest(e) {
   const note = document.getElementById('req-note').value.trim();
 
   if (!employee_id) { showToast('Your account is not linked to an employee record yet.', true); return; }
+
+  const fromInput = document.getElementById('req-date-from');
+  const toInput = document.getElementById('req-date-to');
+  fromInput.style.borderColor = fromDate ? 'var(--line)' : 'var(--coral)';
+  toInput.style.borderColor = toDate ? 'var(--line)' : 'var(--coral)';
+  if (!fromDate || !toDate) { showToast('Please fill in both the "From" and "To" dates.', true); return; }
   if (toDate < fromDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
 
   const dates = datesInRange(fromDate, toDate, { skipWeekends: true });
