@@ -934,6 +934,7 @@ function downloadMonthlyReport() {
 
   const entries = state.leaveEntries
     .filter(e => e.leave_date >= monthStart && e.leave_date <= monthEnd)
+    .filter(e => e.status !== STATUS.DECLINED) // exclude declined/cancelled leave (belt-and-suspenders; these rows are normally deleted outright)
     .slice()
     .sort((a, b) => {
       const dateCompare = a.leave_date.localeCompare(b.leave_date);
@@ -941,23 +942,35 @@ function downloadMonthlyReport() {
       return employeeName(a.employee_id).localeCompare(employeeName(b.employee_id));
     });
 
-  if (!entries.length) {
-    showToast('No leave recorded for this month.', true);
-    return;
+  const csvRows = [];
+
+  csvRows.push([`Leave Report — ${MONTH_NAMES[month]} ${year}`]);
+  csvRows.push([]);
+
+  csvRows.push(['Date', 'Employee', 'Leave Type', 'Status', 'Note']);
+  if (entries.length) {
+    entries.forEach(e => {
+      csvRows.push([
+        formatPrettyDate(e.leave_date),
+        employeeName(e.employee_id),
+        LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type,
+        capitalize(e.status),
+        e.note || '',
+      ]);
+    });
+  } else {
+    csvRows.push(['No leave recorded for this month.']);
   }
 
-  const header = ['Date', 'Employee', 'Leave Type', 'Status', 'Note'];
-  const csvRows = [header];
-
-  entries.forEach(e => {
-    csvRows.push([
-      formatPrettyDate(e.leave_date),
-      employeeName(e.employee_id),
-      LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type,
-      capitalize(e.status),
-      e.note || '',
-    ]);
-  });
+  csvRows.push([]);
+  csvRows.push([`Remaining Leave Credits (as of ${formatPrettyDate(isoDate(new Date()))})`]);
+  csvRows.push(['Employee', 'VL Remaining', 'SL Remaining']);
+  state.employees
+    .filter(emp => emp.active !== false)
+    .sort(byKristinaFirstThenName)
+    .forEach(emp => {
+      csvRows.push([emp.display_name, getVLBalance(emp), getSLBalance(emp)]);
+    });
 
   const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
