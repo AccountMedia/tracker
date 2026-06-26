@@ -797,8 +797,8 @@ function renderMyRequestsPanel() {
 }
 
 function canCancel(entry) {
-  return (entry.status === STATUS.PENDING || entry.status === STATUS.APPROVED)
-    && entry.leave_date >= isoDate(new Date());
+  if (entry.status === STATUS.PENDING) return true; // a pending request was never taken, so it can always be withdrawn
+  return entry.status === STATUS.APPROVED && entry.leave_date >= isoDate(new Date());
 }
 
 function attachMyRequestsHandlers() {
