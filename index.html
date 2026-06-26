@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>The Registry — PH Team Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper: #FAF7F1;
+    --paper-raised: #FFFFFF;
+    --ink: #3A3A38;
+    --ink-soft: #6B6862;
+    --ink-faint: #A8A39A;
+    --line: #E4DECF;
+    --line-soft: #EDE8DA;
+    --teal: #1F3D3A;
+    --teal-soft: #2A4F4B;
+    --teal-wash: #E9EFEE;
+    --green: #2D6A4F;
+    --green-wash: #E3EFE7;
+    --amber: #C77F2E;
+    --amber-wash: #FAEFDE;
+    --coral: #B5495B;
+    --coral-wash: #F7E6E9;
+    --gold-line: #C9A35B;
+    --shadow-sm: 0 1px 2px rgba(58,58,56,0.06);
+    --shadow-md: 0 4px 16px rgba(58,58,56,0.08);
+    --shadow-lg: 0 12px 32px rgba(31,61,58,0.14);
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
+    --font-display: 'Fraunces', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
+    --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: 'SF Mono', 'IBM Plex Mono', Menlo, Consolas, monospace;
+  }
+
+  *{ box-sizing: border-box; }
+  html, body{ margin:0; padding:0; }
+  body{
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  a{ color: inherit; text-decoration: none; }
+  button{ font-family: inherit; cursor: pointer; }
+  ::selection{ background: var(--gold-line); color: white; }
+
+  /* ---------- Layout shell ---------- */
+  #app{
+    display: flex;
+    min-height: 100vh;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar{
+    width: 240px;
+    flex-shrink: 0;
+    background: var(--teal);
+    color: #EFEAE0;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 18px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+  .brand{
+    font-family: var(--font-display);
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    color: #F7F3E8;
+    padding: 0 10px 6px;
+    line-height: 1.25;
+  }
+  .brand .sub{
+    display:block;
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #9FB8B2;
+    margin-top: 4px;
+  }
+  .nav{
+    margin-top: 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .nav-item{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 13.5px;
+    font-weight: 500;
+    color: #C9D6D2;
+    transition: background 0.15s ease, color 0.15s ease;
+    position: relative;
+  }
+  .nav-item .dot{
+    width: 6px; height:6px; border-radius:50%;
+    background: currentColor; opacity:0.45; flex-shrink:0;
+  }
+  .nav-item:hover{ background: rgba(255,255,255,0.06); color: #F0EBDD; }
+  .nav-item.active{
+    background: rgba(247,243,232,0.1);
+    color: #F7F3E8;
+  }
+  .nav-item.active::before{
+    content: '';
+    position: absolute;
+    left: -18px;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    background: var(--gold-line);
+    border-radius: 2px;
+  }
+  .nav-item.disabled{
+    color: #5E7470;
+    cursor: default;
+  }
+  .nav-item.disabled:hover{ background: none; color:#5E7470; }
+  .nav-section-label{
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #6E8884;
+    margin: 22px 12px 6px;
+    font-weight: 600;
+  }
+  .sidebar-foot{
+    margin-top: auto;
+    padding: 12px 10px 0;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    font-size: 11.5px;
+    color: #8EA6A1;
+  }
+  .sidebar-foot strong{ color:#D7CFAF; font-weight:600; }
+
+  /* ---------- Main content ---------- */
+  .main{
+    flex: 1;
+    min-width: 0;
+    padding: 32px 40px 60px;
+    max-width: 1320px;
+  }
+  .page-head{
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .page-head h1{
+    font-family: var(--font-display);
+    font-size: 30px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--teal);
+  }
+  .page-head .eyebrow{
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: block;
+  }
+  .page-head p.lede{
+    margin: 6px 0 0;
+    color: var(--ink-soft);
+    font-size: 13.5px;
+  }
+
+  .view{ display:none; }
+  .view.active{ display:block; }
+
+  /* ---------- Generic card ---------- */
+  .card{
+    background: var(--paper-raised);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+
+  /* ---------- Buttons ---------- */
+  .btn{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 9px 16px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .btn-primary{ background: var(--teal); color: #F7F3E8; }
+  .btn-primary:hover{ background: var(--teal-soft); box-shadow: var(--shadow-sm); }
+  .btn-ghost{ background: transparent; border-color: var(--line); color: var(--ink-soft); }
+  .btn-ghost:hover{ background: var(--line-soft); color: var(--ink); }
+  .btn-sm{ padding: 6px 12px; font-size: 12px; }
+  .btn:disabled{ opacity:0.45; cursor:not-allowed; }
+
+  /* ---------- Stamp badges (signature element) ---------- */
+  .stamp{
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 30px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 5px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    border: 1.5px solid currentColor;
+    transform: rotate(-2deg);
+    line-height: 1;
+  }
+  .stamp.vl{ color: var(--green); background: var(--green-wash); }
+  .stamp.sl{ color: var(--amber); background: var(--amber-wash); }
+  .stamp.el{ color: var(--coral); background: var(--coral-wash); }
+  .stamp.pending{ color: var(--ink-soft); background: var(--line-soft); border-style: dashed; opacity:0.85; }
+
+  .dot-mark{
+    width: 7px; height:7px; border-radius:50%; display:inline-block; flex-shrink:0;
+  }
+  .dot-mark.vl{ background: var(--green); }
+  .dot-mark.sl{ background: var(--amber); }
+  .dot-mark.el{ background: var(--coral); }
+  .dot-mark.pending{ background: var(--ink-faint); }
+
+  /* ---------- Login ---------- */
+  .login-wrap{
+    min-height: 100vh;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--paper);
+    background-image:
+      radial-gradient(circle at 18% 20%, rgba(31,61,58,0.05), transparent 40%),
+      radial-gradient(circle at 85% 80%, rgba(201,163,91,0.08), transparent 45%);
+  }
+  .login-card{
+    width: 380px;
+    background: var(--paper-raised);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    padding: 40px 36px;
+  }
+  .login-mark{
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--teal);
+    text-align:center;
+  }
+  .login-mark .sub{
+    display:block;
+    font-family: var(--font-body);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    font-weight: 600;
+    margin-top: 6px;
+  }
+  .login-form{ margin-top: 30px; display:flex; flex-direction:column; gap: 14px; }
+  .field label{
+    display:block; font-size: 12px; font-weight:600; color: var(--ink-soft);
+    margin-bottom: 6px;
+  }
+  .field input{
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--line);
+    background: var(--paper);
+    font-size: 14px;
+    color: var(--ink);
+    font-family: inherit;
+  }
+  .field input:focus{ outline: 2px solid var(--gold-line); outline-offset: 1px; border-color: var(--gold-line); }
+  .login-error{
+    font-size: 12.5px; color: var(--coral); background: var(--coral-wash);
+    padding: 8px 10px; border-radius: var(--radius-sm); display:none;
+  }
+  .login-submit{ margin-top: 4px; width:100%; justify-content:center; padding: 11px; }
+
+  /* ---------- Misc utility ---------- */
+  .muted{ color: var(--ink-soft); }
+  .faint{ color: var(--ink-faint); }
+  .loading-row{ padding: 30px 0; text-align:center; color: var(--ink-faint); font-size: 13px; }
+  .hidden{ display:none !important; }
+
+  /* ---------- Toast ---------- */
+  #toast{
+    position: fixed; bottom: 26px; right: 26px;
+    background: var(--teal); color: #F7F3E8;
+    padding: 12px 18px; border-radius: var(--radius-md);
+    font-size: 13px; font-weight: 500;
+    box-shadow: var(--shadow-lg);
+    transform: translateY(20px); opacity: 0;
+    transition: all 0.25s ease;
+    pointer-events: none;
+    z-index: 999;
+    max-width: 320px;
+  }
+  #toast.show{ transform: translateY(0); opacity: 1; }
+  #toast.error{ background: var(--coral); }
+
+  @media (max-width: 900px){
+    .sidebar{ display:none; }
+    .main{ padding: 20px 18px 60px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="login-screen" class="login-wrap">
+  <div class="login-card">
+    <div class="login-mark">The Registry
+      <span class="sub">PH Team Hub</span>
+    </div>
+    <form class="login-form" id="login-form">
+      <div class="field">
+        <label for="login-username">Username</label>
+        <input type="text" id="login-username" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="login-password">Password</label>
+        <input type="password" id="login-password" autocomplete="current-password" required>
+      </div>
+      <div class="login-error" id="login-error"></div>
+      <button type="submit" class="btn btn-primary login-submit">Sign in</button>
+    </form>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <aside class="sidebar">
+    <div class="brand">The Registry
+      <span class="sub">PH Team Hub</span>
+    </div>
+    <nav class="nav">
+      <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
+      <a class="nav-item" data-view="leave-tracker"><span class="dot"></span>Leave Tracker</a>
+      <div class="nav-section-label">Coming soon</div>
+      <a class="nav-item disabled"><span class="dot"></span>Payroll Confirmation</a>
+      <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
+      <a class="nav-item disabled"><span class="dot"></span>PrioList</a>
+      <a class="nav-item disabled"><span class="dot"></span>LI Restriction Daily Report</a>
+    </nav>
+    <div class="sidebar-foot">
+      Signed in as <strong id="current-user-label">—</strong>
+      <div style="margin-top:10px;">
+        <a href="#" id="logout-link" style="color:#C9D6D2; text-decoration:underline; font-size:11.5px;">Sign out</a>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- DASHBOARD VIEW -->
+    <section class="view" id="view-dashboard">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">Overview</span>
+          <h1>Dashboard</h1>
+          <p class="lede">A quick read of where things stand across the team.</p>
+        </div>
+      </div>
+      <div id="dashboard-content"></div>
+    </section>
+
+    <!-- LEAVE TRACKER VIEW -->
+    <section class="view" id="view-leave-tracker">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>Leave Tracker</h1>
+          <p class="lede">Vacation, sick, and emergency leave — requested, approved, and logged.</p>
+        </div>
+        <div id="leave-tracker-actions"></div>
+      </div>
+      <div id="leave-tracker-content"></div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
