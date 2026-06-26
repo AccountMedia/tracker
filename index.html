@@ -623,6 +623,7 @@ async function loadAllData() {
   await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations()]);
   renderDashboard();
   renderLeaveTracker();
+  renderPayrollConfirmation();
 }
 
 async function loadPayrollConfirmations() {
