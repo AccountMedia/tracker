@@ -1428,6 +1428,12 @@ function renderPayrollConfirmation() {
           <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
           <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
         </div>
+        ${admin ? `
+          <div style="display:flex; gap:8px;">
+            <button class="btn btn-ghost btn-sm" id="payroll-download">Download report</button>
+            <button class="btn btn-ghost btn-sm" id="payroll-reset" style="color:var(--coral); border-color:var(--coral-wash);">Reset</button>
+          </div>
+        ` : ''}
       </div>
       <div class="payroll-table">
         <div style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
@@ -1449,6 +1455,10 @@ function renderPayrollConfirmation() {
   document.querySelectorAll('.undo-received-btn').forEach(b => {
     b.addEventListener('click', () => undoPayrollReceived(b.dataset.confId));
   });
+  const downloadBtn = document.getElementById('payroll-download');
+  if (downloadBtn) downloadBtn.addEventListener('click', downloadPayrollReport);
+  const resetBtn = document.getElementById('payroll-reset');
+  if (resetBtn) resetBtn.addEventListener('click', resetPayrollPeriod);
 }
 
 function renderPayrollCell(employeeId, year, month, half, confirmation, canMark) {
@@ -1505,6 +1515,72 @@ async function undoPayrollReceived(confirmationId) {
   showToast('Confirmation removed.');
   await loadPayrollConfirmations();
   renderPayrollConfirmation();
+}
+
+async function resetPayrollPeriod() {
+  if (!isAdmin()) { showToast('Only admins can reset payroll confirmations.', true); return; }
+
+  const year = state.payrollPeriodYear;
+  const month = state.payrollPeriodMonth;
+  const monthLabel = `${PAYROLL_MONTH_NAMES[month - 1]} ${year}`;
+
+  if (!confirm(`Reset all payroll confirmations for ${monthLabel}? Every "Received" mark for this month will be cleared, and everyone will go back to "Mark received." This cannot be undone.`)) {
+    return;
+  }
+
+  const { error } = await sb
+    .from('payroll_confirmations')
+    .delete()
+    .eq('period_year', year)
+    .eq('period_month', month);
+
+  if (error) { showToast('Could not reset this period.', true); return; }
+  showToast(`${monthLabel} confirmations reset.`);
+  await loadPayrollConfirmations();
+  renderPayrollConfirmation();
+}
+
+function downloadPayrollReport() {
+  const year = state.payrollPeriodYear;
+  const month = state.payrollPeriodMonth;
+  const monthLabel = `${PAYROLL_MONTH_NAMES[month - 1]} ${year}`;
+
+  const employees = state.employees
+    .filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia')
+    .sort(byKristinaFirstThenName);
+
+  const csvRows = [];
+  csvRows.push([`Payroll Confirmation Report — ${monthLabel}`]);
+  csvRows.push([]);
+  csvRows.push(['Agent', 'Bank', '1st Half Status', '1st Half Date/Time', '2nd Half Status', '2nd Half Date/Time']);
+
+  employees.forEach(emp => {
+    const half1 = findConfirmation(emp.id, year, month, 1);
+    const half2 = findConfirmation(emp.id, year, month, 2);
+    csvRows.push([
+      emp.display_name,
+      emp.bank || '',
+      half1 && half1.received ? 'Received' : 'Not yet',
+      half1 && half1.received ? formatDateTime(half1.received_at) : '',
+      half2 && half2.received ? 'Received' : 'Not yet',
+      half2 && half2.received ? formatDateTime(half2.received_at) : '',
+    ]);
+  });
+
+  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const filename = `Payroll Confirmation - ${monthLabel}.csv`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  showToast('Report downloaded.');
 }
 
 function formatDateTime(isoString) {
