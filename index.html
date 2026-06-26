@@ -757,7 +757,7 @@ function renderLeaveTracker() {
 
 function renderMyRequestsPanel() {
   const myEntries = state.leaveEntries
-    .filter(e => e.employee_id === state.profile.employee_id)
+    .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED)
     .sort((a,b) => b.leave_date.localeCompare(a.leave_date))
     .slice(0, 10);
 
@@ -800,7 +800,7 @@ function attachMyRequestsHandlers() {
 
 async function cancelLeave(id, closeAfter) {
   if (!confirm('Cancel this leave? This cannot be undone.')) return;
-  const { error } = await sb.from('leave_entries').update({ status: STATUS.DECLINED }).eq('id', id);
+  const { error } = await sb.from('leave_entries').delete().eq('id', id);
   if (error) { showToast('Could not cancel the leave.', true); return; }
   showToast('Leave cancelled.');
   if (closeAfter) closeModal();
@@ -906,7 +906,7 @@ function shiftMonth(delta) {
 }
 
 function openDayPanel(dateIso) {
-  const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso);
+  const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status !== STATUS.DECLINED);
   const admin = isAdmin();
   const body = dayEntries.length ? dayEntries.map(e => `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
@@ -975,9 +975,15 @@ function attachPendingHandlers() {
 
 async function decideRequest(id, decision) {
   if (!isAdmin()) { showToast('Only admins can approve or decline requests.', true); return; }
-  const { error } = await sb.from('leave_entries').update({ status: decision }).eq('id', id);
-  if (error) { showToast('Could not update the request.', true); return; }
-  showToast(decision === STATUS.APPROVED ? 'Leave approved.' : 'Leave declined.');
+  if (decision === STATUS.DECLINED) {
+    const { error } = await sb.from('leave_entries').delete().eq('id', id);
+    if (error) { showToast('Could not update the request.', true); return; }
+    showToast('Leave declined.');
+  } else {
+    const { error } = await sb.from('leave_entries').update({ status: decision }).eq('id', id);
+    if (error) { showToast('Could not update the request.', true); return; }
+    showToast('Leave approved.');
+  }
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
