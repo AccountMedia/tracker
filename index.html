@@ -553,6 +553,7 @@ function checkExistingSession() {
 
 function logout() {
   sessionStorage.removeItem('registry_profile');
+  sessionStorage.removeItem('registry_active_view');
   state.profile = null;
   state.creditsEditMode = false;
   document.getElementById('app').classList.add('hidden');
@@ -578,11 +579,14 @@ function initNav() {
     e.preventDefault();
     openChangePasswordModal();
   });
-  switchView('dashboard');
+  const savedView = sessionStorage.getItem('registry_active_view');
+  const validViews = ['dashboard', 'leave-tracker'];
+  switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
 function switchView(viewName) {
   state.currentView = viewName;
+  sessionStorage.setItem('registry_active_view', viewName);
   document.querySelectorAll('.nav-item[data-view]').forEach(item => {
     item.classList.toggle('active', item.getAttribute('data-view') === viewName);
   });
@@ -794,11 +798,12 @@ function attachMyRequestsHandlers() {
   });
 }
 
-async function cancelLeave(id) {
+async function cancelLeave(id, closeAfter) {
   if (!confirm('Cancel this leave? This cannot be undone.')) return;
   const { error } = await sb.from('leave_entries').update({ status: STATUS.DECLINED }).eq('id', id);
   if (error) { showToast('Could not cancel the leave.', true); return; }
   showToast('Leave cancelled.');
+  if (closeAfter) closeModal();
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
@@ -902,6 +907,7 @@ function shiftMonth(delta) {
 
 function openDayPanel(dateIso) {
   const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso);
+  const admin = isAdmin();
   const body = dayEntries.length ? dayEntries.map(e => `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
       <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
@@ -910,10 +916,14 @@ function openDayPanel(dateIso) {
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}</div>
       </div>
       <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
+      ${admin && canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px; margin-left:8px;">Cancel</button>` : ''}
     </div>
   `).join('') : `<p class="muted">No leave logged for this day.</p>`;
 
   openModal(formatPrettyDate(dateIso), `<div>${body}</div>`);
+  document.querySelectorAll('.cancel-leave-btn').forEach(b => {
+    b.addEventListener('click', () => cancelLeave(b.dataset.id, true));
+  });
 }
 
 // ---- Pending panel --------------------------------------------------
@@ -1030,8 +1040,9 @@ function renderCreditTableCard() {
       </div>
       <style>
         .credit-scroll{
-          max-height: 256px; /* roughly 6 rows */
-          overflow-y:auto;
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
           padding-right:4px;
         }
         /* Remove native number spinner arrows everywhere, belt-and-suspenders
@@ -1144,8 +1155,8 @@ function openRequestModal() {
         <input type="date" id="req-date" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
       <div class="field">
-        <label for="req-note">Note <span class="faint">(reason for the leave — required)</span></label>
-        <textarea id="req-note" required rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"></textarea>
+        <label for="req-note">Note <span class="faint">(optional)</span></label>
+        <textarea id="req-note" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"></textarea>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Submit request</button>
     </form>
