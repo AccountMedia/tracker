@@ -662,7 +662,7 @@ function renderDashboard() {
 
   const today = isoDate(new Date());
   const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED);
-  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING || (e.cancel_requested && e.status !== STATUS.DECLINED));
+  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; margin-bottom:28px;">
@@ -770,10 +770,8 @@ function renderMyRequestsPanel() {
                 <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
               </div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
-                <div class="faint" style="font-size:11px; text-transform:capitalize;">
-                  ${e.cancel_requested ? 'Cancellation requested' : e.status}
-                </div>
-                ${canRequestCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-request-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px;">Request to cancel</button>` : ''}
+                <div class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</div>
+                ${canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px;">Cancel</button>` : ''}
               </div>
             </div>
           `).join('')}
@@ -783,22 +781,22 @@ function renderMyRequestsPanel() {
   `;
 }
 
-function canRequestCancel(entry) {
-  return !entry.cancel_requested
-    && (entry.status === STATUS.PENDING || entry.status === STATUS.APPROVED)
+function canCancel(entry) {
+  return (entry.status === STATUS.PENDING || entry.status === STATUS.APPROVED)
     && entry.leave_date >= isoDate(new Date());
 }
 
 function attachMyRequestsHandlers() {
-  document.querySelectorAll('.cancel-request-btn').forEach(b => {
-    b.addEventListener('click', () => requestCancellation(b.dataset.id));
+  document.querySelectorAll('.cancel-leave-btn').forEach(b => {
+    b.addEventListener('click', () => cancelLeave(b.dataset.id));
   });
 }
 
-async function requestCancellation(id) {
-  const { error } = await sb.from('leave_entries').update({ cancel_requested: true }).eq('id', id);
-  if (error) { showToast('Could not submit the cancellation request.', true); return; }
-  showToast('Cancellation requested — waiting on admin review.');
+async function cancelLeave(id) {
+  if (!confirm('Cancel this leave? This cannot be undone.')) return;
+  const { error } = await sb.from('leave_entries').update({ status: STATUS.DECLINED }).eq('id', id);
+  if (error) { showToast('Could not cancel the leave.', true); return; }
+  showToast('Leave cancelled.');
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
@@ -909,7 +907,7 @@ function openDayPanel(dateIso) {
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}</div>
       </div>
-      <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.cancel_requested ? 'Cancel requested' : e.status}</span>
+      <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
     </div>
   `).join('') : `<p class="muted">No leave logged for this day.</p>`;
 
@@ -919,24 +917,16 @@ function openDayPanel(dateIso) {
 // ---- Pending panel --------------------------------------------------
 
 function renderPendingPanel() {
-  const newRequests = state.leaveEntries
-    .filter(e => e.status === STATUS.PENDING && !e.cancel_requested)
-    .sort((a,b) => a.leave_date.localeCompare(b.leave_date))
-    .map(e => ({ entry: e, kind: 'new' }));
-
-  const cancelRequests = state.leaveEntries
-    .filter(e => e.cancel_requested && e.status !== STATUS.DECLINED)
-    .sort((a,b) => a.leave_date.localeCompare(b.leave_date))
-    .map(e => ({ entry: e, kind: 'cancel' }));
-
-  const queue = [...cancelRequests, ...newRequests];
+  const queue = state.leaveEntries
+    .filter(e => e.status === STATUS.PENDING)
+    .sort((a,b) => a.leave_date.localeCompare(b.leave_date));
 
   return `
     <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Pending requests</h3>
       ${queue.length ? `
         <div class="pending-scroll">
-          ${queue.map(({entry: e, kind}) => `
+          ${queue.map(e => `
             <div class="pending-card" data-id="${e.id}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
                 <div>
@@ -945,16 +935,10 @@ function renderPendingPanel() {
                 </div>
                 <span class="stamp pending">${LEAVE_TYPES[e.leave_type].short}</span>
               </div>
-              ${kind === 'cancel' ? `<div style="font-size:11px; font-weight:600; color:var(--coral); margin-top:8px;">Wants to cancel this leave</div>` : ''}
               ${e.note ? `<div class="muted" style="font-size:12px; margin-top:6px;">${escapeHtml(e.note)}</div>` : ''}
               <div style="display:flex; gap:6px; margin-top:10px;">
-                ${kind === 'cancel' ? `
-                  <button class="btn btn-primary btn-sm approve-cancel-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Confirm cancel</button>
-                  <button class="btn btn-ghost btn-sm decline-cancel-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Keep leave</button>
-                ` : `
-                  <button class="btn btn-primary btn-sm approve-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Approve</button>
-                  <button class="btn btn-ghost btn-sm decline-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Decline</button>
-                `}
+                <button class="btn btn-primary btn-sm approve-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Approve</button>
+                <button class="btn btn-ghost btn-sm decline-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Decline</button>
               </div>
             </div>
           `).join('')}
@@ -975,8 +959,6 @@ function renderPendingPanel() {
 function attachPendingHandlers() {
   document.querySelectorAll('.approve-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.APPROVED)));
   document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.DECLINED)));
-  document.querySelectorAll('.approve-cancel-btn').forEach(b => b.addEventListener('click', () => resolveCancellation(b.dataset.id, true)));
-  document.querySelectorAll('.decline-cancel-btn').forEach(b => b.addEventListener('click', () => resolveCancellation(b.dataset.id, false)));
 }
 
 async function decideRequest(id, decision) {
@@ -989,26 +971,13 @@ async function decideRequest(id, decision) {
   renderDashboard();
 }
 
-async function resolveCancellation(id, confirmCancel) {
-  if (!isAdmin()) { showToast('Only admins can resolve cancellation requests.', true); return; }
-  const updates = confirmCancel
-    ? { status: STATUS.DECLINED, cancel_requested: false } // declined = no longer counted against credits
-    : { cancel_requested: false }; // keep original status, just clear the flag
-  const { error } = await sb.from('leave_entries').update(updates).eq('id', id);
-  if (error) { showToast('Could not update the request.', true); return; }
-  showToast(confirmCancel ? 'Leave cancelled.' : 'Leave kept as-is.');
-  await loadLeaveEntries();
-  renderLeaveTracker();
-  renderDashboard();
-}
-
 // ---- Credit balance table --------------------------------------------
 
 function renderCreditTableCard() {
   const admin = isAdmin();
   const rows = state.employees
     .filter(e => e.active !== false)
-    .sort((a,b) => a.display_name.localeCompare(b.display_name))
+    .sort(byKristinaFirstThenName)
     .map(emp => {
       const vl = getVLBalance(emp);
       const sl = getSLBalance(emp);
@@ -1041,10 +1010,19 @@ function renderCreditTableCard() {
     }).join('');
 
   return `
-    <div class="card" style="padding:20px; overflow-y:auto;">
+    <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Credit balances</h3>
       ${admin ? `<p class="faint" style="font-size:11px; margin:0 0 10px;">Click a number to correct it. Saves on Enter or when you click away.</p>` : ''}
-      ${rows || '<p class="muted">No employees yet.</p>'}
+      <div class="credit-scroll">
+        ${rows || '<p class="muted">No employees yet.</p>'}
+      </div>
+      <style>
+        .credit-scroll{
+          max-height: 256px; /* roughly 6 rows */
+          overflow-y:auto;
+          padding-right:4px;
+        }
+      </style>
     </div>
   `;
 }
@@ -1102,6 +1080,7 @@ async function saveCreditEdit(input) {
 function openRequestModal() {
   const empOptions = state.employees
     .filter(e => e.active !== false)
+    .sort(byKristinaFirstThenName)
     .map(e => `<option value="${e.id}">${escapeHtml(e.display_name)}</option>`).join('');
   const typeOptions = Object.entries(LEAVE_TYPES)
     .filter(([k]) => !['LNP','HLNP'].includes(k))
@@ -1270,6 +1249,16 @@ function closeModal() {
 function employeeName(id) {
   const emp = state.employees.find(e => e.id === id);
   return emp ? emp.display_name : 'Unknown';
+}
+
+// Kristina is the manager and should always appear first; everyone else
+// sorts alphabetically by display name.
+function byKristinaFirstThenName(a, b) {
+  const aIsKristina = a.display_name === 'Kristina Mutia';
+  const bIsKristina = b.display_name === 'Kristina Mutia';
+  if (aIsKristina && !bIsKristina) return -1;
+  if (bIsKristina && !aIsKristina) return 1;
+  return a.display_name.localeCompare(b.display_name);
 }
 
 function isoDate(d) {
