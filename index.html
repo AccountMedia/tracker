@@ -468,6 +468,7 @@ const state = {
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
+  editingCreditId: null,  // employee id currently being edited in Credit Balances, or null
 };
 
 // =====================================================================
@@ -553,6 +554,7 @@ function checkExistingSession() {
 function logout() {
   sessionStorage.removeItem('registry_profile');
   state.profile = null;
+  state.editingCreditId = null;
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -981,29 +983,35 @@ function renderCreditTableCard() {
     .map(emp => {
       const vl = getVLBalance(emp);
       const sl = getSLBalance(emp);
-      if (admin) {
+      const isEditing = admin && state.editingCreditId === emp.id;
+
+      if (isEditing) {
         return `
-          <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px;">
+          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px;">
             <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
-            <span style="display:flex; gap:6px; flex-shrink:0;">
+            <span style="display:flex; gap:6px; flex-shrink:0; align-items:center;">
               <span title="Vacation credits" style="display:flex; align-items:center; gap:3px;">
                 <span class="faint" style="font-size:10.5px;">VL</span>
-                <input type="number" step="0.125" class="credit-input vl-input" data-emp-id="${emp.id}" value="${vl}" style="width:50px; padding:2px 4px; border:1px solid var(--line); border-radius:4px; font-size:12px; text-align:right;">
+                <input type="text" inputmode="decimal" class="credit-input vl-input" data-emp-id="${emp.id}" value="${vl}" style="width:48px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;">
               </span>
               <span title="Sick credits" style="display:flex; align-items:center; gap:3px;">
                 <span class="faint" style="font-size:10.5px;">SL</span>
-                <input type="number" step="0.125" class="credit-input sl-input" data-emp-id="${emp.id}" value="${sl}" style="width:50px; padding:2px 4px; border:1px solid var(--line); border-radius:4px; font-size:12px; text-align:right;">
+                <input type="text" inputmode="decimal" class="credit-input sl-input" data-emp-id="${emp.id}" value="${sl}" style="width:48px; padding:2px 4px; border:1px solid var(--gold-line); border-radius:4px; font-size:12px; text-align:right;">
               </span>
+              <button class="btn btn-primary btn-sm save-credit-btn" data-emp-id="${emp.id}" style="padding:3px 9px; font-size:11px;">Save</button>
+              <button class="btn btn-ghost btn-sm cancel-credit-btn" style="padding:3px 9px; font-size:11px;">✕</button>
             </span>
           </div>
         `;
       }
+
       return `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
-          <span>${escapeHtml(emp.display_name)}</span>
-          <span style="display:flex; gap:10px;">
+        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px;">
+          <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
+          <span style="display:flex; gap:10px; align-items:center; flex-shrink:0;">
             <span class="faint" title="Vacation credits">VL ${vl}</span>
             <span class="faint" title="Sick credits">SL ${sl}</span>
+            ${admin ? `<button class="btn btn-ghost btn-sm edit-credit-btn" data-emp-id="${emp.id}" style="padding:3px 9px; font-size:11px;">Edit</button>` : ''}
           </span>
         </div>
       `;
@@ -1012,7 +1020,7 @@ function renderCreditTableCard() {
   return `
     <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Credit balances</h3>
-      ${admin ? `<p class="faint" style="font-size:11px; margin:0 0 10px;">Click a number to correct it. Saves on Enter or when you click away.</p>` : ''}
+      ${admin ? `<p class="faint" style="font-size:11px; margin:0 0 10px;">Click "Edit" to correct a balance.</p>` : ''}
       <div class="credit-scroll">
         ${rows || '<p class="muted">No employees yet.</p>'}
       </div>
@@ -1022,53 +1030,80 @@ function renderCreditTableCard() {
           overflow-y:auto;
           padding-right:4px;
         }
+        /* Remove native number spinner arrows everywhere, belt-and-suspenders
+           since credit inputs use type="text" anyway. */
+        input[type=number]::-webkit-outer-spin-button,
+        input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:0; }
+        input[type=number]{ -moz-appearance: textfield; }
       </style>
     </div>
   `;
 }
 
 function attachCreditEditHandlers() {
-  document.querySelectorAll('.credit-input').forEach(input => {
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+  document.querySelectorAll('.edit-credit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.editingCreditId = btn.dataset.empId;
+      renderLeaveTracker();
     });
-    input.addEventListener('blur', () => saveCreditEdit(input));
+  });
+  document.querySelectorAll('.cancel-credit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.editingCreditId = null;
+      renderLeaveTracker();
+    });
+  });
+  document.querySelectorAll('.save-credit-btn').forEach(btn => {
+    btn.addEventListener('click', () => saveCreditEdit(btn.dataset.empId));
+  });
+  // Allow Enter inside either field to trigger save, Escape to cancel.
+  document.querySelectorAll('.credit-row-editing .credit-input').forEach(input => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveCreditEdit(input.dataset.empId); }
+      if (e.key === 'Escape') { e.preventDefault(); state.editingCreditId = null; renderLeaveTracker(); }
+    });
   });
 }
 
-async function saveCreditEdit(input) {
+async function saveCreditEdit(empId) {
   if (!isAdmin()) return;
-  const empId = input.dataset.empId;
   const employee = state.employees.find(e => e.id === empId);
   if (!employee) return;
 
-  const newValue = parseFloat(input.value);
-  if (isNaN(newValue) || newValue < 0) {
-    showToast('Enter a valid, non-negative number.', true);
-    input.value = input.classList.contains('vl-input') ? getVLBalance(employee) : getSLBalance(employee);
+  const row = document.querySelector(`.credit-row-editing[data-emp-id="${empId}"]`);
+  if (!row) return;
+  const vlInput = row.querySelector('.vl-input');
+  const slInput = row.querySelector('.sl-input');
+
+  const newVL = parseFloat(vlInput.value);
+  const newSL = parseFloat(slInput.value);
+
+  if (isNaN(newVL) || newVL < 0 || isNaN(newSL) || newSL < 0) {
+    showToast('Enter valid, non-negative numbers for both VL and SL.', true);
     return;
   }
 
-  const isVL = input.classList.contains('vl-input');
-  const currentDisplayed = isVL ? getVLBalance(employee) : getSLBalance(employee);
-  if (newValue === currentDisplayed) return; // no change, skip the write
+  const currentVL = getVLBalance(employee);
+  const currentSL = getSLBalance(employee);
+  if (newVL === currentVL && newSL === currentSL) {
+    state.editingCreditId = null;
+    renderLeaveTracker();
+    return; // no change, skip the write
+  }
 
-  // Editing the displayed (derived) number: re-baseline the stored snapshot
-  // to today so the new figure is exactly right going forward.
-  const today = isoDate(new Date());
-  const updates = { balance_as_of_date: today };
-  if (isVL) updates.vl_balance = newValue;
-  else updates.sl_balance = newValue;
-
-  // Carry the other balance's current displayed value forward too, since
-  // we're moving the snapshot date for this employee to today.
-  if (isVL) updates.sl_balance = getSLBalance(employee);
-  else updates.vl_balance = getVLBalance(employee);
+  // Re-baseline the stored snapshot to today so both new figures are exactly
+  // right going forward.
+  const updates = {
+    balance_as_of_date: isoDate(new Date()),
+    vl_balance: newVL,
+    sl_balance: newSL,
+  };
 
   const { error } = await sb.from('employees').update(updates).eq('id', empId);
   if (error) { showToast('Could not save the new balance.', true); return; }
 
   showToast('Credit balance updated.');
+  state.editingCreditId = null;
   await loadEmployees();
   renderLeaveTracker();
 }
