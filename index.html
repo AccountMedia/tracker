@@ -371,7 +371,8 @@
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
-      <div style="margin-top:10px;">
+      <div style="margin-top:10px; display:flex; gap:10px;">
+        <a href="#" id="change-password-link" style="color:#C9D6D2; text-decoration:underline; font-size:11.5px;">Change password</a>
         <a href="#" id="logout-link" style="color:#C9D6D2; text-decoration:underline; font-size:11.5px;">Sign out</a>
       </div>
     </div>
@@ -418,7 +419,7 @@
 
 // ---- Supabase config -------------------------------------------------
 // Replace these with your new Supabase project's values (Project Settings -> API)
-const SUPABASE_URL = 'https://hfndceismzgkmceotlus.supabase.co/rest/v1/';
+const SUPABASE_URL = 'https://hfndceismzgkmceotlus.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbmRjZWlzbXpna21jZW90bHVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0NjYzMTcsImV4cCI6MjA5ODA0MjMxN30.KeCuo8UABVODtoV_TP9BYetOeyYwd9kswKwWN-jtBSU';
 
 let sb = null;
@@ -525,6 +526,10 @@ async function verifyPassword(plain, hash) {
   return hex === hash;
 }
 
+function isAdmin() {
+  return !!state.profile && state.profile.role === 'admin';
+}
+
 function enterApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
@@ -562,6 +567,10 @@ function initNav() {
   document.getElementById('logout-link').addEventListener('click', (e) => {
     e.preventDefault();
     logout();
+  });
+  document.getElementById('change-password-link').addEventListener('click', (e) => {
+    e.preventDefault();
+    openChangePasswordModal();
   });
   switchView('dashboard');
 }
@@ -712,17 +721,46 @@ function renderLeaveTracker() {
         ${renderCalendarCard()}
       </div>
       <div style="display:flex; flex-direction:column; gap:18px;">
-        ${renderPendingPanel()}
+        ${isAdmin() ? renderPendingPanel() : renderMyRequestsPanel()}
         ${renderCreditTableCard()}
       </div>
     </div>
   `;
 
   attachCalendarHandlers();
-  attachPendingHandlers();
+  if (isAdmin()) attachPendingHandlers();
 }
 
-// ---- Calendar -----------------------------------------------------------
+// ---- My requests (staff view) ----------------------------------------
+
+function renderMyRequestsPanel() {
+  const myEntries = state.leaveEntries
+    .filter(e => e.employee_id === state.profile.employee_id)
+    .sort((a,b) => b.leave_date.localeCompare(a.leave_date))
+    .slice(0, 10);
+
+  return `
+    <div class="card" style="padding:20px;">
+      <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">My recent requests</h3>
+      ${myEntries.length ? `
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          ${myEntries.map(e => `
+            <div style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                <div>
+                  <div class="faint" style="font-size:11.5px;">${formatPrettyDate(e.leave_date)}</div>
+                  ${e.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(e.note)}</div>` : ''}
+                </div>
+                <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
+              </div>
+              <div class="faint" style="font-size:11px; text-transform:capitalize; margin-top:8px;">${e.status}</div>
+            </div>
+          `).join('')}
+        </div>
+      ` : `<p class="muted" style="margin:0; font-size:13px;">You haven't requested any leave yet.</p>`}
+    </div>
+  `;
+}
 
 function renderCalendarCard() {
   const year = state.calendarYear;
@@ -875,6 +913,7 @@ function attachPendingHandlers() {
 }
 
 async function decideRequest(id, decision) {
+  if (!isAdmin()) { showToast('Only admins can approve or decline requests.', true); return; }
   const { error } = await sb.from('leave_entries').update({ status: decision }).eq('id', id);
   if (error) { showToast('Could not update the request.', true); return; }
   showToast(decision === STATUS.APPROVED ? 'Leave approved.' : 'Leave declined.');
@@ -923,14 +962,23 @@ function openRequestModal() {
     .filter(([k]) => !['LNP','HLNP'].includes(k))
     .map(([k,v]) => `<option value="${k}">${v.label}</option>`).join('');
 
-  const formHtml = `
-    <form id="request-form" style="display:flex; flex-direction:column; gap:14px;">
+  const employeeFieldHtml = isAdmin() ? `
       <div class="field">
         <label for="req-employee">Employee</label>
         <select id="req-employee" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
           ${empOptions}
         </select>
       </div>
+  ` : `
+      <div class="field">
+        <label>Employee</label>
+        <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line); background:var(--line-soft); font-weight:600;">${escapeHtml(state.profile.display_name)}</div>
+      </div>
+  `;
+
+  const formHtml = `
+    <form id="request-form" style="display:flex; flex-direction:column; gap:14px;">
+      ${employeeFieldHtml}
       <div class="field">
         <label for="req-type">Leave type</label>
         <select id="req-type" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
@@ -955,10 +1003,13 @@ function openRequestModal() {
 
 async function submitLeaveRequest(e) {
   e.preventDefault();
-  const employee_id = document.getElementById('req-employee').value;
+  const employeeSelect = document.getElementById('req-employee');
+  const employee_id = employeeSelect ? employeeSelect.value : state.profile.employee_id;
   const leave_type = document.getElementById('req-type').value;
   const leave_date = document.getElementById('req-date').value;
   const note = document.getElementById('req-note').value.trim();
+
+  if (!employee_id) { showToast('Your account is not linked to an employee record yet.', true); return; }
 
   const { error } = await sb.from('leave_entries').insert({
     employee_id, leave_type, leave_date, note,
@@ -972,6 +1023,65 @@ async function submitLeaveRequest(e) {
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
+}
+
+// =====================================================================
+// CHANGE PASSWORD
+// =====================================================================
+
+function openChangePasswordModal() {
+  const formHtml = `
+    <form id="change-password-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="cp-current">Current password</label>
+        <input type="password" id="cp-current" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="cp-new">New password</label>
+        <input type="password" id="cp-new" required minlength="4" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="cp-confirm">Confirm new password</label>
+        <input type="password" id="cp-confirm" required minlength="4" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="login-error" id="cp-error"></div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Update password</button>
+    </form>
+  `;
+  openModal('Change password', formHtml);
+  document.getElementById('change-password-form').addEventListener('submit', submitChangePassword);
+}
+
+async function submitChangePassword(e) {
+  e.preventDefault();
+  const current = document.getElementById('cp-current').value;
+  const next = document.getElementById('cp-new').value;
+  const confirm = document.getElementById('cp-confirm').value;
+  const errorBox = document.getElementById('cp-error');
+  errorBox.style.display = 'none';
+
+  try {
+    const currentOk = await verifyPassword(current, state.profile.password_hash);
+    if (!currentOk) throw new Error('Current password is incorrect.');
+    if (next !== confirm) throw new Error('New passwords do not match.');
+    if (next.length < 4) throw new Error('New password is too short.');
+
+    const enc = new TextEncoder().encode(next);
+    const buf = await crypto.subtle.digest('SHA-256', enc);
+    const newHash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    const { error } = await sb.from('app_users').update({ password_hash: newHash }).eq('id', state.profile.id);
+    if (error) throw new Error('Could not save the new password. Please try again.');
+
+    state.profile.password_hash = newHash;
+    sessionStorage.setItem('registry_profile', JSON.stringify(state.profile));
+
+    closeModal();
+    showToast('Password updated.');
+  } catch (err) {
+    errorBox.textContent = err.message || 'Something went wrong.';
+    errorBox.style.display = 'block';
+  }
 }
 
 // =====================================================================
