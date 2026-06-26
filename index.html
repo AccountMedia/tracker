@@ -716,8 +716,13 @@ function dashboardStatCard(label, value, sub, accentCls) {
 
 function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
-  actionsEl.innerHTML = `<button class="btn btn-primary" id="btn-new-request">+ Request leave</button>`;
+  actionsEl.innerHTML = `
+    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report" style="margin-right:8px;">Download monthly report</button>` : ''}
+    <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
+  `;
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
+  const reportBtn = document.getElementById('btn-download-report');
+  if (reportBtn) reportBtn.addEventListener('click', downloadMonthlyReport);
 
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
@@ -903,6 +908,70 @@ function shiftMonth(delta) {
   state.calendarMonth = m;
   state.calendarYear = y;
   renderLeaveTracker();
+}
+
+// ---- Monthly report export -------------------------------------------
+
+function downloadMonthlyReport() {
+  const year = state.calendarYear;
+  const month = state.calendarMonth;
+  const monthStart = isoDate(new Date(year, month, 1));
+  const monthEnd = isoDate(new Date(year, month + 1, 0));
+
+  const entries = state.leaveEntries
+    .filter(e => e.leave_date >= monthStart && e.leave_date <= monthEnd)
+    .slice()
+    .sort((a, b) => {
+      const dateCompare = a.leave_date.localeCompare(b.leave_date);
+      if (dateCompare !== 0) return dateCompare;
+      return employeeName(a.employee_id).localeCompare(employeeName(b.employee_id));
+    });
+
+  if (!entries.length) {
+    showToast('No leave recorded for this month.', true);
+    return;
+  }
+
+  const header = ['Date', 'Employee', 'Leave Type', 'Status', 'Note'];
+  const csvRows = [header];
+
+  entries.forEach(e => {
+    csvRows.push([
+      formatPrettyDate(e.leave_date),
+      employeeName(e.employee_id),
+      LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type,
+      capitalize(e.status),
+      e.note || '',
+    ]);
+  });
+
+  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const filename = `Leave Report - ${MONTH_NAMES[month]} ${year}.csv`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  showToast('Report downloaded.');
+}
+
+function csvEscape(value) {
+  const str = String(value ?? '');
+  if (/[",\r\n]/.test(str)) {
+    return '"' + str.replace(/"/g, '""') + '"';
+  }
+  return str;
+}
+
+function capitalize(str) {
+  if (!str) return '';
+  return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
 function openDayPanel(dateIso) {
