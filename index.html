@@ -662,7 +662,7 @@ function renderDashboard() {
 
   const today = isoDate(new Date());
   const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED);
-  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
+  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING || (e.cancel_requested && e.status !== STATUS.DECLINED));
 
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; margin-bottom:28px;">
@@ -720,19 +720,31 @@ function renderLeaveTracker() {
   }
 
   el.innerHTML = `
-    <div style="display:grid; grid-template-columns: 1fr 320px; gap:24px; align-items:start;">
-      <div>
+    <div class="tracker-grid">
+      <div class="tracker-col-main">
         ${renderCalendarCard()}
       </div>
-      <div style="display:flex; flex-direction:column; gap:18px;">
+      <div class="tracker-col-side">
         ${isAdmin() ? renderPendingPanel() : renderMyRequestsPanel()}
         ${renderCreditTableCard()}
       </div>
     </div>
+    <style>
+      .tracker-grid{ display:flex; gap:24px; align-items:stretch; }
+      .tracker-col-main{ flex: 1; min-width:0; display:flex; }
+      .tracker-col-main > *{ width:100%; }
+      .tracker-col-side{ width:340px; flex-shrink:0; display:flex; flex-direction:column; gap:18px; }
+      .tracker-col-side > .card:last-child{ flex:1; min-height:0; }
+    </style>
   `;
 
   attachCalendarHandlers();
-  if (isAdmin()) attachPendingHandlers();
+  if (isAdmin()) {
+    attachPendingHandlers();
+  } else {
+    attachMyRequestsHandlers();
+  }
+  attachCreditEditHandlers();
 }
 
 // ---- My requests (staff view) ----------------------------------------
@@ -757,13 +769,39 @@ function renderMyRequestsPanel() {
                 </div>
                 <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
               </div>
-              <div class="faint" style="font-size:11px; text-transform:capitalize; margin-top:8px;">${e.status}</div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
+                <div class="faint" style="font-size:11px; text-transform:capitalize;">
+                  ${e.cancel_requested ? 'Cancellation requested' : e.status}
+                </div>
+                ${canRequestCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-request-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px;">Request to cancel</button>` : ''}
+              </div>
             </div>
           `).join('')}
         </div>
       ` : `<p class="muted" style="margin:0; font-size:13px;">You haven't requested any leave yet.</p>`}
     </div>
   `;
+}
+
+function canRequestCancel(entry) {
+  return !entry.cancel_requested
+    && (entry.status === STATUS.PENDING || entry.status === STATUS.APPROVED)
+    && entry.leave_date >= isoDate(new Date());
+}
+
+function attachMyRequestsHandlers() {
+  document.querySelectorAll('.cancel-request-btn').forEach(b => {
+    b.addEventListener('click', () => requestCancellation(b.dataset.id));
+  });
+}
+
+async function requestCancellation(id) {
+  const { error } = await sb.from('leave_entries').update({ cancel_requested: true }).eq('id', id);
+  if (error) { showToast('Could not submit the cancellation request.', true); return; }
+  showToast('Cancellation requested — waiting on admin review.');
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
 }
 
 function renderCalendarCard() {
@@ -805,14 +843,14 @@ function renderCalendarCard() {
   });
 
   return `
-    <div class="card" style="padding:22px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+    <div class="card calendar-card" style="padding:26px; display:flex; flex-direction:column;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:10px;">
         <div style="display:flex; align-items:center; gap:12px;">
           <button class="btn btn-ghost btn-sm" id="cal-prev">←</button>
-          <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:170px; text-align:center;">${MONTH_NAMES[month]} ${year}</h3>
+          <h3 style="margin:0; font-family:var(--font-display); font-size:20px; color:var(--teal); min-width:190px; text-align:center;">${MONTH_NAMES[month]} ${year}</h3>
           <button class="btn btn-ghost btn-sm" id="cal-next">→</button>
         </div>
-        <div style="display:flex; gap:14px; font-size:11.5px;" class="muted">
+        <div style="display:flex; gap:14px; font-size:12px;" class="muted">
           <span><span class="dot-mark vl" style="margin-right:5px;"></span>Vacation</span>
           <span><span class="dot-mark sl" style="margin-right:5px;"></span>Sick</span>
           <span><span class="dot-mark el" style="margin-right:5px;"></span>Emergency</span>
@@ -827,16 +865,17 @@ function renderCalendarCard() {
       </div>
     </div>
     <style>
-      .cal-weekdays{ display:grid; grid-template-columns: repeat(7,1fr); margin-bottom:6px; }
-      .cal-weekday{ text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); letter-spacing:0.06em; text-transform:uppercase; padding-bottom:6px; }
-      .cal-grid{ display:grid; grid-template-columns: repeat(7,1fr); gap:6px; }
-      .cal-cell{ min-height:74px; border-radius:8px; padding:7px; background:var(--paper); border:1px solid var(--line-soft); cursor:pointer; transition: background 0.12s ease; }
+      .calendar-card{ height:100%; }
+      .cal-weekdays{ display:grid; grid-template-columns: repeat(7,1fr); margin-bottom:8px; }
+      .cal-weekday{ text-align:center; font-size:12px; font-weight:600; color:var(--ink-faint); letter-spacing:0.06em; text-transform:uppercase; padding-bottom:8px; }
+      .cal-grid{ display:grid; grid-template-columns: repeat(7,1fr); grid-auto-rows: 1fr; gap:8px; flex:1; }
+      .cal-cell{ min-height:96px; border-radius:10px; padding:10px; background:var(--paper); border:1px solid var(--line-soft); cursor:pointer; transition: background 0.12s ease; display:flex; flex-direction:column; }
       .cal-cell:hover{ background: var(--teal-wash); }
       .cal-cell-empty{ background:transparent; border:none; cursor:default; }
       .cal-cell-weekend{ background: #F3EFE4; }
       .cal-cell-today{ border-color: var(--gold-line); border-width:1.5px; }
-      .cal-daynum{ font-size:12px; font-weight:600; color:var(--ink-soft); margin-bottom:6px; }
-      .cal-marks{ display:flex; flex-wrap:wrap; gap:3px; align-items:center; }
+      .cal-daynum{ font-size:13.5px; font-weight:600; color:var(--ink-soft); margin-bottom:8px; }
+      .cal-marks{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
     </style>
   `;
 }
@@ -870,7 +909,7 @@ function openDayPanel(dateIso) {
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}</div>
       </div>
-      <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
+      <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.cancel_requested ? 'Cancel requested' : e.status}</span>
     </div>
   `).join('') : `<p class="muted">No leave logged for this day.</p>`;
 
@@ -880,16 +919,24 @@ function openDayPanel(dateIso) {
 // ---- Pending panel --------------------------------------------------
 
 function renderPendingPanel() {
-  const pending = state.leaveEntries
-    .filter(e => e.status === STATUS.PENDING)
-    .sort((a,b) => a.leave_date.localeCompare(b.leave_date));
+  const newRequests = state.leaveEntries
+    .filter(e => e.status === STATUS.PENDING && !e.cancel_requested)
+    .sort((a,b) => a.leave_date.localeCompare(b.leave_date))
+    .map(e => ({ entry: e, kind: 'new' }));
+
+  const cancelRequests = state.leaveEntries
+    .filter(e => e.cancel_requested && e.status !== STATUS.DECLINED)
+    .sort((a,b) => a.leave_date.localeCompare(b.leave_date))
+    .map(e => ({ entry: e, kind: 'cancel' }));
+
+  const queue = [...cancelRequests, ...newRequests];
 
   return `
-    <div class="card" style="padding:20px;">
+    <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Pending requests</h3>
-      ${pending.length ? `
-        <div style="display:flex; flex-direction:column; gap:10px;">
-          ${pending.map(e => `
+      ${queue.length ? `
+        <div class="pending-scroll">
+          ${queue.map(({entry: e, kind}) => `
             <div class="pending-card" data-id="${e.id}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
                 <div>
@@ -898,14 +945,28 @@ function renderPendingPanel() {
                 </div>
                 <span class="stamp pending">${LEAVE_TYPES[e.leave_type].short}</span>
               </div>
-              ${e.note ? `<div class="muted" style="font-size:12px; margin-top:8px;">${escapeHtml(e.note)}</div>` : ''}
+              ${kind === 'cancel' ? `<div style="font-size:11px; font-weight:600; color:var(--coral); margin-top:8px;">Wants to cancel this leave</div>` : ''}
+              ${e.note ? `<div class="muted" style="font-size:12px; margin-top:6px;">${escapeHtml(e.note)}</div>` : ''}
               <div style="display:flex; gap:6px; margin-top:10px;">
-                <button class="btn btn-primary btn-sm approve-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Approve</button>
-                <button class="btn btn-ghost btn-sm decline-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Decline</button>
+                ${kind === 'cancel' ? `
+                  <button class="btn btn-primary btn-sm approve-cancel-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Confirm cancel</button>
+                  <button class="btn btn-ghost btn-sm decline-cancel-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Keep leave</button>
+                ` : `
+                  <button class="btn btn-primary btn-sm approve-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Approve</button>
+                  <button class="btn btn-ghost btn-sm decline-btn" data-id="${e.id}" style="flex:1; justify-content:center;">Decline</button>
+                `}
               </div>
             </div>
           `).join('')}
         </div>
+        <style>
+          .pending-scroll{
+            display:flex; flex-direction:column; gap:10px;
+            max-height: 280px; /* roughly 3 cards */
+            overflow-y:auto;
+            padding-right:4px;
+          }
+        </style>
       ` : `<p class="muted" style="margin:0; font-size:13px;">Nothing waiting on review.</p>`}
     </div>
   `;
@@ -914,6 +975,8 @@ function renderPendingPanel() {
 function attachPendingHandlers() {
   document.querySelectorAll('.approve-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.APPROVED)));
   document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.DECLINED)));
+  document.querySelectorAll('.approve-cancel-btn').forEach(b => b.addEventListener('click', () => resolveCancellation(b.dataset.id, true)));
+  document.querySelectorAll('.decline-cancel-btn').forEach(b => b.addEventListener('click', () => resolveCancellation(b.dataset.id, false)));
 }
 
 async function decideRequest(id, decision) {
@@ -926,15 +989,46 @@ async function decideRequest(id, decision) {
   renderDashboard();
 }
 
+async function resolveCancellation(id, confirmCancel) {
+  if (!isAdmin()) { showToast('Only admins can resolve cancellation requests.', true); return; }
+  const updates = confirmCancel
+    ? { status: STATUS.DECLINED, cancel_requested: false } // declined = no longer counted against credits
+    : { cancel_requested: false }; // keep original status, just clear the flag
+  const { error } = await sb.from('leave_entries').update(updates).eq('id', id);
+  if (error) { showToast('Could not update the request.', true); return; }
+  showToast(confirmCancel ? 'Leave cancelled.' : 'Leave kept as-is.');
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
+}
+
 // ---- Credit balance table --------------------------------------------
 
 function renderCreditTableCard() {
+  const admin = isAdmin();
   const rows = state.employees
     .filter(e => e.active !== false)
     .sort((a,b) => a.display_name.localeCompare(b.display_name))
     .map(emp => {
       const vl = getVLBalance(emp);
       const sl = getSLBalance(emp);
+      if (admin) {
+        return `
+          <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px;">
+            <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
+            <span style="display:flex; gap:6px; flex-shrink:0;">
+              <span title="Vacation credits" style="display:flex; align-items:center; gap:3px;">
+                <span class="faint" style="font-size:10.5px;">VL</span>
+                <input type="number" step="0.125" class="credit-input vl-input" data-emp-id="${emp.id}" value="${vl}" style="width:50px; padding:2px 4px; border:1px solid var(--line); border-radius:4px; font-size:12px; text-align:right;">
+              </span>
+              <span title="Sick credits" style="display:flex; align-items:center; gap:3px;">
+                <span class="faint" style="font-size:10.5px;">SL</span>
+                <input type="number" step="0.125" class="credit-input sl-input" data-emp-id="${emp.id}" value="${sl}" style="width:50px; padding:2px 4px; border:1px solid var(--line); border-radius:4px; font-size:12px; text-align:right;">
+              </span>
+            </span>
+          </div>
+        `;
+      }
       return `
         <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
           <span>${escapeHtml(emp.display_name)}</span>
@@ -947,11 +1041,58 @@ function renderCreditTableCard() {
     }).join('');
 
   return `
-    <div class="card" style="padding:20px; max-height:420px; overflow-y:auto;">
-      <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Credit balances</h3>
+    <div class="card" style="padding:20px; overflow-y:auto;">
+      <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Credit balances</h3>
+      ${admin ? `<p class="faint" style="font-size:11px; margin:0 0 10px;">Click a number to correct it. Saves on Enter or when you click away.</p>` : ''}
       ${rows || '<p class="muted">No employees yet.</p>'}
     </div>
   `;
+}
+
+function attachCreditEditHandlers() {
+  document.querySelectorAll('.credit-input').forEach(input => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    });
+    input.addEventListener('blur', () => saveCreditEdit(input));
+  });
+}
+
+async function saveCreditEdit(input) {
+  if (!isAdmin()) return;
+  const empId = input.dataset.empId;
+  const employee = state.employees.find(e => e.id === empId);
+  if (!employee) return;
+
+  const newValue = parseFloat(input.value);
+  if (isNaN(newValue) || newValue < 0) {
+    showToast('Enter a valid, non-negative number.', true);
+    input.value = input.classList.contains('vl-input') ? getVLBalance(employee) : getSLBalance(employee);
+    return;
+  }
+
+  const isVL = input.classList.contains('vl-input');
+  const currentDisplayed = isVL ? getVLBalance(employee) : getSLBalance(employee);
+  if (newValue === currentDisplayed) return; // no change, skip the write
+
+  // Editing the displayed (derived) number: re-baseline the stored snapshot
+  // to today so the new figure is exactly right going forward.
+  const today = isoDate(new Date());
+  const updates = { balance_as_of_date: today };
+  if (isVL) updates.vl_balance = newValue;
+  else updates.sl_balance = newValue;
+
+  // Carry the other balance's current displayed value forward too, since
+  // we're moving the snapshot date for this employee to today.
+  if (isVL) updates.sl_balance = getSLBalance(employee);
+  else updates.vl_balance = getVLBalance(employee);
+
+  const { error } = await sb.from('employees').update(updates).eq('id', empId);
+  if (error) { showToast('Could not save the new balance.', true); return; }
+
+  showToast('Credit balance updated.');
+  await loadEmployees();
+  renderLeaveTracker();
 }
 
 // =====================================================================
