@@ -1047,13 +1047,22 @@ function openDayPanel(dateIso) {
   const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status !== STATUS.DECLINED);
   const admin = isAdmin();
   const body = dayEntries.length ? dayEntries.map(e => {
-    const groupSize = e.request_group_id ? state.leaveEntries.filter(g => g.request_group_id === e.request_group_id).length : 1;
+    let groupSuffix = '';
+    if (e.request_group_id) {
+      const groupDates = state.leaveEntries
+        .filter(g => g.request_group_id === e.request_group_id && g.status !== STATUS.DECLINED)
+        .map(g => g.leave_date)
+        .sort();
+      if (groupDates.length > 1) {
+        groupSuffix = ` · ${formatDateRange(groupDates[0], groupDates[groupDates.length - 1])}`;
+      }
+    }
     return `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
       <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
       <div style="flex:1;">
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
-        <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSize > 1 ? ` · part of a ${groupSize}-day request` : ''}</div>
+        <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSuffix}</div>
       </div>
       <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
       ${admin && canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px; margin-left:8px;">Cancel</button>` : ''}
