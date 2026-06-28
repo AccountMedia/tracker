@@ -850,14 +850,13 @@ function renderDashboard() {
   }).length;
   const rosterCount = payrollRoster.length;
 
-  // Restricted LinkedIn accounts: for each employee, look at their most
-  // recent restriction log entry (by date) and check whether it's still
-  // "Restricted" right now per the same logic the LI Restriction tab uses.
+  // Restricted LinkedIn accounts: count anyone who currently has at
+  // least one restriction entry that hasn't been lifted yet — not just
+  // their most recent entry, since an older incident could still be
+  // unresolved even if a newer, separate one has already been lifted.
   const restrictedCount = state.employees.filter(emp => {
     const empEntries = state.liRestrictionEntries.filter(e => e.employee_id === emp.id);
-    if (!empEntries.length) return false;
-    const latest = empEntries.slice().sort((a, b) => b.entry_date.localeCompare(a.entry_date))[0];
-    return getLiEntryStatus(latest) === 'Restricted';
+    return empEntries.some(entry => getLiEntryStatus(entry) === 'Restricted');
   }).length;
 
   // OT participation for the most recent open filing date: how many
@@ -2045,25 +2044,32 @@ function renderPrioList() {
     return { entry, emp };
   }).filter(r => r.emp);
 
-  // Only Active/Break employees take part in the priority sort; Inactive
-  // (or anyone with no status set yet) is pinned below them, in rank order.
-  const ranked = rows.filter(r => r.entry.status === 'Active' || r.entry.status === 'Break');
-  const unranked = rows.filter(r => !(r.entry.status === 'Active' || r.entry.status === 'Break'));
+  // Two distinct states:
+  //   1. Every single status is still blank -> show everyone in plain
+  //      reversed rank order (rank 32 at the top, rank 1 at the bottom).
+  //   2. As soon as any status has been set -> only Active/Break
+  //      employees take part in the priority sort (by Total output,
+  //      lowest first); everyone else (Inactive, or still blank) is
+  //      pinned below them, in rank order.
+  const allStatusesBlank = rows.every(r => !r.entry.status);
 
-  const anyOutput = ranked.some(r => Number(r.entry.md_output) + Number(r.entry.leads) > 0);
+  let orderedRows;
+  if (allStatusesBlank) {
+    orderedRows = rows.slice().sort((a, b) => b.entry.rank - a.entry.rank);
+  } else {
+    const ranked = rows.filter(r => r.entry.status === 'Active' || r.entry.status === 'Break');
+    const unranked = rows.filter(r => !(r.entry.status === 'Active' || r.entry.status === 'Break'));
 
-  ranked.sort((a, b) => {
-    if (anyOutput) {
+    ranked.sort((a, b) => {
       const totalA = Number(a.entry.md_output) + Number(a.entry.leads);
       const totalB = Number(b.entry.md_output) + Number(b.entry.leads);
       if (totalA !== totalB) return totalA - totalB; // lowest output first
       return a.entry.rank - b.entry.rank;
-    }
-    return b.entry.rank - a.entry.rank; // initial state, no data yet: highest rank number first (rank 1 at the bottom)
-  });
-  unranked.sort((a, b) => a.entry.rank - b.entry.rank);
+    });
+    unranked.sort((a, b) => a.entry.rank - b.entry.rank);
 
-  const orderedRows = [...ranked, ...unranked];
+    orderedRows = [...ranked, ...unranked];
+  }
 
   const tableRows = orderedRows.map(({ entry, emp }) => {
     const total = round2(Number(entry.md_output) + Number(entry.leads));
