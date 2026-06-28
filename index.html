@@ -2090,8 +2090,12 @@ function renderPrioList() {
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</span>
-        <input type="number" min="0" step="1" class="priolist-input md-input" data-id="${entry.id}" value="${entry.md_output}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-        <input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        ${isMe
+          ? `<input type="number" min="0" step="1" class="priolist-input md-input" data-id="${entry.id}" value="${entry.md_output}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
+          : `<span class="faint">${entry.md_output}</span>`}
+        ${isMe
+          ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
+          : `<span class="faint">${entry.leads}</span>`}
         <span style="font-weight:600;">${total}</span>
         <select class="priolist-input status-input" data-id="${entry.id}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; color:${statusColor}; font-weight:600;">
           <option value="" ${!entry.status ? 'selected' : ''} style="color:var(--ink);">—</option>
@@ -2178,6 +2182,13 @@ function closeAllFileColorMenusOnOutsideClick() {
 }
 
 async function savePriolistOutput(entryId) {
+  const entry = state.priolistEntries.find(e => e.id === entryId);
+  if (!entry || entry.employee_id !== state.profile.employee_id) {
+    showToast('You can only edit your own MD Output and Leads.', true);
+    renderPrioList();
+    return;
+  }
+
   const mdInput = document.querySelector(`.md-input[data-id="${entryId}"]`);
   const leadsInput = document.querySelector(`.leads-input[data-id="${entryId}"]`);
   const md = parseFloat(mdInput.value);
