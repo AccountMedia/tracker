@@ -2579,11 +2579,17 @@ function formatOtDateHeader(isoStr) {
 
 function renderOtFiling() {
   const actionsEl = document.getElementById('ot-filing-actions');
-  actionsEl.innerHTML = isAdmin()
-    ? `<button class="btn btn-ghost" id="ot-manage-dates-btn">Manage dates</button>`
-    : '';
+  actionsEl.innerHTML = isAdmin() ? `
+    <button class="btn btn-ghost" id="ot-download-report-btn" style="margin-right:8px;">Download report</button>
+    <button class="btn btn-ghost" id="ot-reset-btn" style="margin-right:8px; color:var(--coral); border-color:var(--coral-wash);">Reset</button>
+    <button class="btn btn-ghost" id="ot-manage-dates-btn">Manage dates</button>
+  ` : '';
   const manageDatesBtn = document.getElementById('ot-manage-dates-btn');
   if (manageDatesBtn) manageDatesBtn.addEventListener('click', openOtManageDatesModal);
+  const downloadBtn = document.getElementById('ot-download-report-btn');
+  if (downloadBtn) downloadBtn.addEventListener('click', downloadOtFilingReport);
+  const resetBtn = document.getElementById('ot-reset-btn');
+  if (resetBtn) resetBtn.addEventListener('click', resetOtFiling);
 
   const el = document.getElementById('ot-filing-content');
   if (!state.employees.length) {
@@ -2731,6 +2737,96 @@ function renderOtFiling() {
   document.querySelectorAll('.ot-confirm-btn').forEach(btn => {
     btn.addEventListener('click', () => openOtConfirmModal(btn.dataset.empId, btn.dataset.date));
   });
+}
+
+async function resetOtFiling() {
+  if (!isAdmin()) { showToast('Only admins can reset OT Hours Filing.', true); return; }
+  if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) will be cleared for everyone. The open filing dates themselves will stay. This cannot be undone.')) return;
+
+  const { error } = await sb
+    .from('ot_hours_entries')
+    .delete()
+    .gte('updated_at', '1900-01-01'); // matches all rows; Supabase requires a filter on delete-all
+
+  if (error) { showToast('Could not reset OT Hours Filing.', true); return; }
+  showToast('OT Hours Filing reset.');
+  await loadOtHoursEntries();
+  renderOtFiling();
+}
+
+function downloadOtFilingReport() {
+  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
+
+  const dates = state.otFilingDates.map(d => d.filing_date).sort();
+  if (!dates.length) { showToast('No OT filing dates to report on.', true); return; }
+
+  const roster = state.employees
+    .filter(emp => emp.active !== false)
+    .sort(byKristinaFirstThenName);
+
+  // Exclude any employee/date combination with nothing logged at all —
+  // only rows with an actual or assumed value are included.
+  const rows = [];
+  dates.forEach(d => {
+    roster.forEach(emp => {
+      const entry = getOtEntry(emp.id, d);
+      const hasAssumed = entry && entry.assumed_hours != null;
+      const hasActual = entry && entry.actual_hours != null;
+      if (!hasAssumed && !hasActual) return; // blank — skip entirely
+      rows.push({ date: d, emp, entry });
+    });
+  });
+
+  const csvRows = [];
+  csvRows.push(['OT Hours Filing Report']);
+  csvRows.push([]);
+  csvRows.push(['Date', 'Agent', 'Assumed Hours', 'Actual Hours', 'Confirmed']);
+
+  if (rows.length) {
+    rows.forEach(({ date, emp, entry }) => {
+      csvRows.push([
+        formatPrettyDate(date),
+        emp.display_name,
+        entry.assumed_hours != null ? entry.assumed_hours : '',
+        entry.actual_hours != null ? entry.actual_hours : '',
+        entry.confirmed ? 'Yes' : 'No',
+      ]);
+    });
+  } else {
+    csvRows.push(['No OT hours logged yet.']);
+  }
+
+  csvRows.push([]);
+  csvRows.push(['Summary']);
+  csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Pending Leads Available']);
+  dates.forEach(d => {
+    const totalHours = roster.reduce((sum, emp) => {
+      const entry = getOtEntry(emp.id, d);
+      if (!entry) return sum;
+      const h = entry.actual_hours != null ? entry.actual_hours : entry.assumed_hours;
+      return sum + (h ? Number(h) : 0);
+    }, 0);
+    const heads = round2(totalHours / 8);
+    const leads = round2(heads * 800);
+    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
+    const pending = dateRecord && dateRecord.pending_leads_available != null ? dateRecord.pending_leads_available : '';
+    csvRows.push([formatPrettyDate(d), heads, leads, pending]);
+  });
+
+  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const filename = `OT Hours Filing Report - ${isoDate(new Date())}.csv`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  showToast('Report downloaded.');
 }
 
 async function saveOtPendingLeads(filingDate, rawValue) {
