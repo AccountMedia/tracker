@@ -2754,12 +2754,14 @@ function renderOtFiling() {
       const displayVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '—');
 
       if (confirmed) {
-        // Locked — once confirmed, the hours can no longer be edited by
-        // anyone, including admins.
+        // Locked for everyone once confirmed — admins get a deliberate
+        // "Unlock" action to override this if a correction is genuinely
+        // needed; staff have no way to edit it from here.
         return `
           <td style="padding:8px; text-align:center; font-size:12.5px;">
             <div>${displayVal}</div>
             <div><span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span></div>
+            ${admin ? `<button class="btn btn-ghost btn-sm ot-unlock-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; margin-top:3px; color:var(--ink-faint);">Unlock</button>` : ''}
           </td>
         `;
       }
@@ -2845,6 +2847,21 @@ function renderOtFiling() {
   document.querySelectorAll('.ot-confirm-btn').forEach(btn => {
     btn.addEventListener('click', () => openOtConfirmModal(btn.dataset.empId, btn.dataset.date));
   });
+  document.querySelectorAll('.ot-unlock-btn').forEach(btn => {
+    btn.addEventListener('click', () => unlockOtEntry(btn.dataset.empId, btn.dataset.date));
+  });
+}
+
+async function unlockOtEntry(employeeId, filingDate) {
+  if (!isAdmin()) { showToast('Only admins can unlock a confirmed entry.', true); return; }
+  const emp = state.employees.find(e => e.id === employeeId);
+  if (!confirm(`Unlock ${emp ? emp.display_name : 'this'}'s confirmed OT hours for ${formatPrettyDate(filingDate)}? This will make it editable again.`)) return;
+
+  const { error } = await sb.from('ot_hours_entries').update({ confirmed: false }).eq('employee_id', employeeId).eq('filing_date', filingDate);
+  if (error) { showToast('Could not unlock the entry.', true); return; }
+  showToast('Entry unlocked.');
+  await loadOtHoursEntries();
+  renderOtFiling();
 }
 
 async function resetOtFiling() {
