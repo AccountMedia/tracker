@@ -2721,6 +2721,11 @@ function renderOtFiling() {
     return dateRecord && dateRecord.total_leads_available != null ? Number(dateRecord.total_leads_available) : null;
   });
 
+  const totalLeadsEditedByPerDate = dates.map(d => {
+    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
+    return dateRecord ? dateRecord.total_leads_updated_by : null;
+  });
+
   const pendingBalances = dates.map((d, i) => {
     if (totalLeadsPerDate[i] == null) return null;
     return round2(totalLeadsPerDate[i] - leadsToValidatePerDate[i]);
@@ -2728,9 +2733,11 @@ function renderOtFiling() {
 
   const totalLeadsRow = dates.map((d, i) => {
     const val = totalLeadsPerDate[i];
+    const editedBy = totalLeadsEditedByPerDate[i];
     return `<td style="padding:6px; text-align:center;">
       <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
         style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+      ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
     </td>`;
   }).join('');
 
@@ -2844,7 +2851,7 @@ async function resetOtFiling() {
 
   const { error: totalsError } = await sb
     .from('ot_filing_dates')
-    .update({ total_leads_available: null })
+    .update({ total_leads_available: null, total_leads_updated_by: null })
     .gte('created_at', '1900-01-01'); // matches all rows; Supabase requires a filter on update-all
 
   if (totalsError) { showToast('Could not reset Total Leads Available.', true); return; }
@@ -2942,7 +2949,10 @@ async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
     return;
   }
 
-  const { error } = await sb.from('ot_filing_dates').update({ total_leads_available: value }).eq('filing_date', filingDate);
+  const { error } = await sb.from('ot_filing_dates').update({
+    total_leads_available: value,
+    total_leads_updated_by: value != null ? state.profile.display_name : null,
+  }).eq('filing_date', filingDate);
   if (error) { showToast('Could not save.', true); return; }
   await loadOtFilingDates();
   renderOtFiling();
