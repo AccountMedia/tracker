@@ -2776,7 +2776,7 @@ function renderOtFiling() {
       // still unconfirmed.
       const inputVal = hasAssumed ? entry.assumed_hours : '';
       const badge = hasAssumed
-        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; color:var(--amber); flex-shrink:0;">Confirm/adjust</button>`
+        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; color:var(--amber); flex-shrink:0;">Confirm</button>`
         : '';
 
       return `
@@ -2800,7 +2800,7 @@ function renderOtFiling() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px; overflow-x:auto;">
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm/adjust" to confirm the number is accurate or correct it to your actual hours.</p>
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm" to confirm the number is accurate or correct it to your actual hours.</p>
       <table style="width:100%; border-collapse:collapse;">
         <thead>
           <tr style="border-bottom:2px solid var(--line);">
