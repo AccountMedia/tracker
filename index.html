@@ -764,11 +764,44 @@ function renderDashboard() {
   const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED);
   const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
+  const now = new Date();
+  const payrollYear = now.getFullYear();
+  const payrollMonth = now.getMonth() + 1;
+  const payrollRoster = state.employees.filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia');
+  const half1Confirmed = payrollRoster.filter(emp => {
+    const c = findConfirmation(emp.id, payrollYear, payrollMonth, 1);
+    return c && c.received;
+  }).length;
+  const half2Confirmed = payrollRoster.filter(emp => {
+    const c = findConfirmation(emp.id, payrollYear, payrollMonth, 2);
+    return c && c.received;
+  }).length;
+  const rosterCount = payrollRoster.length;
+
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; margin-bottom:28px;">
       ${dashboardStatCard('Out today', todayEntries.length, todayEntries.map(e => employeeName(e.employee_id)).join(', ') || 'No one is out today.', 'vl')}
       ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl')}
       ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:18px; margin-bottom:28px;">
+      <div class="card" style="padding:20px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <span class="dot-mark vl"></span>
+          <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Payroll — 1st Half</span>
+        </div>
+        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${half1Confirmed} / ${rosterCount}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${rosterCount - half1Confirmed} ${rosterCount - half1Confirmed === 1 ? 'person' : 'people'} haven't confirmed yet.</div>
+      </div>
+      <div class="card" style="padding:20px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <span class="dot-mark sl"></span>
+          <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Payroll — 2nd Half</span>
+        </div>
+        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${half2Confirmed} / ${rosterCount}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${rosterCount - half2Confirmed} ${rosterCount - half2Confirmed === 1 ? 'person' : 'people'} haven't confirmed yet.</div>
+      </div>
     </div>
 
     <div class="card" style="padding:22px;">
