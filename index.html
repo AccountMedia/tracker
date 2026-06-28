@@ -1992,8 +1992,8 @@ function renderPrioList() {
 
   const tableRows = orderedRows.map(({ entry, emp }) => {
     const total = round2(Number(entry.md_output) + Number(entry.leads));
-    const nameColor = colorForName(emp.display_name);
     const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
+    const isMe = emp.id === state.profile.employee_id;
 
     const swatchDots = (setKey) => (PRIOLIST_FILE_SETS[setKey] || [])
       .map(c => `<span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[c]};"></span>`)
@@ -2012,9 +2012,9 @@ function renderPrioList() {
       : `<span class="faint" style="font-size:11px;">—</span>`;
 
     return `
-      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-        <span style="font-weight:700; color:${nameColor};">${escapeHtml(emp.display_name)}</span>
+        <span style="font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</span>
         <input type="number" min="0" step="1" class="priolist-input md-input" data-id="${entry.id}" value="${entry.md_output}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:600;">${total}</span>
