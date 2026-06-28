@@ -2678,18 +2678,30 @@ function renderOtFiling() {
     }, 0);
   }
 
+  // "# of Leads to Validate" scales with actual hours logged, not with
+  // headcount: each hour of OT is assumed capable of validating 100
+  // leads (the spreadsheet's original 8 hours = 800 leads ratio).
+  function hoursForDate(d) {
+    return roster.reduce((sum, emp) => {
+      const entry = getOtEntry(emp.id, d);
+      if (!entry) return sum;
+      const h = entry.actual_hours != null ? entry.actual_hours : entry.assumed_hours;
+      return sum + (h ? Number(h) : 0);
+    }, 0);
+  }
+
   const headsRow = dates.map(d => {
     const heads = headsForDate(d);
     return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${heads}</td>`;
   }).join('');
 
-  const leadsToValidatePerDate = dates.map(d => headsForDate(d) * 800);
+  const leadsToValidatePerDate = dates.map(d => round2(hoursForDate(d) * 100));
 
   const leadsRow = dates.map((d, i) => {
     return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</td>`;
   }).join('');
 
-  const totalLeadsToValidate = leadsToValidatePerDate.reduce((sum, n) => sum + n, 0);
+  const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
 
   // Pending Leads Available to Work On: a single admin-editable total,
   // then a running balance per date — each date's box shows the
@@ -2877,7 +2889,13 @@ function downloadOtFilingReport() {
       const hasAny = entry && (entry.assumed_hours != null || entry.actual_hours != null);
       return count + (hasAny ? 1 : 0);
     }, 0);
-    const leads = heads * 800;
+    const hours = roster.reduce((sum, emp) => {
+      const entry = getOtEntry(emp.id, d);
+      if (!entry) return sum;
+      const h = entry.actual_hours != null ? entry.actual_hours : entry.assumed_hours;
+      return sum + (h ? Number(h) : 0);
+    }, 0);
+    const leads = round2(hours * 100);
     if (runningBalance != null) runningBalance = round2(runningBalance - leads);
     csvRows.push([formatPrettyDate(d), heads, leads, runningBalance != null ? runningBalance : '']);
   });
