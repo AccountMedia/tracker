@@ -1802,7 +1802,14 @@ async function submitLeaveRequest(e) {
 
   const { error } = await sb.from('leave_entries').insert(rows);
 
-  if (error) { showToast('Could not submit the request.', true); return; }
+  if (error) {
+    console.error('Leave request insert failed:', error);
+    const msg = error.message && error.message.includes('column')
+      ? 'Could not submit the request — the database is missing a required column. Ask your admin to run the latest setup SQL.'
+      : 'Could not submit the request.';
+    showToast(msg, true);
+    return;
+  }
   closeModal();
   showToast(
     useHours ? `Leave request submitted for ${hours} hour${hours === 1 ? '' : 's'}.` :
