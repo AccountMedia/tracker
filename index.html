@@ -1858,6 +1858,12 @@ const PRIOLIST_FILE_COLORS = {
   red:    '#B5495B',
 };
 
+const PRIOLIST_STATUS_COLORS = {
+  Active:   '#2D6A4F', // green
+  Break:    '#B58B00', // yellow/amber
+  Inactive: '#7B4FA0', // purple
+};
+
 // Polls for changes made by other people while the PrioList tab is open,
 // so the list re-sorts live as MD Output / Leads come in from multiple
 // employees at once — without anyone needing to refresh the page.
@@ -1893,15 +1899,19 @@ function renderPrioList() {
     return;
   }
 
-  const admin = isAdmin();
   const rows = state.priolistEntries.map(entry => {
     const emp = state.employees.find(e => e.id === entry.employee_id);
     return { entry, emp };
   }).filter(r => r.emp);
 
-  const anyOutput = rows.some(r => Number(r.entry.md_output) + Number(r.entry.leads) > 0);
+  // Only Active/Break employees take part in the priority sort; Inactive
+  // (or anyone with no status set yet) is pinned below them, in rank order.
+  const ranked = rows.filter(r => r.entry.status === 'Active' || r.entry.status === 'Break');
+  const unranked = rows.filter(r => !(r.entry.status === 'Active' || r.entry.status === 'Break'));
 
-  rows.sort((a, b) => {
+  const anyOutput = ranked.some(r => Number(r.entry.md_output) + Number(r.entry.leads) > 0);
+
+  ranked.sort((a, b) => {
     if (anyOutput) {
       const totalA = Number(a.entry.md_output) + Number(a.entry.leads);
       const totalB = Number(b.entry.md_output) + Number(b.entry.leads);
@@ -1910,16 +1920,18 @@ function renderPrioList() {
     }
     return a.entry.rank - b.entry.rank; // initial state: lowest rank number first
   });
+  unranked.sort((a, b) => a.entry.rank - b.entry.rank);
 
-  const tableRows = rows.map(({ entry, emp }) => {
+  const orderedRows = [...ranked, ...unranked];
+
+  const tableRows = orderedRows.map(({ entry, emp }) => {
     const total = round2(Number(entry.md_output) + Number(entry.leads));
     const nameColor = colorForName(emp.display_name);
-    const isOwner = emp.id === state.profile.employee_id;
-    const canEditOutput = admin || isOwner;
+    const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
     const swatchOptions = ['yellow', 'blue', 'red'].map(c => `
       <span class="file-color-dot" data-id="${entry.id}" data-color="${c}"
         title="${capitalize(c)}"
-        style="display:inline-block; width:16px; height:16px; border-radius:50%; cursor:${admin ? 'pointer' : 'default'};
+        style="display:inline-block; width:16px; height:16px; border-radius:50%; cursor:pointer;
                background:${PRIOLIST_FILE_COLORS[c]};
                border:2px solid ${entry.file_color === c ? 'var(--ink)' : 'transparent'};
                box-shadow:0 0 0 1px var(--line);"></span>
@@ -1927,22 +1939,17 @@ function renderPrioList() {
 
     return `
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
-        ${admin ? `<input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
-                : `<span class="faint">${entry.rank}</span>`}
+        <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:700; color:${nameColor};">${escapeHtml(emp.display_name)}</span>
-        ${canEditOutput ? `<input type="number" min="0" step="1" class="priolist-input md-input" data-id="${entry.id}" value="${entry.md_output}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
-                : `<span>${entry.md_output}</span>`}
-        ${canEditOutput ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
-                : `<span>${entry.leads}</span>`}
+        <input type="number" min="0" step="1" class="priolist-input md-input" data-id="${entry.id}" value="${entry.md_output}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        <input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:600;">${total}</span>
-        ${admin ? `
-          <select class="priolist-input status-input" data-id="${entry.id}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
-            ${['Active','Break','Inactive'].map(s => `<option value="${s}" ${entry.status===s?'selected':''}>${s}</option>`).join('')}
-          </select>
-        ` : `<span>${escapeHtml(entry.status)}</span>`}
+        <select class="priolist-input status-input" data-id="${entry.id}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; color:${statusColor}; font-weight:600;">
+          <option value="" ${!entry.status ? 'selected' : ''} style="color:var(--ink);">—</option>
+          ${['Active','Break','Inactive'].map(s => `<option value="${s}" ${entry.status===s?'selected':''} style="color:${PRIOLIST_STATUS_COLORS[s]};">${s}</option>`).join('')}
+        </select>
         <span style="display:flex; gap:6px;">${swatchOptions}</span>
-        ${admin ? `<input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">`
-                : `<span class="faint">${escapeHtml(entry.note || '—')}</span>`}
+        <input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
       </div>
     `;
   }).join('');
@@ -1967,11 +1974,9 @@ function renderPrioList() {
 }
 
 function attachPriolistHandlers() {
-  const admin = isAdmin();
   document.querySelectorAll('.md-input, .leads-input').forEach(input => {
     input.addEventListener('change', () => savePriolistOutput(input.dataset.id));
   });
-  if (!admin) return;
   document.querySelectorAll('.rank-input').forEach(input => {
     input.addEventListener('change', () => savePriolistField(input.dataset.id, 'rank', parseInt(input.value, 10) || 999));
   });
