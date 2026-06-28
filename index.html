@@ -2701,13 +2701,13 @@ function renderOtFiling() {
 
   const headsRow = dates.map(d => {
     const heads = headsForDate(d);
-    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${heads}</td>`;
+    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600; min-width:110px;">${heads}</td>`;
   }).join('');
 
   const leadsToValidatePerDate = dates.map(d => round2(hoursForDate(d) * 100));
 
   const leadsRow = dates.map((d, i) => {
-    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</td>`;
+    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600; min-width:110px;">${leadsToValidatePerDate[i]}</td>`;
   }).join('');
 
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
@@ -2734,14 +2734,14 @@ function renderOtFiling() {
   const totalLeadsRow = dates.map((d, i) => {
     const val = totalLeadsPerDate[i];
     const editedBy = totalLeadsEditedByPerDate[i];
-    return `<td style="padding:6px; text-align:center;">
+    return `<td style="padding:6px; text-align:center; min-width:110px;">
       <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
         style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
       ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
     </td>`;
   }).join('');
 
-  const pendingRow = pendingBalances.map(bal => `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</td>`).join('');
+  const pendingRow = pendingBalances.map(bal => `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600; min-width:110px;">${bal != null ? bal : '—'}</td>`).join('');
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
@@ -2758,7 +2758,7 @@ function renderOtFiling() {
         // "Unlock" action to override this if a correction is genuinely
         // needed; staff have no way to edit it from here.
         return `
-          <td style="padding:8px; text-align:center; font-size:12.5px;">
+          <td style="padding:8px; text-align:center; font-size:12.5px; min-width:110px;">
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
@@ -2769,7 +2769,7 @@ function renderOtFiling() {
       }
 
       if (!canEdit) {
-        return `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>`;
+        return `<td style="padding:8px; text-align:center; font-size:12.5px; min-width:110px;">${displayVal}</td>`;
       }
 
       // Editable cell for the owner (or admin) — only reachable while
@@ -2780,7 +2780,7 @@ function renderOtFiling() {
         : '';
 
       return `
-        <td style="padding:6px;">
+        <td style="padding:6px; min-width:110px;">
           <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
             <div style="width:56px; flex-shrink:0;">
               <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
