@@ -2182,8 +2182,12 @@ function stopLiRestrictionTicker() {
 
 function renderLiRestriction() {
   const actionsEl = document.getElementById('li-restriction-actions');
-  actionsEl.innerHTML = `<button class="btn btn-primary" id="li-add-entry-btn">+ Log restriction</button>`;
+  actionsEl.innerHTML = `
+    <button class="btn btn-ghost" id="li-download-report-btn" style="margin-right:8px;">Download monthly report</button>
+    <button class="btn btn-primary" id="li-add-entry-btn">+ Log restriction</button>
+  `;
   document.getElementById('li-add-entry-btn').addEventListener('click', () => openLiEntryModal());
+  document.getElementById('li-download-report-btn').addEventListener('click', downloadLiRestrictionReport);
 
   const el = document.getElementById('li-restriction-content');
   if (!state.employees.length) {
@@ -2226,6 +2230,8 @@ function renderLiRestriction() {
     const status = getLiEntryStatus(e);
     const statusColor = status === 'Lifted' ? 'var(--green)' : 'var(--coral)';
     const statusBg = status === 'Lifted' ? 'var(--green-wash)' : 'var(--coral-wash)';
+    const isOwner = e.employee_id === state.profile.employee_id;
+    const canManage = admin || isOwner;
     return `
       <div class="card" style="padding:16px; margin-bottom:12px;">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:8px;">
@@ -2235,8 +2241,8 @@ function renderLiRestriction() {
           </div>
           <div style="display:flex; align-items:center; gap:8px;">
             <span style="font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px; color:${statusColor}; background:${statusBg};">${status}</span>
-            ${admin ? `<button class="btn btn-ghost btn-sm li-edit-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px;">Edit</button>` : ''}
-            ${admin ? `<button class="btn btn-ghost btn-sm li-delete-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px; color:var(--coral);">Delete</button>` : ''}
+            ${canManage ? `<button class="btn btn-ghost btn-sm li-edit-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px;">Edit</button>` : ''}
+            ${canManage ? `<button class="btn btn-ghost btn-sm li-delete-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px; color:var(--coral);">Delete</button>` : ''}
           </div>
         </div>
         <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; font-size:12px;">
@@ -2284,13 +2290,76 @@ function renderLiRestriction() {
     document.querySelectorAll('.li-verification-input').forEach(select => {
       select.addEventListener('change', () => saveLiVerification(select.dataset.empId, select.value));
     });
-    document.querySelectorAll('.li-edit-btn').forEach(btn => {
-      btn.addEventListener('click', () => openLiEntryModal(btn.dataset.id));
-    });
-    document.querySelectorAll('.li-delete-btn').forEach(btn => {
-      btn.addEventListener('click', () => deleteLiEntry(btn.dataset.id));
-    });
   }
+  document.querySelectorAll('.li-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => openLiEntryModal(btn.dataset.id));
+  });
+  document.querySelectorAll('.li-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteLiEntry(btn.dataset.id));
+  });
+}
+
+function downloadLiRestrictionReport() {
+  const viewDate = new Date(state.liRestrictionDate + 'T00:00:00');
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth(); // 0-indexed, matches MONTH_NAMES
+  const monthStart = isoDate(new Date(year, month, 1));
+  const monthEnd = isoDate(new Date(year, month + 1, 0));
+  const monthLabel = `${MONTH_NAMES[month]} ${year}`;
+  const admin = isAdmin();
+
+  let entries = state.liRestrictionEntries
+    .filter(e => e.entry_date >= monthStart && e.entry_date <= monthEnd);
+  if (!admin) {
+    entries = entries.filter(e => e.employee_id === state.profile.employee_id);
+  }
+  entries = entries.slice().sort((a, b) => {
+    const dateCompare = a.entry_date.localeCompare(b.entry_date);
+    if (dateCompare !== 0) return dateCompare;
+    return employeeName(a.employee_id).localeCompare(employeeName(b.employee_id));
+  });
+
+  const csvRows = [];
+  csvRows.push([`LI Restriction Report — ${monthLabel}${admin ? '' : ' (' + state.profile.display_name + ')'}`]);
+  csvRows.push([]);
+  csvRows.push(['Date', 'Agent', 'Status', 'Restriction Type', 'Occurrence #', '1st Action', '1st Outcome', '2nd Action', '2nd Outcome', 'Co-Agent', 'Lift Date & Time (PH)', '3rd Action / Working Option', 'Note']);
+
+  if (entries.length) {
+    entries.forEach(e => {
+      csvRows.push([
+        formatPrettyDate(e.entry_date),
+        employeeName(e.employee_id),
+        getLiEntryStatus(e),
+        e.restriction_type || '',
+        e.occurrence_number || 1,
+        e.action_1 || '',
+        e.outcome_1 || '',
+        e.action_2 || '',
+        e.outcome_2 || '',
+        e.co_agent_name || '',
+        e.restriction_lift_at ? formatPhDateTime(e.restriction_lift_at) : '',
+        e.action_3 || '',
+        e.note || '',
+      ]);
+    });
+  } else {
+    csvRows.push(['No restrictions logged for this month.']);
+  }
+
+  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const filename = `LI Restriction Report - ${monthLabel}.csv`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  showToast('Report downloaded.');
 }
 
 function shiftLiRestrictionDate(deltaDays) {
@@ -2314,6 +2383,12 @@ async function saveLiVerification(employeeId, status) {
 }
 
 async function deleteLiEntry(entryId) {
+  const entry = state.liRestrictionEntries.find(e => e.id === entryId);
+  if (!entry) return;
+  if (!isAdmin() && entry.employee_id !== state.profile.employee_id) {
+    showToast('You can only manage your own restriction entries.', true);
+    return;
+  }
   if (!confirm('Delete this restriction log entry? This cannot be undone.')) return;
   const { error } = await sb.from('li_restriction_entries').delete().eq('id', entryId);
   if (error) { showToast('Could not delete the entry.', true); return; }
@@ -2324,6 +2399,12 @@ async function deleteLiEntry(entryId) {
 
 function openLiEntryModal(entryId) {
   const editing = entryId ? state.liRestrictionEntries.find(e => e.id === entryId) : null;
+  const admin = isAdmin();
+
+  if (editing && !admin && editing.employee_id !== state.profile.employee_id) {
+    showToast('You can only manage your own restriction entries.', true);
+    return;
+  }
 
   const empOptions = state.employees
     .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
@@ -2340,14 +2421,23 @@ function openLiEntryModal(entryId) {
     </div>
   `;
 
-  const formHtml = `
-    <form id="li-entry-form" style="display:flex; flex-direction:column; gap:14px;">
+  const employeeFieldHtml = admin ? `
       <div class="field">
         <label for="li-employee">Agent</label>
         <select id="li-employee" required ${editing ? 'disabled' : ''} style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
           ${empOptions}
         </select>
       </div>
+  ` : `
+      <div class="field">
+        <label>Agent</label>
+        <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line); background:var(--line-soft); font-weight:600;">${escapeHtml(state.profile.display_name)}</div>
+      </div>
+  `;
+
+  const formHtml = `
+    <form id="li-entry-form" style="display:flex; flex-direction:column; gap:14px;">
+      ${employeeFieldHtml}
       <div class="field" style="display:flex; gap:10px;">
         <div style="flex:1;">
           <label for="li-date">Date</label>
@@ -2390,7 +2480,8 @@ function openLiEntryModal(entryId) {
 
 async function submitLiEntry(e, editing) {
   e.preventDefault();
-  const employee_id = editing ? editing.employee_id : document.getElementById('li-employee').value;
+  const employeeSelect = document.getElementById('li-employee');
+  const employee_id = editing ? editing.employee_id : (employeeSelect ? employeeSelect.value : state.profile.employee_id);
   const entry_date = document.getElementById('li-date').value;
   const occurrence_number = parseInt(document.getElementById('li-occurrence').value, 10) || 1;
   const restriction_type = document.getElementById('li-restriction-type').value || null;
@@ -2403,8 +2494,12 @@ async function submitLiEntry(e, editing) {
   const action_3 = document.getElementById('li-action-3').value || null;
   const note = document.getElementById('li-note').value.trim() || null;
 
-  if (!employee_id) { showToast('Please choose an agent.', true); return; }
+  if (!employee_id) { showToast('Your account is not linked to an employee record yet.', true); return; }
   if (!entry_date) { showToast('Please choose a date.', true); return; }
+  if (!isAdmin() && employee_id !== state.profile.employee_id) {
+    showToast('You can only log restrictions for yourself.', true);
+    return;
+  }
 
   const payload = {
     employee_id, entry_date, occurrence_number, restriction_type,
