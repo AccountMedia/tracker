@@ -843,6 +843,28 @@ function renderDashboard() {
   }).length;
   const rosterCount = payrollRoster.length;
 
+  // Restricted LinkedIn accounts: for each employee, look at their most
+  // recent restriction log entry (by date) and check whether it's still
+  // "Restricted" right now per the same logic the LI Restriction tab uses.
+  const restrictedCount = state.employees.filter(emp => {
+    const empEntries = state.liRestrictionEntries.filter(e => e.employee_id === emp.id);
+    if (!empEntries.length) return false;
+    const latest = empEntries.slice().sort((a, b) => b.entry_date.localeCompare(a.entry_date))[0];
+    return getLiEntryStatus(latest) === 'Restricted';
+  }).length;
+
+  // OT participation for the most recent open filing date: how many
+  // people have confirmed their actual hours out of how many logged
+  // anything at all for that date. Both read 0 if no date is open or
+  // nothing has been logged yet.
+  const otDates = state.otFilingDates.map(d => d.filing_date).sort();
+  const latestOtDate = otDates.length ? otDates[otDates.length - 1] : null;
+  const otEntriesForDate = latestOtDate
+    ? state.otHoursEntries.filter(e => e.filing_date === latestOtDate && (e.assumed_hours != null || e.actual_hours != null))
+    : [];
+  const otLoggedCount = otEntriesForDate.length;
+  const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed).length;
+
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; margin-bottom:28px;">
       ${dashboardStatCard('Out today', todayEntries.length, todayEntries.map(e => employeeName(e.employee_id)).join(', ') || 'No one is out today.', 'vl')}
@@ -850,7 +872,7 @@ function renderDashboard() {
       ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
     </div>
 
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:18px; margin-bottom:28px;">
+    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
       <div class="card" style="padding:20px;">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark vl"></span>
@@ -866,6 +888,22 @@ function renderDashboard() {
         </div>
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${half2Confirmed} / ${rosterCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${rosterCount - half2Confirmed} ${rosterCount - half2Confirmed === 1 ? 'person' : 'people'} haven't confirmed yet.</div>
+      </div>
+      <div class="card" style="padding:20px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <span class="dot-mark el"></span>
+          <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">LinkedIn Restricted</span>
+        </div>
+        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${restrictedCount}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${restrictedCount ? `${restrictedCount} account${restrictedCount === 1 ? '' : 's'} currently restricted.` : 'No restricted accounts right now.'}</div>
+      </div>
+      <div class="card" style="padding:20px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <span class="dot-mark sl"></span>
+          <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">OT Confirmed</span>
+        </div>
+        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${otConfirmedCount} / ${otLoggedCount}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${latestOtDate ? (otLoggedCount ? `For ${formatPrettyDate(latestOtDate)}.` : 'No OT logged for the latest date.') : 'No OT filing dates open.'}</div>
       </div>
     </div>
 
@@ -1740,9 +1778,10 @@ function renderPayrollConfirmation() {
       const half1 = findConfirmation(emp.id, year, month, 1);
       const half2 = findConfirmation(emp.id, year, month, 2);
       const canMark = admin || emp.id === state.profile.employee_id;
+      const isMe = emp.id === state.profile.employee_id;
 
       return `
-        <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+        <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
           <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
           <span class="faint">${escapeHtml(emp.bank || '—')}</span>
           ${renderPayrollCell(emp.id, year, month, 1, half1, canMark)}
