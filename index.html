@@ -994,11 +994,21 @@ async function cancelLeave(id, closeAfter) {
 // and data cleanup, not regular day-to-day use.
 async function forceDeleteLeave(id) {
   if (!isAdmin()) { showToast('Only admins can delete entries.', true); return; }
-  if (!confirm('Are you sure you want to delete this entry? This cannot be undone.')) return;
 
-  const { error } = await sb.from('leave_entries').delete().eq('id', id);
+  const entry = state.leaveEntries.find(e => e.id === id);
+  const groupId = entry ? entry.request_group_id : null;
+  const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
+
+  const msg = groupCount > 1
+    ? `Are you sure you want to delete this entry? It covers ${groupCount} days and all of them will be removed. This cannot be undone.`
+    : 'Are you sure you want to delete this entry? This cannot be undone.';
+  if (!confirm(msg)) return;
+
+  const query = sb.from('leave_entries').delete();
+  const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+
   if (error) { showToast('Could not delete the entry.', true); return; }
-  showToast('Entry deleted.');
+  showToast(groupCount > 1 ? `Deleted ${groupCount} days of leave.` : 'Entry deleted.');
   closeModal();
   await loadLeaveEntries();
   renderLeaveTracker();
