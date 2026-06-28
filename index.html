@@ -364,9 +364,9 @@
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
       <a class="nav-item" data-view="leave-tracker"><span class="dot"></span>Leave Tracker</a>
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
+      <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <div class="nav-section-label">Coming soon</div>
       <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
-      <a class="nav-item disabled"><span class="dot"></span>PrioList</a>
       <a class="nav-item disabled"><span class="dot"></span>LI Restriction Daily Report</a>
     </nav>
     <div class="sidebar-foot">
@@ -418,6 +418,19 @@
         <div id="payroll-confirmation-actions"></div>
       </div>
       <div id="payroll-confirmation-content"></div>
+    </section>
+
+    <!-- PRIOLIST VIEW -->
+    <section class="view" id="view-priolist">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>PrioList</h1>
+          <p class="lede">Daily output priority list — resets every day at 8 AM.</p>
+        </div>
+        <div id="priolist-actions"></div>
+      </div>
+      <div id="priolist-content"></div>
     </section>
 
   </main>
@@ -483,6 +496,8 @@ const state = {
   payrollConfirmations: [], // payroll receipt confirmations
   payrollPeriodYear: new Date().getFullYear(),
   payrollPeriodMonth: new Date().getMonth() + 1, // 1-12
+  priolistEntries: [],    // PrioList rows
+  priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
@@ -574,6 +589,7 @@ function logout() {
   sessionStorage.removeItem('registry_active_view');
   state.profile = null;
   state.creditsEditMode = false;
+  stopPriolistPolling();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -598,7 +614,7 @@ function initNav() {
     openChangePasswordModal();
   });
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation'];
+  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
@@ -615,6 +631,10 @@ function switchView(viewName) {
   if (viewName === 'dashboard') renderDashboard();
   if (viewName === 'leave-tracker') renderLeaveTracker();
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
+  if (viewName === 'priolist') renderPrioList();
+
+  if (viewName === 'priolist') startPriolistPolling();
+  else stopPriolistPolling();
 }
 
 // =====================================================================
@@ -622,10 +642,49 @@ function switchView(viewName) {
 // =====================================================================
 
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries()]);
   renderDashboard();
   renderLeaveTracker();
   renderPayrollConfirmation();
+  renderPrioList();
+}
+
+async function loadPriolistEntries() {
+  const { data, error } = await sb.from('priolist_entries').select('*');
+  if (error) { showToast('Could not load PrioList.', true); return; }
+  state.priolistEntries = data || [];
+  await applyDailyPriolistReset();
+}
+
+// Returns the ISO date string of the most recent 8 AM boundary that has
+// already passed. Before 8 AM, that's yesterday's date; from 8 AM onward,
+// it's today's date. A row resets once per boundary crossed.
+function currentPriolistResetBoundary() {
+  const now = new Date();
+  const boundary = new Date(now);
+  boundary.setHours(8, 0, 0, 0);
+  if (now < boundary) {
+    boundary.setDate(boundary.getDate() - 1);
+  }
+  return isoDate(boundary);
+}
+
+async function applyDailyPriolistReset() {
+  const boundary = currentPriolistResetBoundary();
+  const stale = state.priolistEntries.filter(e => e.last_reset_date < boundary);
+  if (!stale.length) return;
+
+  const { error } = await sb
+    .from('priolist_entries')
+    .update({ md_output: 0, leads: 0, last_reset_date: boundary })
+    .lt('last_reset_date', boundary);
+
+  if (error) { console.error('PrioList auto-reset failed:', error); return; }
+
+  // Reflect the reset locally immediately rather than re-fetching.
+  state.priolistEntries = state.priolistEntries.map(e =>
+    e.last_reset_date < boundary ? { ...e, md_output: 0, leads: 0, last_reset_date: boundary } : e
+  );
 }
 
 async function loadPayrollConfirmations() {
@@ -1770,6 +1829,201 @@ function formatDateTime(isoString) {
     month: 'short', day: 'numeric', year: 'numeric',
     hour: 'numeric', minute: '2-digit',
   });
+}
+
+// =====================================================================
+// PRIOLIST
+// =====================================================================
+
+// Deterministic, readable color per employee name — same name always
+// gets the same color, distinct enough to tell people apart at a glance.
+function colorForName(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  }
+  const hue = hash % 360;
+  return `hsl(${hue}, 55%, 30%)`;
+}
+
+const PRIOLIST_FILE_COLORS = {
+  yellow: '#C9A227',
+  blue:   '#2D6A9F',
+  red:    '#B5495B',
+};
+
+// Polls for changes made by other people while the PrioList tab is open,
+// so the list re-sorts live as MD Output / Leads come in from multiple
+// employees at once — without anyone needing to refresh the page.
+function startPriolistPolling() {
+  stopPriolistPolling();
+  state.priolistPollHandle = setInterval(async () => {
+    // Don't yank the list out from under someone mid-keystroke.
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('priolist-input')) return;
+    await loadPriolistEntries();
+    renderPrioList();
+  }, 5000);
+}
+
+function stopPriolistPolling() {
+  if (state.priolistPollHandle) {
+    clearInterval(state.priolistPollHandle);
+    state.priolistPollHandle = null;
+  }
+}
+
+function renderPrioList() {
+  const actionsEl = document.getElementById('priolist-actions');
+  actionsEl.innerHTML = isAdmin()
+    ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset all output</button>`
+    : '';
+  const resetBtn = document.getElementById('priolist-reset-btn');
+  if (resetBtn) resetBtn.addEventListener('click', resetAllPriolistOutput);
+
+  const el = document.getElementById('priolist-content');
+  if (!state.employees.length) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    return;
+  }
+
+  const admin = isAdmin();
+  const rows = state.priolistEntries.map(entry => {
+    const emp = state.employees.find(e => e.id === entry.employee_id);
+    return { entry, emp };
+  }).filter(r => r.emp);
+
+  const anyOutput = rows.some(r => Number(r.entry.md_output) + Number(r.entry.leads) > 0);
+
+  rows.sort((a, b) => {
+    if (anyOutput) {
+      const totalA = Number(a.entry.md_output) + Number(a.entry.leads);
+      const totalB = Number(b.entry.md_output) + Number(b.entry.leads);
+      if (totalA !== totalB) return totalA - totalB; // lowest output first
+      return a.entry.rank - b.entry.rank;
+    }
+    return a.entry.rank - b.entry.rank; // initial state: lowest rank number first
+  });
+
+  const tableRows = rows.map(({ entry, emp }) => {
+    const total = round2(Number(entry.md_output) + Number(entry.leads));
+    const nameColor = colorForName(emp.display_name);
+    const isOwner = emp.id === state.profile.employee_id;
+    const canEditOutput = admin || isOwner;
+    const swatchOptions = ['yellow', 'blue', 'red'].map(c => `
+      <span class="file-color-dot" data-id="${entry.id}" data-color="${c}"
+        title="${capitalize(c)}"
+        style="display:inline-block; width:16px; height:16px; border-radius:50%; cursor:${admin ? 'pointer' : 'default'};
+               background:${PRIOLIST_FILE_COLORS[c]};
+               border:2px solid ${entry.file_color === c ? 'var(--ink)' : 'transparent'};
+               box-shadow:0 0 0 1px var(--line);"></span>
+    `).join('');
+
+    return `
+      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+        ${admin ? `<input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
+                : `<span class="faint">${entry.rank}</span>`}
+        <span style="font-weight:700; color:${nameColor};">${escapeHtml(emp.display_name)}</span>
+        ${canEditOutput ? `<input type="number" min="0" step="1" class="priolist-input md-input" data-id="${entry.id}" value="${entry.md_output}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
+                : `<span>${entry.md_output}</span>`}
+        ${canEditOutput ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
+                : `<span>${entry.leads}</span>`}
+        <span style="font-weight:600;">${total}</span>
+        ${admin ? `
+          <select class="priolist-input status-input" data-id="${entry.id}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
+            ${['Active','Break','Inactive'].map(s => `<option value="${s}" ${entry.status===s?'selected':''}>${s}</option>`).join('')}
+          </select>
+        ` : `<span>${escapeHtml(entry.status)}</span>`}
+        <span style="display:flex; gap:6px;">${swatchOptions}</span>
+        ${admin ? `<input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">`
+                : `<span class="faint">${escapeHtml(entry.note || '—')}</span>`}
+      </div>
+    `;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="card" style="padding:22px;">
+      <div style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+        <span>Rank</span>
+        <span>Name</span>
+        <span>MD Output</span>
+        <span>Leads</span>
+        <span>Total</span>
+        <span>Status</span>
+        <span>Open for File</span>
+        <span>Note</span>
+      </div>
+      ${tableRows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
+    </div>
+  `;
+
+  attachPriolistHandlers();
+}
+
+function attachPriolistHandlers() {
+  const admin = isAdmin();
+  document.querySelectorAll('.md-input, .leads-input').forEach(input => {
+    input.addEventListener('change', () => savePriolistOutput(input.dataset.id));
+  });
+  if (!admin) return;
+  document.querySelectorAll('.rank-input').forEach(input => {
+    input.addEventListener('change', () => savePriolistField(input.dataset.id, 'rank', parseInt(input.value, 10) || 999));
+  });
+  document.querySelectorAll('.status-input').forEach(select => {
+    select.addEventListener('change', () => savePriolistField(select.dataset.id, 'status', select.value));
+  });
+  document.querySelectorAll('.note-input').forEach(input => {
+    input.addEventListener('change', () => savePriolistField(input.dataset.id, 'note', input.value.trim()));
+  });
+  document.querySelectorAll('.file-color-dot').forEach(dot => {
+    dot.addEventListener('click', () => {
+      const entry = state.priolistEntries.find(e => e.id === dot.dataset.id);
+      const newColor = entry && entry.file_color === dot.dataset.color ? null : dot.dataset.color;
+      savePriolistField(dot.dataset.id, 'file_color', newColor);
+    });
+  });
+}
+
+async function savePriolistOutput(entryId) {
+  const mdInput = document.querySelector(`.md-input[data-id="${entryId}"]`);
+  const leadsInput = document.querySelector(`.leads-input[data-id="${entryId}"]`);
+  const md = parseFloat(mdInput.value);
+  const leads = parseFloat(leadsInput.value);
+
+  if (isNaN(md) || md < 0 || isNaN(leads) || leads < 0) {
+    showToast('Enter valid, non-negative numbers.', true);
+    return;
+  }
+
+  const { error } = await sb.from('priolist_entries').update({ md_output: md, leads: leads }).eq('id', entryId);
+  if (error) { showToast('Could not save.', true); return; }
+  await loadPriolistEntries();
+  renderPrioList();
+}
+
+async function savePriolistField(entryId, field, value) {
+  const updates = {};
+  updates[field] = value;
+  const { error } = await sb.from('priolist_entries').update(updates).eq('id', entryId);
+  if (error) { showToast('Could not save.', true); return; }
+  await loadPriolistEntries();
+  renderPrioList();
+}
+
+async function resetAllPriolistOutput() {
+  if (!isAdmin()) { showToast('Only admins can reset the PrioList.', true); return; }
+  if (!confirm('Reset all output for everyone? MD Output, Leads, and Total Output will all return to 0. This cannot be undone.')) return;
+
+  const today = isoDate(new Date());
+  const { error } = await sb
+    .from('priolist_entries')
+    .update({ md_output: 0, leads: 0, last_reset_date: today })
+    .gte('rank', 0); // matches all rows; Supabase requires a filter on update-all
+
+  if (error) { showToast('Could not reset the PrioList.', true); return; }
+  showToast('PrioList output reset.');
+  await loadPriolistEntries();
+  renderPrioList();
 }
 
 // =====================================================================
