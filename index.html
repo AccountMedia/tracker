@@ -525,6 +525,7 @@ const state = {
   liVerificationStatus: [], // LinkedIn verification status per employee
   liRestrictionEntries: [], // LI restriction log entries
   liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
+  liVerificationFilter: 'all', // 'all', 'verified', or 'unverified' — filters the LinkedIn Verification panel
   liRestrictionTickerHandle: null, // setInterval handle for live status re-check
   otFilingDates: [],   // open OT filing dates (admin-managed), each with its own total_leads_available
   otHoursEntries: [],  // OT hours entries
@@ -2289,7 +2290,16 @@ function renderLiRestriction() {
       return statusA - statusB; // Restricted (0) before Lifted (1)
     });
 
-  const verificationRows = roster.map(emp => {
+  const verificationRows = roster
+    .filter(emp => {
+      const v = getLiVerification(emp.id);
+      const status = v ? v.status : 'VERIFIED';
+      const isUnverified = status !== 'VERIFIED';
+      if (state.liVerificationFilter === 'verified') return !isUnverified;
+      if (state.liVerificationFilter === 'unverified') return isUnverified;
+      return true;
+    })
+    .map(emp => {
     const v = getLiVerification(emp.id);
     const status = v ? v.status : 'VERIFIED';
     const isUnverified = status !== 'VERIFIED';
@@ -2353,10 +2363,17 @@ function renderLiRestriction() {
       </div>
       <div style="width:300px; flex-shrink:0;">
         <div class="card" style="padding:20px;">
-          <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">LinkedIn Verification</h3>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+            <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--teal);">LinkedIn Verification</h3>
+          </div>
           <p class="faint" style="font-size:11px; margin:0 0 10px;">Account ID-verification status per agent.</p>
+          <div style="display:flex; gap:6px; margin-bottom:12px;">
+            <button class="btn btn-sm li-verif-filter-btn ${state.liVerificationFilter === 'all' ? 'btn-primary' : 'btn-ghost'}" data-filter="all" style="font-size:11px; padding:4px 10px;">All</button>
+            <button class="btn btn-sm li-verif-filter-btn ${state.liVerificationFilter === 'verified' ? 'btn-primary' : 'btn-ghost'}" data-filter="verified" style="font-size:11px; padding:4px 10px;">Verified</button>
+            <button class="btn btn-sm li-verif-filter-btn ${state.liVerificationFilter === 'unverified' ? 'btn-primary' : 'btn-ghost'}" data-filter="unverified" style="font-size:11px; padding:4px 10px;">Unverified</button>
+          </div>
           <div style="max-height:560px; overflow-y:auto;">
-            ${verificationRows}
+            ${verificationRows || `<p class="muted" style="font-size:12.5px;">No matches.</p>`}
           </div>
         </div>
       </div>
@@ -2365,6 +2382,13 @@ function renderLiRestriction() {
 
   document.getElementById('li-day-prev').addEventListener('click', () => shiftLiRestrictionDate(-1));
   document.getElementById('li-day-next').addEventListener('click', () => shiftLiRestrictionDate(1));
+
+  document.querySelectorAll('.li-verif-filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.liVerificationFilter = btn.dataset.filter;
+      renderLiRestriction();
+    });
+  });
 
   if (admin) {
     document.querySelectorAll('.li-verification-input').forEach(select => {
@@ -2778,17 +2802,15 @@ function renderOtFiling() {
       // still unconfirmed.
       const inputVal = hasAssumed ? entry.assumed_hours : '';
       const badge = hasAssumed
-        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; color:var(--amber); flex-shrink:0;">Confirm</button>`
+        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; font-size:10px; padding:2px 6px; color:var(--amber); white-space:nowrap;">Confirm</button>`
         : '';
 
       return `
-        <td style="padding:4px; min-width:140px;">
-          <div style="display:flex; align-items:center; justify-content:center; gap:4px;">
-            <div style="width:52px; flex-shrink:0;">
-              <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
-                style="width:100%; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-            </div>
-            <div style="width:68px; flex-shrink:0; text-align:left;">${badge}</div>
+        <td style="padding:4px; min-width:140px; text-align:center;">
+          <div style="position:relative; display:inline-block;">
+            <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
+              style="width:52px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+            ${badge}
           </div>
         </td>
       `;
