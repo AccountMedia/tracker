@@ -2776,14 +2776,16 @@ function renderOtFiling() {
       // still unconfirmed.
       const inputVal = hasAssumed ? entry.assumed_hours : '';
       const badge = hasAssumed
-        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; margin-top:3px; color:var(--amber);">Confirm/adjust</button>`
+        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; color:var(--amber); flex-shrink:0;">Confirm/adjust</button>`
         : '';
 
       return `
         <td style="padding:6px; text-align:center;">
-          <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
-            style="width:56px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-          <div>${badge}</div>
+          <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
+            <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
+              style="width:56px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+            ${badge}
+          </div>
         </td>
       `;
     }).join('');
