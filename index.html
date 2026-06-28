@@ -1834,6 +1834,13 @@ const PRIOLIST_FILE_COLORS = {
   red:    '#B5495B',
 };
 
+// "Open for File" is a choice between two whole sets, not individual
+// colors — this maps each set's stored value to the swatches it shows.
+const PRIOLIST_FILE_SETS = {
+  yellow_blue: ['blue', 'yellow'],
+  yellow_blue_red: ['blue', 'yellow', 'red'],
+};
+
 const PRIOLIST_STATUS_COLORS = {
   Active:   '#2D6A4F', // green
   Break:    '#B58B00', // yellow/amber
@@ -1904,8 +1911,8 @@ function renderPrioList() {
     const total = round2(Number(entry.md_output) + Number(entry.leads));
     const nameColor = colorForName(emp.display_name);
     const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
-    const fileColor = entry.file_color ? PRIOLIST_FILE_COLORS[entry.file_color] : 'var(--ink)';
-    const fileColorOption = (c) => `<option value="${c}" ${entry.file_color === c ? 'selected' : ''} style="color:${PRIOLIST_FILE_COLORS[c]};">${capitalize(c)}</option>`;
+    const fileSetColors = PRIOLIST_FILE_SETS[entry.file_color] || [];
+    const fileSwatches = fileSetColors.map(c => `<span style="display:inline-block; width:11px; height:11px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[c]}; box-shadow:0 0 0 1px var(--line);"></span>`).join('');
 
     return `
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
@@ -1918,18 +1925,14 @@ function renderPrioList() {
           <option value="" ${!entry.status ? 'selected' : ''} style="color:var(--ink);">—</option>
           ${['Active','Break','Inactive'].map(s => `<option value="${s}" ${entry.status===s?'selected':''} style="color:${PRIOLIST_STATUS_COLORS[s]};">${s}</option>`).join('')}
         </select>
-        <select class="priolist-input file-color-input" data-id="${entry.id}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; color:${fileColor}; font-weight:600;">
-          <option value="" ${!entry.file_color ? 'selected' : ''} style="color:var(--ink);">—</option>
-          <optgroup label="Yellow / Blue">
-            ${fileColorOption('yellow')}
-            ${fileColorOption('blue')}
-          </optgroup>
-          <optgroup label="Yellow / Blue / Red">
-            ${fileColorOption('yellow')}
-            ${fileColorOption('blue')}
-            ${fileColorOption('red')}
-          </optgroup>
-        </select>
+        <span style="display:flex; align-items:center; gap:6px;">
+          <select class="priolist-input file-color-input" data-id="${entry.id}" style="flex:1; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
+            <option value="" ${!entry.file_color ? 'selected' : ''}>—</option>
+            <option value="yellow_blue" ${entry.file_color === 'yellow_blue' ? 'selected' : ''}>Blue / Yellow</option>
+            <option value="yellow_blue_red" ${entry.file_color === 'yellow_blue_red' ? 'selected' : ''}>Blue / Yellow / Red</option>
+          </select>
+          ${fileSwatches ? `<span style="display:flex; gap:3px; flex-shrink:0;">${fileSwatches}</span>` : ''}
+        </span>
         <input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
       </div>
     `;
