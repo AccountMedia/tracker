@@ -1169,6 +1169,8 @@ function shiftMonth(delta) {
 // ---- Monthly report export -------------------------------------------
 
 function downloadMonthlyReport() {
+  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
+
   const year = state.calendarYear;
   const month = state.calendarMonth;
   const monthStart = isoDate(new Date(year, month, 1));
@@ -1841,6 +1843,8 @@ async function resetPayrollPeriod() {
 }
 
 function downloadPayrollReport() {
+  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
+
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
   const monthLabel = `${PAYROLL_MONTH_NAMES[month - 1]} ${year}`;
@@ -2184,11 +2188,12 @@ function stopLiRestrictionTicker() {
 function renderLiRestriction() {
   const actionsEl = document.getElementById('li-restriction-actions');
   actionsEl.innerHTML = `
-    <button class="btn btn-ghost" id="li-download-report-btn" style="margin-right:8px;">Download monthly report</button>
+    ${isAdmin() ? `<button class="btn btn-ghost" id="li-download-report-btn" style="margin-right:8px;">Download monthly report</button>` : ''}
     <button class="btn btn-primary" id="li-add-entry-btn">+ Log restriction</button>
   `;
   document.getElementById('li-add-entry-btn').addEventListener('click', () => openLiEntryModal());
-  document.getElementById('li-download-report-btn').addEventListener('click', downloadLiRestrictionReport);
+  const liReportBtn = document.getElementById('li-download-report-btn');
+  if (liReportBtn) liReportBtn.addEventListener('click', downloadLiRestrictionReport);
 
   const el = document.getElementById('li-restriction-content');
   if (!state.employees.length) {
@@ -2301,6 +2306,8 @@ function renderLiRestriction() {
 }
 
 function downloadLiRestrictionReport() {
+  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
+
   const viewDate = new Date(state.liRestrictionDate + 'T00:00:00');
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth(); // 0-indexed, matches MONTH_NAMES
@@ -2774,7 +2781,6 @@ function openModal(title, bodyHtml) {
       position:fixed; inset:0; background:rgba(31,61,58,0.35); z-index:998;
       display:flex; align-items:center; justify-content:center; padding:20px;
     `;
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
     document.body.appendChild(overlay);
   }
   overlay.innerHTML = `
