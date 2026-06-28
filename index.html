@@ -398,9 +398,6 @@
         <div>
           <span class="eyebrow">PH Team</span>
           <h1>Leave Tracker</h1>
-          <p class="lede" id="leave-tracker-lede" style="display:flex; align-items:center; gap:8px;">
-            <span>Vacation, sick, and emergency leave — requested, approved, and logged.</span>
-          </p>
         </div>
         <div id="leave-tracker-actions"></div>
       </div>
@@ -821,27 +818,6 @@ function renderLeaveTracker() {
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
   const reportBtn = document.getElementById('btn-download-report');
   if (reportBtn) reportBtn.addEventListener('click', downloadMonthlyReport);
-
-  const ledeEl = document.getElementById('leave-tracker-lede');
-  if (ledeEl) {
-    const dismissed = sessionStorage.getItem('registry_lede_dismissed') === 'true';
-    ledeEl.style.display = dismissed ? 'none' : 'flex';
-    if (isAdmin() && !dismissed) {
-      let dismissBtn = document.getElementById('leave-tracker-lede-dismiss');
-      if (!dismissBtn) {
-        dismissBtn = document.createElement('span');
-        dismissBtn.id = 'leave-tracker-lede-dismiss';
-        dismissBtn.title = 'Hide this description';
-        dismissBtn.textContent = '×';
-        dismissBtn.style.cssText = 'cursor:pointer; color:var(--ink-faint); font-size:13px; padding:0 4px; line-height:1;';
-        ledeEl.appendChild(dismissBtn);
-      }
-      dismissBtn.onclick = () => {
-        sessionStorage.setItem('registry_lede_dismissed', 'true');
-        ledeEl.style.display = 'none';
-      };
-    }
-  }
 
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
