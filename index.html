@@ -511,6 +511,7 @@ const state = {
   liVerificationStatus: [], // LinkedIn verification status per employee
   liRestrictionEntries: [], // LI restriction log entries
   liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
+  liRestrictionTickerHandle: null, // setInterval handle for live status re-check
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
@@ -603,6 +604,7 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   stopPriolistPolling();
+  stopLiRestrictionTicker();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -649,6 +651,9 @@ function switchView(viewName) {
 
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
+
+  if (viewName === 'li-restriction') startLiRestrictionTicker();
+  else stopLiRestrictionTicker();
 }
 
 // =====================================================================
@@ -2148,6 +2153,33 @@ function getLiVerification(employeeId) {
   return state.liVerificationStatus.find(v => v.employee_id === employeeId);
 }
 
+// An entry counts as "Lifted" if either outcome field says so, or if its
+// scheduled lift date/time (in Philippine time) has already passed.
+// Otherwise it's still "Restricted".
+function getLiEntryStatus(entry) {
+  if (entry.outcome_1 === 'Lifted' || entry.outcome_2 === 'Lifted') return 'Lifted';
+  if (entry.restriction_lift_at && entry.restriction_lift_at <= new Date().toISOString()) return 'Lifted';
+  return 'Restricted';
+}
+
+// Re-renders periodically while this tab is open so entries whose
+// scheduled lift time has just passed flip to "Lifted" and move down
+// without needing a manual refresh or any extra network requests —
+// the underlying data hasn't changed, only the current time has.
+function startLiRestrictionTicker() {
+  stopLiRestrictionTicker();
+  state.liRestrictionTickerHandle = setInterval(() => {
+    renderLiRestriction();
+  }, 30000);
+}
+
+function stopLiRestrictionTicker() {
+  if (state.liRestrictionTickerHandle) {
+    clearInterval(state.liRestrictionTickerHandle);
+    state.liRestrictionTickerHandle = null;
+  }
+}
+
 function renderLiRestriction() {
   const actionsEl = document.getElementById('li-restriction-actions');
   actionsEl.innerHTML = `<button class="btn btn-primary" id="li-add-entry-btn">+ Log restriction</button>`;
@@ -2164,7 +2196,14 @@ function renderLiRestriction() {
     .filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia')
     .sort(byKristinaFirstThenName);
 
-  const dateEntries = state.liRestrictionEntries.filter(e => e.entry_date === state.liRestrictionDate);
+  const dateEntries = state.liRestrictionEntries
+    .filter(e => e.entry_date === state.liRestrictionDate)
+    .slice()
+    .sort((a, b) => {
+      const statusA = getLiEntryStatus(a) === 'Lifted' ? 1 : 0;
+      const statusB = getLiEntryStatus(b) === 'Lifted' ? 1 : 0;
+      return statusA - statusB; // Restricted (0) before Lifted (1)
+    });
 
   const verificationRows = roster.map(emp => {
     const v = getLiVerification(emp.id);
@@ -2184,6 +2223,9 @@ function renderLiRestriction() {
 
   const logCards = dateEntries.length ? dateEntries.map(e => {
     const emp = state.employees.find(x => x.id === e.employee_id);
+    const status = getLiEntryStatus(e);
+    const statusColor = status === 'Lifted' ? 'var(--green)' : 'var(--coral)';
+    const statusBg = status === 'Lifted' ? 'var(--green-wash)' : 'var(--coral-wash)';
     return `
       <div class="card" style="padding:16px; margin-bottom:12px;">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:8px;">
@@ -2191,7 +2233,8 @@ function renderLiRestriction() {
             <div style="font-weight:700; color:${colorForName(emp ? emp.display_name : '')};">${escapeHtml(emp ? emp.display_name : 'Unknown')}</div>
             <div class="faint" style="font-size:11px; margin-top:2px;">${escapeHtml(e.restriction_type || 'No type set')} ${e.occurrence_number > 1 ? `· Occurrence #${e.occurrence_number}` : ''}</div>
           </div>
-          <div style="display:flex; gap:6px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:11px; font-weight:700; padding:3px 10px; border-radius:999px; color:${statusColor}; background:${statusBg};">${status}</span>
             ${admin ? `<button class="btn btn-ghost btn-sm li-edit-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px;">Edit</button>` : ''}
             ${admin ? `<button class="btn btn-ghost btn-sm li-delete-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px; color:var(--coral);">Delete</button>` : ''}
           </div>
@@ -2202,7 +2245,7 @@ function renderLiRestriction() {
           <div><span class="faint">2nd Action:</span> ${escapeHtml(e.action_2 || '—')}</div>
           <div><span class="faint">2nd Outcome:</span> ${escapeHtml(e.outcome_2 || '—')}</div>
           <div><span class="faint">Co-Agent:</span> ${escapeHtml(e.co_agent_name || '—')}</div>
-          <div><span class="faint">Lift Date:</span> ${e.restriction_lift_date ? formatPrettyDate(e.restriction_lift_date) : '—'}</div>
+          <div><span class="faint">Lift Date &amp; Time:</span> ${e.restriction_lift_at ? formatPhDateTime(e.restriction_lift_at) : '—'}</div>
           <div style="grid-column: span 2;"><span class="faint">3rd Action / Working Option:</span> ${escapeHtml(e.action_3 || '—')}</div>
           ${e.note ? `<div style="grid-column: span 2;"><span class="faint">Note:</span> ${escapeHtml(e.note)}</div>` : ''}
         </div>
@@ -2329,8 +2372,8 @@ function openLiEntryModal(entryId) {
         <input type="text" id="li-coagent" value="${editing ? escapeHtml(editing.co_agent_name || '') : ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
       <div class="field">
-        <label for="li-lift-date">Restriction Lift Date</label>
-        <input type="date" id="li-lift-date" value="${editing && editing.restriction_lift_date ? editing.restriction_lift_date : ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <label for="li-lift-datetime">Restriction Lift Date &amp; Time <span class="faint">(Philippine time)</span></label>
+        <input type="datetime-local" id="li-lift-datetime" value="${editing && editing.restriction_lift_at ? utcIsoToPhLocal(editing.restriction_lift_at) : ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
       ${selectField('li-action-3', '3rd Action Taken / Working Option', LI_THIRD_ACTIONS, editing ? editing.action_3 : null)}
       <div class="field">
@@ -2356,7 +2399,7 @@ async function submitLiEntry(e, editing) {
   const action_2 = document.getElementById('li-action-2').value || null;
   const outcome_2 = document.getElementById('li-outcome-2').value || null;
   const co_agent_name = document.getElementById('li-coagent').value.trim() || null;
-  const restriction_lift_date = document.getElementById('li-lift-date').value || null;
+  const restriction_lift_at = phLocalToUtcIso(document.getElementById('li-lift-datetime').value);
   const action_3 = document.getElementById('li-action-3').value || null;
   const note = document.getElementById('li-note').value.trim() || null;
 
@@ -2366,7 +2409,7 @@ async function submitLiEntry(e, editing) {
   const payload = {
     employee_id, entry_date, occurrence_number, restriction_type,
     action_1, outcome_1, action_2, outcome_2,
-    co_agent_name, restriction_lift_date, action_3, note,
+    co_agent_name, restriction_lift_at, action_3, note,
     logged_by: state.profile.username,
   };
 
@@ -2680,6 +2723,56 @@ function isoDate(d) {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+// Philippine time is always UTC+8, with no daylight saving — so the
+// offset is fixed and doesn't need a timezone library.
+const PH_UTC_OFFSET_MINUTES = 8 * 60;
+
+// Takes a "YYYY-MM-DDTHH:mm" string (as typed into a datetime-local
+// input, meant to represent Philippine wall-clock time) and returns the
+// correct UTC ISO timestamp string for storage.
+function phLocalToUtcIso(localStr) {
+  if (!localStr) return null;
+  const [datePart, timePart] = localStr.split('T');
+  const [y, m, d] = datePart.split('-').map(Number);
+  const [hh, mm] = (timePart || '00:00').split(':').map(Number);
+  // Construct as if it were UTC, then subtract the PH offset to get the
+  // real UTC instant that corresponds to that PH wall-clock time.
+  const asUtc = new Date(Date.UTC(y, m - 1, d, hh, mm));
+  asUtc.setUTCMinutes(asUtc.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
+  return asUtc.toISOString();
+}
+
+// Takes a stored UTC ISO timestamp and returns a "YYYY-MM-DDTHH:mm"
+// string representing that instant in Philippine time, suitable for a
+// datetime-local input's value.
+function utcIsoToPhLocal(isoStr) {
+  if (!isoStr) return '';
+  const utcDate = new Date(isoStr);
+  const phMs = utcDate.getTime() + PH_UTC_OFFSET_MINUTES * 60 * 1000;
+  const ph = new Date(phMs);
+  const y = ph.getUTCFullYear();
+  const m = String(ph.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(ph.getUTCDate()).padStart(2, '0');
+  const hh = String(ph.getUTCHours()).padStart(2, '0');
+  const mm = String(ph.getUTCMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d}T${hh}:${mm}`;
+}
+
+// Formats a stored UTC ISO timestamp as a readable PH-time string, with
+// an explicit "PH time" label so there's never ambiguity about which
+// timezone is being shown.
+function formatPhDateTime(isoStr) {
+  if (!isoStr) return '';
+  const localStr = utcIsoToPhLocal(isoStr);
+  const [datePart, timePart] = localStr.split('T');
+  const d = new Date(datePart + 'T00:00:00');
+  const dateLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const [hh, mm] = timePart.split(':').map(Number);
+  const period = hh >= 12 ? 'PM' : 'AM';
+  const hour12 = hh % 12 === 0 ? 12 : hh % 12;
+  return `${dateLabel}, ${hour12}:${mm.toString().padStart(2,'0')} ${period} (PH time)`;
 }
 
 function formatPrettyDate(iso) {
