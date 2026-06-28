@@ -1880,11 +1880,10 @@ function renderPrioList() {
     return { entry, emp };
   }).filter(r => r.emp);
 
-  // Only Inactive employees are excluded from the priority sort — they're
-  // pinned below everyone else, in rank order. Active, Break, and blank
-  // (not yet set) all participate normally.
-  const ranked = rows.filter(r => r.entry.status !== 'Inactive');
-  const unranked = rows.filter(r => r.entry.status === 'Inactive');
+  // Only Active/Break employees take part in the priority sort; Inactive
+  // (or anyone with no status set yet) is pinned below them, in rank order.
+  const ranked = rows.filter(r => r.entry.status === 'Active' || r.entry.status === 'Break');
+  const unranked = rows.filter(r => !(r.entry.status === 'Active' || r.entry.status === 'Break'));
 
   const anyOutput = ranked.some(r => Number(r.entry.md_output) + Number(r.entry.leads) > 0);
 
