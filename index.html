@@ -366,9 +366,9 @@
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
+      <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
       <div class="nav-section-label">Coming soon</div>
       <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
-      <a class="nav-item disabled"><span class="dot"></span>OT Hours Filing</a>
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
@@ -444,6 +444,19 @@
       <div id="li-restriction-content"></div>
     </section>
 
+    <!-- OT HOURS FILING VIEW -->
+    <section class="view" id="view-ot-filing">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>OT Hours Filing</h1>
+          <p class="lede">Log your assumed OT hours before your shift, then confirm or correct them afterward.</p>
+        </div>
+        <div id="ot-filing-actions"></div>
+      </div>
+      <div id="ot-filing-content"></div>
+    </section>
+
   </main>
 </div>
 
@@ -513,6 +526,8 @@ const state = {
   liRestrictionEntries: [], // LI restriction log entries
   liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
   liRestrictionTickerHandle: null, // setInterval handle for live status re-check
+  otFilingDates: [],   // open OT filing dates (admin-managed)
+  otHoursEntries: [],  // OT hours entries
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
@@ -630,7 +645,7 @@ function initNav() {
     openChangePasswordModal();
   });
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction'];
+  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
@@ -649,6 +664,7 @@ function switchView(viewName) {
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
   if (viewName === 'priolist') renderPrioList();
   if (viewName === 'li-restriction') renderLiRestriction();
+  if (viewName === 'ot-filing') renderOtFiling();
 
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
@@ -662,12 +678,25 @@ function switchView(viewName) {
 // =====================================================================
 
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
   renderDashboard();
   renderLeaveTracker();
   renderPayrollConfirmation();
   renderPrioList();
   renderLiRestriction();
+  renderOtFiling();
+}
+
+async function loadOtFilingDates() {
+  const { data, error } = await sb.from('ot_filing_dates').select('*').order('filing_date', { ascending: true });
+  if (error) { showToast('Could not load OT filing dates.', true); return; }
+  state.otFilingDates = data || [];
+}
+
+async function loadOtHoursEntries() {
+  const { data, error } = await sb.from('ot_hours_entries').select('*');
+  if (error) { showToast('Could not load OT hours entries.', true); return; }
+  state.otHoursEntries = data || [];
 }
 
 async function loadLiVerificationStatus() {
@@ -2530,6 +2559,260 @@ async function submitLiEntry(e, editing) {
   state.liRestrictionDate = entry_date;
   await loadLiRestrictionEntries();
   renderLiRestriction();
+}
+
+
+// =====================================================================
+// OT HOURS FILING
+// =====================================================================
+
+function getOtEntry(employeeId, filingDate) {
+  return state.otHoursEntries.find(e => e.employee_id === employeeId && e.filing_date === filingDate);
+}
+
+function formatOtDateHeader(isoStr) {
+  const d = new Date(isoStr + 'T00:00:00');
+  const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
+  const monthDay = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return `${weekday}<br>${monthDay}`;
+}
+
+function renderOtFiling() {
+  const actionsEl = document.getElementById('ot-filing-actions');
+  actionsEl.innerHTML = isAdmin()
+    ? `<button class="btn btn-ghost" id="ot-manage-dates-btn">Manage dates</button>`
+    : '';
+  const manageDatesBtn = document.getElementById('ot-manage-dates-btn');
+  if (manageDatesBtn) manageDatesBtn.addEventListener('click', openOtManageDatesModal);
+
+  const el = document.getElementById('ot-filing-content');
+  if (!state.employees.length) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    return;
+  }
+
+  const admin = isAdmin();
+  const roster = state.employees
+    .filter(emp => emp.active !== false)
+    .sort(byKristinaFirstThenName);
+
+  const dates = state.otFilingDates.map(d => d.filing_date);
+
+  if (!dates.length) {
+    el.innerHTML = `
+      <div class="card" style="padding:30px; text-align:center;">
+        <p class="muted">No OT filing dates are open right now.</p>
+        ${admin ? `<p class="faint" style="font-size:12px; margin-top:6px;">Click "Manage dates" above to add one.</p>` : ''}
+      </div>
+    `;
+    return;
+  }
+
+  const headerCells = dates.map(d => `<th style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; min-width:110px;">${formatOtDateHeader(d)}</th>`).join('');
+
+  const bodyRows = roster.map(emp => {
+    const isMe = emp.id === state.profile.employee_id;
+    const cells = dates.map(d => {
+      const entry = getOtEntry(emp.id, d);
+      const canEdit = admin || isMe;
+      const hasAssumed = entry && entry.assumed_hours != null;
+      const hasActual = entry && entry.actual_hours != null;
+      const confirmed = entry && entry.confirmed;
+
+      if (!canEdit) {
+        const displayVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '—');
+        return `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>`;
+      }
+
+      // Editable cell for the owner (or admin).
+      const inputVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '');
+      let badge = '';
+      if (hasAssumed && !confirmed) {
+        badge = `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; margin-top:3px; color:var(--amber);">Confirm/adjust</button>`;
+      } else if (confirmed) {
+        badge = `<span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>`;
+      }
+
+      return `
+        <td style="padding:6px; text-align:center;">
+          <input type="number" min="0" step="0.5" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
+            style="width:56px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+          <div>${badge}</div>
+        </td>
+      `;
+    }).join('');
+
+    return `
+      <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:#DCEFEA;' : ''}">
+        <td style="padding:8px 10px; font-weight:700; color:var(--ink); white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
+        ${cells}
+      </tr>
+    `;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="card" style="padding:22px; overflow-x:auto;">
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm/adjust" to confirm the number is accurate or correct it to your actual hours.</p>
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="border-bottom:2px solid var(--line);">
+            <th style="padding:10px; text-align:left; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">Agent</th>
+            ${headerCells}
+          </tr>
+        </thead>
+        <tbody>
+          ${bodyRows}
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  document.querySelectorAll('.ot-hours-input').forEach(input => {
+    input.addEventListener('change', () => saveOtHours(input.dataset.empId, input.dataset.date, input.value));
+  });
+  document.querySelectorAll('.ot-confirm-btn').forEach(btn => {
+    btn.addEventListener('click', () => openOtConfirmModal(btn.dataset.empId, btn.dataset.date));
+  });
+}
+
+async function saveOtHours(employeeId, filingDate, rawValue) {
+  if (!isAdmin() && employeeId !== state.profile.employee_id) {
+    showToast('You can only log your own OT hours.', true);
+    renderOtFiling();
+    return;
+  }
+
+  const hours = rawValue === '' ? null : parseFloat(rawValue);
+  if (hours !== null && (isNaN(hours) || hours < 0)) {
+    showToast('Enter a valid, non-negative number.', true);
+    renderOtFiling();
+    return;
+  }
+
+  const existing = getOtEntry(employeeId, filingDate);
+  const alreadyConfirmed = existing && existing.confirmed;
+
+  const payload = {
+    employee_id: employeeId,
+    filing_date: filingDate,
+    confirmed: alreadyConfirmed || false,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (alreadyConfirmed) {
+    // Already confirmed once — further edits correct the actual hours
+    // directly, leaving the original assumed figure as a record.
+    payload.assumed_hours = existing.assumed_hours;
+    payload.actual_hours = hours;
+  } else {
+    // Pre-shift: typing here is always the assumed estimate.
+    payload.assumed_hours = hours;
+    payload.actual_hours = existing ? existing.actual_hours : null;
+  }
+
+  const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
+  if (error) { showToast('Could not save OT hours.', true); return; }
+  await loadOtHoursEntries();
+  renderOtFiling();
+}
+
+function openOtConfirmModal(employeeId, filingDate) {
+  const entry = getOtEntry(employeeId, filingDate);
+  if (!entry) return;
+  const emp = state.employees.find(e => e.id === employeeId);
+
+  if (!isAdmin() && employeeId !== state.profile.employee_id) {
+    showToast('You can only confirm your own OT hours.', true);
+    return;
+  }
+
+  const formHtml = `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">You logged <strong>${entry.assumed_hours}</strong> assumed OT hour(s) for ${escapeHtml(emp.display_name)} on ${formatPrettyDate(filingDate)}. Is that accurate?</p>
+    <form id="ot-confirm-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="ot-actual-hours">Actual OT hours</label>
+        <input type="number" id="ot-actual-hours" min="0" step="0.5" required value="${entry.assumed_hours}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Confirm</button>
+    </form>
+  `;
+
+  openModal('Confirm OT hours', formHtml);
+  document.getElementById('ot-confirm-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const actualHours = parseFloat(document.getElementById('ot-actual-hours').value);
+    if (isNaN(actualHours) || actualHours < 0) { showToast('Enter a valid, non-negative number.', true); return; }
+
+    const { error } = await sb.from('ot_hours_entries').update({
+      actual_hours: actualHours,
+      confirmed: true,
+      updated_at: new Date().toISOString(),
+    }).eq('employee_id', employeeId).eq('filing_date', filingDate);
+
+    if (error) { showToast('Could not save the confirmation.', true); return; }
+    closeModal();
+    showToast('OT hours confirmed.');
+    await loadOtHoursEntries();
+    renderOtFiling();
+  });
+}
+
+function openOtManageDatesModal() {
+  if (!isAdmin()) { showToast('Only admins can manage OT filing dates.', true); return; }
+
+  const datesListHtml = state.otFilingDates.length
+    ? state.otFilingDates.map(d => `
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:13px;">
+          <span>${formatPrettyDate(d.filing_date)}</span>
+          <button class="btn btn-ghost btn-sm ot-remove-date-btn" data-id="${d.id}" style="color:var(--coral); font-size:11px; padding:3px 8px;">Remove</button>
+        </div>
+      `).join('')
+    : `<p class="muted" style="font-size:13px;">No dates open yet.</p>`;
+
+  const formHtml = `
+    <div style="margin-bottom:16px;">
+      ${datesListHtml}
+    </div>
+    <form id="ot-add-date-form" style="display:flex; gap:8px; align-items:flex-end;">
+      <div class="field" style="flex:1; margin:0;">
+        <label for="ot-new-date">Add a filing date</label>
+        <input type="date" id="ot-new-date" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="padding:9px 16px;">Add</button>
+    </form>
+  `;
+
+  openModal('Manage OT filing dates', formHtml);
+  document.querySelectorAll('.ot-remove-date-btn').forEach(btn => {
+    btn.addEventListener('click', () => removeOtFilingDate(btn.dataset.id));
+  });
+  document.getElementById('ot-add-date-form').addEventListener('submit', addOtFilingDate);
+}
+
+async function addOtFilingDate(e) {
+  e.preventDefault();
+  const filing_date = document.getElementById('ot-new-date').value;
+  if (!filing_date) return;
+
+  const { error } = await sb.from('ot_filing_dates').insert({ filing_date });
+  if (error) {
+    showToast(error.code === '23505' ? 'That date is already open for filing.' : 'Could not add the date.', true);
+    return;
+  }
+  showToast('Date added.');
+  await loadOtFilingDates();
+  openOtManageDatesModal();
+  renderOtFiling();
+}
+
+async function removeOtFilingDate(dateId) {
+  if (!confirm('Remove this filing date? Any hours already logged for it will stay in the system but the column will be hidden.')) return;
+  const { error } = await sb.from('ot_filing_dates').delete().eq('id', dateId);
+  if (error) { showToast('Could not remove the date.', true); return; }
+  showToast('Date removed.');
+  await loadOtFilingDates();
+  openOtManageDatesModal();
+  renderOtFiling();
 }
 
 
