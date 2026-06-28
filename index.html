@@ -906,12 +906,15 @@ function renderMyRequestsPanel() {
           ${groups.map(g => {
             const status = g.days[0].status;
             const hrs = g.days[0].hours;
+            const today = isoDate(new Date());
+            const canEditDates = g.days.length > 1 && g.endDate >= today;
             return `
             <div style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
                 <div>
                   <div class="faint" style="font-size:11.5px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : hrs ? ` · ${hrs}h` : ''}</div>
                   ${g.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(g.note)}</div>` : ''}
+                  ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
                 </div>
                 <span class="stamp ${status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
               </div>
@@ -950,6 +953,9 @@ function canCancel(entry) {
 function attachMyRequestsHandlers() {
   document.querySelectorAll('.cancel-leave-btn').forEach(b => {
     b.addEventListener('click', () => cancelLeave(b.dataset.id));
+  });
+  document.querySelectorAll('.edit-dates-link').forEach(b => {
+    b.addEventListener('click', () => openEditDatesModal(b.dataset.id));
   });
 }
 
@@ -1072,12 +1078,12 @@ function renderCalendarCard() {
       .cal-marks{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
       .cal-multiday-stack{ display:flex; flex-direction:column; gap:3px; margin: -2px -10px 6px; }
       .cal-multiday-bar{
-        height: 4px;
+        height: 2px;
         margin: 0 -1px; /* slight overlap so adjacent days' bars visually touch */
       }
-      .cal-multiday-bar.bar-start{ margin-left:8px; border-radius:3px 0 0 3px; }
-      .cal-multiday-bar.bar-end{ margin-right:8px; border-radius:0 3px 3px 0; }
-      .cal-multiday-bar.bar-start.bar-end{ margin-left:8px; margin-right:8px; border-radius:3px; }
+      .cal-multiday-bar.bar-start{ margin-left:8px; border-radius:2px 0 0 2px; }
+      .cal-multiday-bar.bar-end{ margin-right:8px; border-radius:0 2px 2px 0; }
+      .cal-multiday-bar.bar-start.bar-end{ margin-left:8px; margin-right:8px; border-radius:2px; }
       .cal-multiday-bar.vl{ background: var(--green); }
       .cal-multiday-bar.sl{ background: var(--amber); }
       .cal-multiday-bar.el{ background: var(--coral); }
