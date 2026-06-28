@@ -2013,7 +2013,7 @@ function renderPrioList() {
       if (totalA !== totalB) return totalA - totalB; // lowest output first
       return a.entry.rank - b.entry.rank;
     }
-    return a.entry.rank - b.entry.rank; // initial state: lowest rank number first
+    return b.entry.rank - a.entry.rank; // initial state, no data yet: highest rank number first (rank 1 at the bottom)
   });
   unranked.sort((a, b) => a.entry.rank - b.entry.rank);
 
