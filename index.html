@@ -527,6 +527,7 @@ const state = {
   liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
   liRestrictionTickerHandle: null, // setInterval handle for live status re-check
   otFilingDates: [],   // open OT filing dates (admin-managed)
+  otFilingSettings: { total_leads_available: null }, // the single global "Total leads available" figure
   otHoursEntries: [],  // OT hours entries
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
@@ -678,7 +679,7 @@ function switchView(viewName) {
 // =====================================================================
 
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries(), loadOtFilingSettings()]);
   renderDashboard();
   renderLeaveTracker();
   renderPayrollConfirmation();
@@ -691,6 +692,12 @@ async function loadOtFilingDates() {
   const { data, error } = await sb.from('ot_filing_dates').select('*').order('filing_date', { ascending: true });
   if (error) { showToast('Could not load OT filing dates.', true); return; }
   state.otFilingDates = data || [];
+}
+
+async function loadOtFilingSettings() {
+  const { data, error } = await sb.from('ot_filing_settings').select('*').eq('id', 1).maybeSingle();
+  if (error) { showToast('Could not load OT filing settings.', true); return; }
+  if (data) state.otFilingSettings = data;
 }
 
 async function loadOtHoursEntries() {
@@ -2655,43 +2662,50 @@ function renderOtFiling() {
 
   const headerCells = dates.map(d => `<th style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; min-width:110px;">${formatOtDateHeader(d)}</th>`).join('');
 
-  // Each "head" represents 8 hours of logged OT, and each head is
-  // assumed capable of validating 800 leads — same conversion the
-  // spreadsheet used. Uses whichever figure is currently on record per
-  // person (actual hours once confirmed, otherwise the assumed value).
-  function hoursForDate(d) {
-    return roster.reduce((sum, emp) => {
+  // "# of Heads working" is a headcount: anyone who has logged anything
+  // at all for that date counts as 1, regardless of how many hours.
+  function headsForDate(d) {
+    return roster.reduce((count, emp) => {
       const entry = getOtEntry(emp.id, d);
-      if (!entry) return sum;
-      const h = entry.actual_hours != null ? entry.actual_hours : entry.assumed_hours;
-      return sum + (h ? Number(h) : 0);
+      const hasAny = entry && (entry.assumed_hours != null || entry.actual_hours != null);
+      return count + (hasAny ? 1 : 0);
     }, 0);
   }
 
   const headsRow = dates.map(d => {
-    const heads = round2(hoursForDate(d) / 8);
+    const heads = headsForDate(d);
     return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${heads}</td>`;
   }).join('');
 
-  const leadsRow = dates.map(d => {
-    const heads = hoursForDate(d) / 8;
-    const leads = round2(heads * 800);
-    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${leads}</td>`;
+  const leadsToValidatePerDate = dates.map(d => headsForDate(d) * 800);
+
+  const leadsRow = dates.map((d, i) => {
+    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</td>`;
   }).join('');
 
-  const totalLeadsToValidate = round2(dates.reduce((sum, d) => sum + ((hoursForDate(d) / 8) * 800), 0));
+  const totalLeadsToValidate = leadsToValidatePerDate.reduce((sum, n) => sum + n, 0);
 
-  const pendingRow = dates.map(d => {
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    const pending = dateRecord ? dateRecord.pending_leads_available : null;
-    if (admin) {
-      return `<td style="padding:6px; text-align:center;">
-        <input type="number" min="0" step="1" class="priolist-input ot-pending-input" data-date="${d}" value="${pending != null ? pending : ''}"
-          style="width:80px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-      </td>`;
-    }
-    return `<td style="padding:8px; text-align:center; font-size:12.5px;">${pending != null ? pending : '—'}</td>`;
-  }).join('');
+  // Pending Leads Available to Work On: a single admin-editable total,
+  // then a running balance per date — each date's box shows the
+  // previous balance minus that date's "# of Leads to Validate".
+  const totalLeadsAvailable = state.otFilingSettings.total_leads_available;
+  let runningBalance = totalLeadsAvailable != null ? Number(totalLeadsAvailable) : null;
+  const pendingBalances = dates.map((d, i) => {
+    if (runningBalance == null) return null;
+    runningBalance = round2(runningBalance - leadsToValidatePerDate[i]);
+    return runningBalance;
+  });
+
+  const totalLeadsInputHtml = admin ? `
+    <td style="padding:6px; text-align:center;">
+      <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" value="${totalLeadsAvailable != null ? totalLeadsAvailable : ''}" placeholder="Total"
+        style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+    </td>
+  ` : `
+    <td style="padding:8px; text-align:center; font-size:12.5px;">${totalLeadsAvailable != null ? totalLeadsAvailable : '—'}</td>
+  `;
+
+  const pendingRow = pendingBalances.map(bal => `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</td>`).join('');
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
@@ -2758,8 +2772,19 @@ function renderOtFiling() {
             </td>
             ${leadsRow}
           </tr>
+          <tr style="border-top:2px solid var(--line);">
+            <td style="padding:8px 10px;">
+              <div style="font-weight:700; font-size:12px;">Total Leads Available</div>
+              <div class="faint" style="font-size:10.5px; margin-top:2px;">${admin ? 'Set the starting total here.' : ''}</div>
+            </td>
+            ${totalLeadsInputHtml}
+            ${dates.slice(1).map(() => '<td></td>').join('')}
+          </tr>
           <tr>
-            <td style="padding:8px 10px; font-weight:700; font-size:12px;">Pending Leads Available to Work On</td>
+            <td style="padding:8px 10px; font-weight:700; font-size:12px;">
+              Pending Leads Available to Work On
+              <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Running balance after each date's leads</div>
+            </td>
             ${pendingRow}
           </tr>
         </tfoot>
@@ -2767,9 +2792,10 @@ function renderOtFiling() {
     </div>
   `;
 
-  document.querySelectorAll('.ot-pending-input').forEach(input => {
-    input.addEventListener('change', () => saveOtPendingLeads(input.dataset.date, input.value));
-  });
+  const totalLeadsInput = document.querySelector('.ot-total-leads-input');
+  if (totalLeadsInput) {
+    totalLeadsInput.addEventListener('change', () => saveOtTotalLeadsAvailable(totalLeadsInput.value));
+  }
   document.querySelectorAll('.ot-hours-input').forEach(input => {
     input.addEventListener('change', () => saveOtHours(input.dataset.empId, input.dataset.date, input.value));
   });
@@ -2837,20 +2863,20 @@ function downloadOtFilingReport() {
 
   csvRows.push([]);
   csvRows.push(['Summary']);
-  csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Pending Leads Available']);
+  csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Pending Leads Available (running balance)']);
+  let runningBalance = state.otFilingSettings.total_leads_available != null ? Number(state.otFilingSettings.total_leads_available) : null;
   dates.forEach(d => {
-    const totalHours = roster.reduce((sum, emp) => {
+    const heads = roster.reduce((count, emp) => {
       const entry = getOtEntry(emp.id, d);
-      if (!entry) return sum;
-      const h = entry.actual_hours != null ? entry.actual_hours : entry.assumed_hours;
-      return sum + (h ? Number(h) : 0);
+      const hasAny = entry && (entry.assumed_hours != null || entry.actual_hours != null);
+      return count + (hasAny ? 1 : 0);
     }, 0);
-    const heads = round2(totalHours / 8);
-    const leads = round2(heads * 800);
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    const pending = dateRecord && dateRecord.pending_leads_available != null ? dateRecord.pending_leads_available : '';
-    csvRows.push([formatPrettyDate(d), heads, leads, pending]);
+    const leads = heads * 800;
+    if (runningBalance != null) runningBalance = round2(runningBalance - leads);
+    csvRows.push([formatPrettyDate(d), heads, leads, runningBalance != null ? runningBalance : '']);
   });
+  csvRows.push([]);
+  csvRows.push(['Total Leads Available (starting figure)', state.otFilingSettings.total_leads_available != null ? state.otFilingSettings.total_leads_available : '']);
 
   const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -2868,7 +2894,7 @@ function downloadOtFilingReport() {
   showToast('Report downloaded.');
 }
 
-async function saveOtPendingLeads(filingDate, rawValue) {
+async function saveOtTotalLeadsAvailable(rawValue) {
   if (!isAdmin()) { showToast('Only admins can edit this figure.', true); renderOtFiling(); return; }
 
   const value = rawValue === '' ? null : parseFloat(rawValue);
@@ -2878,9 +2904,9 @@ async function saveOtPendingLeads(filingDate, rawValue) {
     return;
   }
 
-  const { error } = await sb.from('ot_filing_dates').update({ pending_leads_available: value }).eq('filing_date', filingDate);
+  const { error } = await sb.from('ot_filing_settings').update({ total_leads_available: value, updated_at: new Date().toISOString() }).eq('id', 1);
   if (error) { showToast('Could not save.', true); return; }
-  await loadOtFilingDates();
+  await loadOtFilingSettings();
   renderOtFiling();
 }
 
