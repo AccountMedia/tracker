@@ -2675,7 +2675,7 @@ function renderOtFiling() {
     return;
   }
 
-  const headerCells = dates.map(d => `<th style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; min-width:110px;">${formatOtDateHeader(d)}</th>`).join('');
+  const headerCells = dates.map(d => `<th style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; min-width:140px;">${formatOtDateHeader(d)}</th>`).join('');
 
   // "# of Heads working" is a headcount: anyone who has logged anything
   // at all for that date counts as 1, regardless of how many hours.
@@ -2701,13 +2701,13 @@ function renderOtFiling() {
 
   const headsRow = dates.map(d => {
     const heads = headsForDate(d);
-    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600; min-width:110px;">${heads}</td>`;
+    return `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
   }).join('');
 
   const leadsToValidatePerDate = dates.map(d => round2(hoursForDate(d) * 100));
 
   const leadsRow = dates.map((d, i) => {
-    return `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600; min-width:110px;">${leadsToValidatePerDate[i]}</td>`;
+    return `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
   }).join('');
 
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
@@ -2734,14 +2734,16 @@ function renderOtFiling() {
   const totalLeadsRow = dates.map((d, i) => {
     const val = totalLeadsPerDate[i];
     const editedBy = totalLeadsEditedByPerDate[i];
-    return `<td style="padding:6px; text-align:center; min-width:110px;">
-      <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
-        style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-      ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
+    return `<td style="padding:6px; min-width:140px;">
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
+          style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
+      </div>
     </td>`;
   }).join('');
 
-  const pendingRow = pendingBalances.map(bal => `<td style="padding:8px; text-align:center; font-size:12.5px; font-weight:600; min-width:110px;">${bal != null ? bal : '—'}</td>`).join('');
+  const pendingRow = pendingBalances.map(bal => `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
@@ -2758,7 +2760,7 @@ function renderOtFiling() {
         // "Unlock" action to override this if a correction is genuinely
         // needed; staff have no way to edit it from here.
         return `
-          <td style="padding:8px; text-align:center; font-size:12.5px; min-width:110px;">
+          <td style="padding:8px; text-align:center; font-size:12.5px; min-width:140px;">
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
@@ -2769,7 +2771,7 @@ function renderOtFiling() {
       }
 
       if (!canEdit) {
-        return `<td style="padding:8px; text-align:center; font-size:12.5px; min-width:110px;">${displayVal}</td>`;
+        return `<td style="padding:8px; text-align:center; font-size:12.5px; min-width:140px;">${displayVal}</td>`;
       }
 
       // Editable cell for the owner (or admin) — only reachable while
@@ -2780,13 +2782,13 @@ function renderOtFiling() {
         : '';
 
       return `
-        <td style="padding:6px; min-width:110px;">
-          <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
-            <div style="width:56px; flex-shrink:0;">
+        <td style="padding:4px; min-width:140px;">
+          <div style="display:flex; align-items:center; justify-content:center; gap:4px;">
+            <div style="width:52px; flex-shrink:0;">
               <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
                 style="width:100%; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
             </div>
-            <div style="width:62px; flex-shrink:0; text-align:left;">${badge}</div>
+            <div style="width:68px; flex-shrink:0; text-align:left;">${badge}</div>
           </div>
         </td>
       `;
@@ -2806,7 +2808,7 @@ function renderOtFiling() {
       <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
           <col style="width:230px;">
-          ${dates.map(() => '<col style="width:110px;">').join('')}
+          ${dates.map(() => '<col style="width:140px;">').join('')}
         </colgroup>
         <thead>
           <tr style="border-bottom:2px solid var(--line);">
