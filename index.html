@@ -2414,10 +2414,9 @@ function openLiEntryModal(entryId) {
     return;
   }
 
-  const empOptions = state.employees
+  const eligibleEmployees = state.employees
     .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
-    .sort(byKristinaFirstThenName)
-    .map(e => `<option value="${e.id}" ${editing && editing.employee_id === e.id ? 'selected' : ''}>${escapeHtml(e.display_name)}</option>`).join('');
+    .sort(byKristinaFirstThenName);
 
   const selectField = (id, label, options, current) => `
     <div class="field">
@@ -2429,14 +2428,9 @@ function openLiEntryModal(entryId) {
     </div>
   `;
 
-  const employeeFieldHtml = admin ? `
-      <div class="field">
-        <label for="li-employee">Agent</label>
-        <select id="li-employee" required ${editing ? 'disabled' : ''} style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-          ${empOptions}
-        </select>
-      </div>
-  ` : `
+  const employeeFieldHtml = admin
+    ? searchableEmployeeFieldHtml('li-employee', 'Agent', eligibleEmployees, editing ? editing.employee_id : null)
+    : `
       <div class="field">
         <label>Agent</label>
         <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line); background:var(--line-soft); font-weight:600;">${escapeHtml(state.profile.display_name)}</div>
@@ -2483,6 +2477,13 @@ function openLiEntryModal(entryId) {
   `;
 
   openModal(editing ? 'Edit restriction entry' : 'Log a restriction', formHtml);
+  if (admin) {
+    attachSearchableEmployeeField('li-employee', eligibleEmployees);
+    if (editing) {
+      const liSearchInput = document.getElementById('li-employee-search');
+      if (liSearchInput) liSearchInput.disabled = true;
+    }
+  }
   document.getElementById('li-entry-form').addEventListener('submit', (e) => submitLiEntry(e, editing));
 }
 
@@ -2537,22 +2538,16 @@ async function submitLiEntry(e, editing) {
 // =====================================================================
 
 function openRequestModal() {
-  const empOptions = state.employees
+  const eligibleEmployees = state.employees
     .filter(e => e.active !== false)
-    .sort(byKristinaFirstThenName)
-    .map(e => `<option value="${e.id}">${escapeHtml(e.display_name)}</option>`).join('');
+    .sort(byKristinaFirstThenName);
   const typeOptions = Object.entries(LEAVE_TYPES)
     .filter(([k]) => !['LNP','HLNP'].includes(k))
     .map(([k,v]) => `<option value="${k}">${v.label}</option>`).join('');
 
-  const employeeFieldHtml = isAdmin() ? `
-      <div class="field">
-        <label for="req-employee">Employee</label>
-        <select id="req-employee" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-          ${empOptions}
-        </select>
-      </div>
-  ` : `
+  const employeeFieldHtml = isAdmin()
+    ? searchableEmployeeFieldHtml('req-employee', 'Employee', eligibleEmployees, null)
+    : `
       <div class="field">
         <label>Employee</label>
         <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line); background:var(--line-soft); font-weight:600;">${escapeHtml(state.profile.display_name)}</div>
@@ -2597,6 +2592,7 @@ function openRequestModal() {
   `;
 
   openModal('Request leave', formHtml);
+  if (isAdmin()) attachSearchableEmployeeField('req-employee', eligibleEmployees);
   const fromInput = document.getElementById('req-date-from');
   const toInput = document.getElementById('req-date-to');
   const useHoursCheckbox = document.getElementById('req-use-hours');
@@ -2820,6 +2816,78 @@ function byKristinaFirstThenName(a, b) {
   return a.display_name.localeCompare(b.display_name);
 }
 
+// =====================================================================
+// SEARCHABLE EMPLOYEE DROPDOWN
+// A lightweight, reusable search-as-you-type picker for admin employee
+// fields. Renders a text box + a hidden input holding the actual
+// selected employee id (so existing code that reads
+// document.getElementById(idPrefix).value keeps working unchanged).
+// =====================================================================
+
+function searchableEmployeeFieldHtml(idPrefix, label, employees, selectedId) {
+  const selectedEmp = employees.find(e => e.id === selectedId);
+  return `
+    <div class="field searchable-emp-field" style="position:relative;">
+      <label for="${idPrefix}-search">${label}</label>
+      <input type="text" id="${idPrefix}-search" class="searchable-emp-search" autocomplete="off"
+        placeholder="Type a name to search…"
+        value="${selectedEmp ? escapeHtml(selectedEmp.display_name) : ''}"
+        data-prefix="${idPrefix}"
+        style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      <input type="hidden" id="${idPrefix}" value="${selectedId || ''}">
+      <div class="searchable-emp-menu" id="${idPrefix}-menu"
+        style="display:none; position:absolute; top:100%; left:0; right:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); max-height:220px; overflow-y:auto; z-index:30;">
+      </div>
+    </div>
+  `;
+}
+
+// Call once after inserting a searchableEmployeeFieldHtml(...) into the
+// DOM. `employees` is the same list passed to the HTML generator above.
+// `onSelect` (optional) fires with the chosen employee id.
+function attachSearchableEmployeeField(idPrefix, employees, onSelect) {
+  const searchInput = document.getElementById(`${idPrefix}-search`);
+  const hiddenInput = document.getElementById(idPrefix);
+  const menu = document.getElementById(`${idPrefix}-menu`);
+  if (!searchInput || !hiddenInput || !menu) return;
+
+  function renderMenu(filterText) {
+    const q = filterText.trim().toLowerCase();
+    const matches = employees.filter(e => e.display_name.toLowerCase().includes(q)).slice(0, 50);
+    if (!matches.length) {
+      menu.innerHTML = `<div style="padding:10px; font-size:12.5px; color:var(--ink-faint);">No matches</div>`;
+    } else {
+      menu.innerHTML = matches.map(e => `
+        <div class="searchable-emp-option" data-id="${e.id}" data-name="${escapeHtml(e.display_name)}"
+          style="padding:8px 12px; font-size:13px; cursor:pointer;">${escapeHtml(e.display_name)}</div>
+      `).join('');
+      menu.querySelectorAll('.searchable-emp-option').forEach(opt => {
+        opt.addEventListener('mouseenter', () => { opt.style.background = 'var(--line-soft)'; });
+        opt.addEventListener('mouseleave', () => { opt.style.background = 'transparent'; });
+        opt.addEventListener('mousedown', (e) => {
+          e.preventDefault(); // keep focus from leaving the input before click registers
+          hiddenInput.value = opt.dataset.id;
+          searchInput.value = opt.dataset.name;
+          menu.style.display = 'none';
+          if (onSelect) onSelect(opt.dataset.id);
+        });
+      });
+    }
+    menu.style.display = 'block';
+  }
+
+  searchInput.addEventListener('focus', () => renderMenu(searchInput.value));
+  searchInput.addEventListener('input', () => {
+    hiddenInput.value = ''; // typing invalidates the previous selection until a new one is clicked
+    renderMenu(searchInput.value);
+  });
+  searchInput.addEventListener('blur', () => {
+    // Slight delay so a mousedown on an option (which also blurs the
+    // input) still gets to run its handler first.
+    setTimeout(() => { menu.style.display = 'none'; }, 120);
+  });
+}
+
 function isoDate(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -2906,6 +2974,28 @@ document.getElementById('login-form').addEventListener('submit', handleLogin);
 if (!SUPABASE_CONFIGURED) {
   showSetupNotice();
 }
+
+// Auto-select the full contents of any editable text-like field the
+// moment it's focused (by click or by tab), so correcting a value never
+// requires manually selecting the old one first. Uses event delegation
+// so it applies to every field across every view, including ones the
+// app creates dynamically after this script first runs.
+document.addEventListener('focusin', (e) => {
+  const el = e.target;
+  if (!el || !el.tagName) return;
+  const tag = el.tagName.toLowerCase();
+  const textyTypes = ['text', 'number', 'search', 'tel', 'email', 'url'];
+  if (tag === 'textarea' || (tag === 'input' && textyTypes.includes((el.type || 'text').toLowerCase()))) {
+    // Defer slightly so this runs after the browser's own focus/click
+    // caret placement, otherwise some browsers immediately collapse the
+    // selection back to a single cursor position.
+    setTimeout(() => {
+      if (document.activeElement === el && typeof el.select === 'function') {
+        el.select();
+      }
+    }, 0);
+  }
+});
 
 checkExistingSession();
 
