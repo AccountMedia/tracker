@@ -2643,11 +2643,27 @@ function renderOtFiling() {
   }
 
   const admin = isAdmin();
+  const dates = state.otFilingDates.map(d => d.filing_date);
+
+  // Anyone who has logged assumed/actual hours on at least one of the
+  // currently open dates is listed first; everyone still blank across
+  // every date follows below. Alphabetical (Kristina-first) order is
+  // kept within each of those two groups.
+  function hasAnyLoggedHours(employeeId) {
+    return dates.some(d => {
+      const entry = getOtEntry(employeeId, d);
+      return entry && (entry.assumed_hours != null || entry.actual_hours != null);
+    });
+  }
+
   const roster = state.employees
     .filter(emp => emp.active !== false)
-    .sort(byKristinaFirstThenName);
-
-  const dates = state.otFilingDates.map(d => d.filing_date);
+    .sort(byKristinaFirstThenName)
+    .sort((a, b) => {
+      const aHas = hasAnyLoggedHours(a.id) ? 0 : 1;
+      const bHas = hasAnyLoggedHours(b.id) ? 0 : 1;
+      return aHas - bHas;
+    });
 
   if (!dates.length) {
     el.innerHTML = `
