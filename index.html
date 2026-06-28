@@ -891,6 +891,22 @@ async function cancelLeave(id, closeAfter) {
   renderDashboard();
 }
 
+// Admin-only, unconditional delete of a single leave entry — bypasses the
+// normal Cancel button's date restriction entirely. Intended for testing
+// and data cleanup, not regular day-to-day use.
+async function forceDeleteLeave(id) {
+  if (!isAdmin()) { showToast('Only admins can delete entries.', true); return; }
+  if (!confirm('Are you sure you want to delete this entry? This cannot be undone.')) return;
+
+  const { error } = await sb.from('leave_entries').delete().eq('id', id);
+  if (error) { showToast('Could not delete the entry.', true); return; }
+  showToast('Entry deleted.');
+  closeModal();
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
+}
+
 function renderCalendarCard() {
   const year = state.calendarYear;
   const month = state.calendarMonth;
@@ -1108,6 +1124,7 @@ function openDayPanel(dateIso) {
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSuffix}</div>
       </div>
       <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
+      ${admin ? `<span class="force-delete-btn" data-id="${e.id}" title="Delete this entry" style="cursor:pointer; color:var(--ink-faint); font-size:13px; margin-left:6px; padding:0 4px; line-height:1;">×</span>` : ''}
       ${admin && canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px; margin-left:8px;">Cancel</button>` : ''}
     </div>
   `;
@@ -1116,6 +1133,9 @@ function openDayPanel(dateIso) {
   openModal(formatPrettyDate(dateIso), `<div>${body}</div>`);
   document.querySelectorAll('.cancel-leave-btn').forEach(b => {
     b.addEventListener('click', () => cancelLeave(b.dataset.id, true));
+  });
+  document.querySelectorAll('.force-delete-btn').forEach(b => {
+    b.addEventListener('click', () => forceDeleteLeave(b.dataset.id));
   });
 }
 
