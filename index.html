@@ -398,7 +398,6 @@
         <div>
           <span class="eyebrow">PH Team</span>
           <h1>Leave Tracker</h1>
-          <p class="lede">Vacation, sick, and emergency leave — requested, approved, and logged.</p>
         </div>
         <div id="leave-tracker-actions"></div>
       </div>
@@ -752,6 +751,7 @@ function dashboardStatCard(label, value, sub, accentCls) {
 
 function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
+  actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
     ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report" style="margin-right:8px;">Download monthly report</button>` : ''}
     <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
@@ -1173,7 +1173,8 @@ function renderPendingPanel() {
         <style>
           .pending-scroll{
             display:flex; flex-direction:column; gap:10px;
-            max-height: 280px; /* roughly 3 cards */
+            flex: 1;
+            min-height: 0;
             overflow-y:auto;
             padding-right:4px;
           }
@@ -1366,7 +1367,8 @@ function renderCreditTableCard() {
       </div>
       <style>
         .credit-scroll{
-          max-height: 465px; /* roughly 15 rows */
+          flex: 1;
+          min-height: 0;
           overflow-y: auto;
           padding-right:4px;
         }
