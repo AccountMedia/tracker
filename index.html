@@ -1912,16 +1912,21 @@ function renderPrioList() {
     const nameColor = colorForName(emp.display_name);
     const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
 
-    const fileSetGroup = (setKey) => {
-      const colors = PRIOLIST_FILE_SETS[setKey];
-      const active = entry.file_color === setKey;
-      const dots = colors.map(c => `<span style="display:inline-block; width:13px; height:13px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[c]};"></span>`).join('');
-      return `
-        <span class="file-color-set" data-id="${entry.id}" data-set="${setKey}" title="${active ? 'Click to clear' : 'Click to select'}"
-          style="display:inline-flex; gap:3px; align-items:center; cursor:pointer; padding:3px 5px; border-radius:8px;
-                 border:1.5px solid ${active ? 'var(--ink)' : 'transparent'}; box-shadow:0 0 0 1px var(--line);">${dots}</span>
-      `;
-    };
+    const swatchDots = (setKey) => (PRIOLIST_FILE_SETS[setKey] || [])
+      .map(c => `<span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[c]};"></span>`)
+      .join('');
+
+    const menuOption = (setKey) => `
+      <div class="file-color-option" data-id="${entry.id}" data-set="${setKey}"
+        style="display:flex; align-items:center; gap:4px; padding:6px 10px; cursor:pointer; border-radius:6px;
+               background:${entry.file_color === setKey ? 'var(--line-soft)' : 'transparent'};">
+        ${swatchDots(setKey)}
+      </div>
+    `;
+
+    const triggerContent = entry.file_color
+      ? swatchDots(entry.file_color)
+      : `<span class="faint" style="font-size:11px;">—</span>`;
 
     return `
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
@@ -1934,10 +1939,20 @@ function renderPrioList() {
           <option value="" ${!entry.status ? 'selected' : ''} style="color:var(--ink);">—</option>
           ${['Active','Break','Inactive'].map(s => `<option value="${s}" ${entry.status===s?'selected':''} style="color:${PRIOLIST_STATUS_COLORS[s]};">${s}</option>`).join('')}
         </select>
-        <span style="display:flex; align-items:center; gap:8px;">
-          ${fileSetGroup('yellow_blue')}
-          ${fileSetGroup('yellow_blue_red')}
-        </span>
+        <div class="file-color-dropdown" style="position:relative;">
+          <button type="button" class="file-color-trigger" data-id="${entry.id}"
+            style="display:flex; align-items:center; gap:5px; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; font-family:inherit;">
+            ${triggerContent}
+            <span class="faint" style="margin-left:auto; font-size:9px;">▾</span>
+          </button>
+          <div class="file-color-menu" data-id="${entry.id}"
+            style="display:none; position:absolute; top:100%; left:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:5px; z-index:20; min-width:70px;">
+            <div class="file-color-option" data-id="${entry.id}" data-set=""
+              style="padding:6px 10px; cursor:pointer; border-radius:6px; font-size:11px; color:var(--ink-faint); background:${!entry.file_color ? 'var(--line-soft)' : 'transparent'};">—</div>
+            ${menuOption('yellow_blue')}
+            ${menuOption('yellow_blue_red')}
+          </div>
+        </div>
         <input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
       </div>
     `;
@@ -1975,12 +1990,32 @@ function attachPriolistHandlers() {
   document.querySelectorAll('.note-input').forEach(input => {
     input.addEventListener('change', () => savePriolistField(input.dataset.id, 'note', input.value.trim()));
   });
-  document.querySelectorAll('.file-color-set').forEach(el => {
-    el.addEventListener('click', () => {
-      const entry = state.priolistEntries.find(e => e.id === el.dataset.id);
-      const newValue = entry && entry.file_color === el.dataset.set ? null : el.dataset.set;
-      savePriolistField(el.dataset.id, 'file_color', newValue);
+  document.querySelectorAll('.file-color-trigger').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = document.querySelector(`.file-color-menu[data-id="${btn.dataset.id}"]`);
+      const isOpen = menu.style.display === 'block';
+      document.querySelectorAll('.file-color-menu').forEach(m => m.style.display = 'none');
+      if (!isOpen) menu.style.display = 'block';
     });
+  });
+  document.querySelectorAll('.file-color-option').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      savePriolistField(opt.dataset.id, 'file_color', opt.dataset.set || null);
+    });
+  });
+  closeAllFileColorMenusOnOutsideClick();
+}
+
+// Registered once per app lifetime (guarded so re-render doesn't stack up
+// duplicate listeners) — closes any open Open-for-File menu on any click
+// outside of it.
+function closeAllFileColorMenusOnOutsideClick() {
+  if (window._fileColorOutsideClickBound) return;
+  window._fileColorOutsideClickBound = true;
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.file-color-menu').forEach(m => m.style.display = 'none');
   });
 }
 
