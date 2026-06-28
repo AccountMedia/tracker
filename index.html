@@ -2836,16 +2836,24 @@ function renderOtFiling() {
 
 async function resetOtFiling() {
   if (!isAdmin()) { showToast('Only admins can reset OT Hours Filing.', true); return; }
-  if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) will be cleared for everyone. The open filing dates themselves will stay. This cannot be undone.')) return;
+  if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and every date\'s "Total Leads Available" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.')) return;
 
-  const { error } = await sb
+  const { error: hoursError } = await sb
     .from('ot_hours_entries')
     .delete()
     .gte('updated_at', '1900-01-01'); // matches all rows; Supabase requires a filter on delete-all
 
-  if (error) { showToast('Could not reset OT Hours Filing.', true); return; }
+  if (hoursError) { showToast('Could not reset OT Hours Filing.', true); return; }
+
+  const { error: totalsError } = await sb
+    .from('ot_filing_dates')
+    .update({ total_leads_available: null })
+    .gte('created_at', '1900-01-01'); // matches all rows; Supabase requires a filter on update-all
+
+  if (totalsError) { showToast('Could not reset Total Leads Available.', true); return; }
+
   showToast('OT Hours Filing reset.');
-  await loadOtHoursEntries();
+  await Promise.all([loadOtHoursEntries(), loadOtFilingDates()]);
   renderOtFiling();
 }
 
