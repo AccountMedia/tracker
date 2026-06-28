@@ -365,9 +365,9 @@
       <a class="nav-item" data-view="leave-tracker"><span class="dot"></span>Leave Tracker</a>
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
+      <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <div class="nav-section-label">Coming soon</div>
       <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
-      <a class="nav-item disabled"><span class="dot"></span>LI Restriction Daily Report</a>
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
@@ -428,6 +428,19 @@
         <div id="priolist-actions"></div>
       </div>
       <div id="priolist-content"></div>
+    </section>
+
+    <!-- LI RESTRICTION DAILY REPORT VIEW -->
+    <section class="view" id="view-li-restriction">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>LI Restriction Daily Report</h1>
+          <p class="lede">LinkedIn account restrictions — logged, tracked, and resolved.</p>
+        </div>
+        <div id="li-restriction-actions"></div>
+      </div>
+      <div id="li-restriction-content"></div>
     </section>
 
   </main>
@@ -495,6 +508,9 @@ const state = {
   payrollPeriodMonth: new Date().getMonth() + 1, // 1-12
   priolistEntries: [],    // PrioList rows
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
+  liVerificationStatus: [], // LinkedIn verification status per employee
+  liRestrictionEntries: [], // LI restriction log entries
+  liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
@@ -611,7 +627,7 @@ function initNav() {
     openChangePasswordModal();
   });
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist'];
+  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
@@ -629,6 +645,7 @@ function switchView(viewName) {
   if (viewName === 'leave-tracker') renderLeaveTracker();
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
   if (viewName === 'priolist') renderPrioList();
+  if (viewName === 'li-restriction') renderLiRestriction();
 
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
@@ -639,11 +656,24 @@ function switchView(viewName) {
 // =====================================================================
 
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries()]);
   renderDashboard();
   renderLeaveTracker();
   renderPayrollConfirmation();
   renderPrioList();
+  renderLiRestriction();
+}
+
+async function loadLiVerificationStatus() {
+  const { data, error } = await sb.from('li_verification_status').select('*');
+  if (error) { showToast('Could not load LI verification status.', true); return; }
+  state.liVerificationStatus = data || [];
+}
+
+async function loadLiRestrictionEntries() {
+  const { data, error } = await sb.from('li_restriction_entries').select('*').order('entry_date', { ascending: false });
+  if (error) { showToast('Could not load LI restriction entries.', true); return; }
+  state.liRestrictionEntries = data || [];
 }
 
 async function loadPriolistEntries() {
@@ -2103,6 +2133,258 @@ async function resetAllPriolistOutput() {
   await loadPriolistEntries();
   renderPrioList();
 }
+
+// =====================================================================
+// LI RESTRICTION DAILY REPORT
+// =====================================================================
+
+const LI_RESTRICTION_TYPES = ['Temporary Restriction', 'Impt Notice: of using Automation', 'ID Verification', 'Auto-Logged-Out'];
+const LI_ACTIONS = ['Filled-out LI-Form', 'Agreed to Comply', 'Created LI-Ticket', 'Completed a Puzzle'];
+const LI_OUTCOMES = ['Lifted', 'Still Restricted', 'Pending Ticket', 'Error: Max Reached'];
+const LI_THIRD_ACTIONS = ['Using other LI Premium (on-leave agent)', 'Switched to NON-Premium BU account --- premium account on rest.', 'Incognito Method', 'Change Google Account', 'Exchanged LI accounts with other agents.'];
+const LI_VERIFICATION_OPTIONS = ['VERIFIED', 'Unverified / No Passport'];
+
+function getLiVerification(employeeId) {
+  return state.liVerificationStatus.find(v => v.employee_id === employeeId);
+}
+
+function renderLiRestriction() {
+  const actionsEl = document.getElementById('li-restriction-actions');
+  actionsEl.innerHTML = `<button class="btn btn-primary" id="li-add-entry-btn">+ Log restriction</button>`;
+  document.getElementById('li-add-entry-btn').addEventListener('click', () => openLiEntryModal());
+
+  const el = document.getElementById('li-restriction-content');
+  if (!state.employees.length) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    return;
+  }
+
+  const admin = isAdmin();
+  const roster = state.employees
+    .filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia')
+    .sort(byKristinaFirstThenName);
+
+  const dateEntries = state.liRestrictionEntries.filter(e => e.entry_date === state.liRestrictionDate);
+
+  const verificationRows = roster.map(emp => {
+    const v = getLiVerification(emp.id);
+    const status = v ? v.status : 'VERIFIED';
+    const isUnverified = status !== 'VERIFIED';
+    return `
+      <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+        <span>${escapeHtml(emp.display_name)}</span>
+        ${admin ? `
+          <select class="li-verification-input" data-emp-id="${emp.id}" style="padding:4px 6px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:11.5px; color:${isUnverified ? 'var(--coral)' : 'var(--green)'}; font-weight:600;">
+            ${LI_VERIFICATION_OPTIONS.map(o => `<option value="${o}" ${status===o?'selected':''}>${o}</option>`).join('')}
+          </select>
+        ` : `<span style="font-size:11.5px; font-weight:600; color:${isUnverified ? 'var(--coral)' : 'var(--green)'};">${status}</span>`}
+      </div>
+    `;
+  }).join('');
+
+  const logCards = dateEntries.length ? dateEntries.map(e => {
+    const emp = state.employees.find(x => x.id === e.employee_id);
+    return `
+      <div class="card" style="padding:16px; margin-bottom:12px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:8px;">
+          <div>
+            <div style="font-weight:700; color:${colorForName(emp ? emp.display_name : '')};">${escapeHtml(emp ? emp.display_name : 'Unknown')}</div>
+            <div class="faint" style="font-size:11px; margin-top:2px;">${escapeHtml(e.restriction_type || 'No type set')} ${e.occurrence_number > 1 ? `· Occurrence #${e.occurrence_number}` : ''}</div>
+          </div>
+          <div style="display:flex; gap:6px;">
+            ${admin ? `<button class="btn btn-ghost btn-sm li-edit-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px;">Edit</button>` : ''}
+            ${admin ? `<button class="btn btn-ghost btn-sm li-delete-btn" data-id="${e.id}" style="padding:4px 10px; font-size:11px; color:var(--coral);">Delete</button>` : ''}
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:10px; font-size:12px;">
+          <div><span class="faint">1st Action:</span> ${escapeHtml(e.action_1 || '—')}</div>
+          <div><span class="faint">1st Outcome:</span> ${escapeHtml(e.outcome_1 || '—')}</div>
+          <div><span class="faint">2nd Action:</span> ${escapeHtml(e.action_2 || '—')}</div>
+          <div><span class="faint">2nd Outcome:</span> ${escapeHtml(e.outcome_2 || '—')}</div>
+          <div><span class="faint">Co-Agent:</span> ${escapeHtml(e.co_agent_name || '—')}</div>
+          <div><span class="faint">Lift Date:</span> ${e.restriction_lift_date ? formatPrettyDate(e.restriction_lift_date) : '—'}</div>
+          <div style="grid-column: span 2;"><span class="faint">3rd Action / Working Option:</span> ${escapeHtml(e.action_3 || '—')}</div>
+          ${e.note ? `<div style="grid-column: span 2;"><span class="faint">Note:</span> ${escapeHtml(e.note)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('') : `<p class="muted">No restrictions logged for this day.</p>`;
+
+  el.innerHTML = `
+    <div style="display:flex; gap:24px; align-items:flex-start;">
+      <div style="flex:1; min-width:0;">
+        <div class="card" style="padding:18px 22px; margin-bottom:18px;">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <button class="btn btn-ghost btn-sm" id="li-day-prev">←</button>
+            <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal); min-width:200px; text-align:center;">${formatPrettyDate(state.liRestrictionDate)}</h3>
+            <button class="btn btn-ghost btn-sm" id="li-day-next">→</button>
+          </div>
+        </div>
+        ${logCards}
+      </div>
+      <div style="width:300px; flex-shrink:0;">
+        <div class="card" style="padding:20px;">
+          <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">LinkedIn Verification</h3>
+          <p class="faint" style="font-size:11px; margin:0 0 10px;">Account ID-verification status per agent.</p>
+          <div style="max-height:560px; overflow-y:auto;">
+            ${verificationRows}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('li-day-prev').addEventListener('click', () => shiftLiRestrictionDate(-1));
+  document.getElementById('li-day-next').addEventListener('click', () => shiftLiRestrictionDate(1));
+
+  if (admin) {
+    document.querySelectorAll('.li-verification-input').forEach(select => {
+      select.addEventListener('change', () => saveLiVerification(select.dataset.empId, select.value));
+    });
+    document.querySelectorAll('.li-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => openLiEntryModal(btn.dataset.id));
+    });
+    document.querySelectorAll('.li-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteLiEntry(btn.dataset.id));
+    });
+  }
+}
+
+function shiftLiRestrictionDate(deltaDays) {
+  const d = new Date(state.liRestrictionDate + 'T00:00:00');
+  d.setDate(d.getDate() + deltaDays);
+  state.liRestrictionDate = isoDate(d);
+  renderLiRestriction();
+}
+
+async function saveLiVerification(employeeId, status) {
+  const { error } = await sb.from('li_verification_status').upsert({
+    employee_id: employeeId,
+    status,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'employee_id' });
+
+  if (error) { showToast('Could not save verification status.', true); return; }
+  showToast('Verification status updated.');
+  await loadLiVerificationStatus();
+  renderLiRestriction();
+}
+
+async function deleteLiEntry(entryId) {
+  if (!confirm('Delete this restriction log entry? This cannot be undone.')) return;
+  const { error } = await sb.from('li_restriction_entries').delete().eq('id', entryId);
+  if (error) { showToast('Could not delete the entry.', true); return; }
+  showToast('Entry deleted.');
+  await loadLiRestrictionEntries();
+  renderLiRestriction();
+}
+
+function openLiEntryModal(entryId) {
+  const editing = entryId ? state.liRestrictionEntries.find(e => e.id === entryId) : null;
+
+  const empOptions = state.employees
+    .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
+    .sort(byKristinaFirstThenName)
+    .map(e => `<option value="${e.id}" ${editing && editing.employee_id === e.id ? 'selected' : ''}>${escapeHtml(e.display_name)}</option>`).join('');
+
+  const selectField = (id, label, options, current) => `
+    <div class="field">
+      <label for="${id}">${label}</label>
+      <select id="${id}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <option value="">—</option>
+        ${options.map(o => `<option value="${escapeHtml(o)}" ${current === o ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
+      </select>
+    </div>
+  `;
+
+  const formHtml = `
+    <form id="li-entry-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="li-employee">Agent</label>
+        <select id="li-employee" required ${editing ? 'disabled' : ''} style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          ${empOptions}
+        </select>
+      </div>
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label for="li-date">Date</label>
+          <input type="date" id="li-date" required value="${editing ? editing.entry_date : state.liRestrictionDate}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div style="width:120px;">
+          <label for="li-occurrence">Occurrence #</label>
+          <input type="number" id="li-occurrence" min="1" step="1" value="${editing ? editing.occurrence_number : 1}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      ${selectField('li-restriction-type', 'LI Restriction Type', LI_RESTRICTION_TYPES, editing ? editing.restriction_type : null)}
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">${selectField('li-action-1', '1st Action Taken', LI_ACTIONS, editing ? editing.action_1 : null)}</div>
+        <div style="flex:1;">${selectField('li-outcome-1', '1st Outcome', LI_OUTCOMES, editing ? editing.outcome_1 : null)}</div>
+      </div>
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">${selectField('li-action-2', '2nd Action Taken', LI_ACTIONS, editing ? editing.action_2 : null)}</div>
+        <div style="flex:1;">${selectField('li-outcome-2', '2nd Outcome', LI_OUTCOMES, editing ? editing.outcome_2 : null)}</div>
+      </div>
+      <div class="field">
+        <label for="li-coagent">Co-Agent (who helped)</label>
+        <input type="text" id="li-coagent" value="${editing ? escapeHtml(editing.co_agent_name || '') : ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="li-lift-date">Restriction Lift Date</label>
+        <input type="date" id="li-lift-date" value="${editing && editing.restriction_lift_date ? editing.restriction_lift_date : ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      ${selectField('li-action-3', '3rd Action Taken / Working Option', LI_THIRD_ACTIONS, editing ? editing.action_3 : null)}
+      <div class="field">
+        <label for="li-note">Notes</label>
+        <textarea id="li-note" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${editing ? escapeHtml(editing.note || '') : ''}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">${editing ? 'Save changes' : 'Log restriction'}</button>
+    </form>
+  `;
+
+  openModal(editing ? 'Edit restriction entry' : 'Log a restriction', formHtml);
+  document.getElementById('li-entry-form').addEventListener('submit', (e) => submitLiEntry(e, editing));
+}
+
+async function submitLiEntry(e, editing) {
+  e.preventDefault();
+  const employee_id = editing ? editing.employee_id : document.getElementById('li-employee').value;
+  const entry_date = document.getElementById('li-date').value;
+  const occurrence_number = parseInt(document.getElementById('li-occurrence').value, 10) || 1;
+  const restriction_type = document.getElementById('li-restriction-type').value || null;
+  const action_1 = document.getElementById('li-action-1').value || null;
+  const outcome_1 = document.getElementById('li-outcome-1').value || null;
+  const action_2 = document.getElementById('li-action-2').value || null;
+  const outcome_2 = document.getElementById('li-outcome-2').value || null;
+  const co_agent_name = document.getElementById('li-coagent').value.trim() || null;
+  const restriction_lift_date = document.getElementById('li-lift-date').value || null;
+  const action_3 = document.getElementById('li-action-3').value || null;
+  const note = document.getElementById('li-note').value.trim() || null;
+
+  if (!employee_id) { showToast('Please choose an agent.', true); return; }
+  if (!entry_date) { showToast('Please choose a date.', true); return; }
+
+  const payload = {
+    employee_id, entry_date, occurrence_number, restriction_type,
+    action_1, outcome_1, action_2, outcome_2,
+    co_agent_name, restriction_lift_date, action_3, note,
+    logged_by: state.profile.username,
+  };
+
+  let error;
+  if (editing) {
+    ({ error } = await sb.from('li_restriction_entries').update(payload).eq('id', editing.id));
+  } else {
+    ({ error } = await sb.from('li_restriction_entries').insert(payload));
+  }
+
+  if (error) { showToast('Could not save the entry.', true); return; }
+  closeModal();
+  showToast(editing ? 'Entry updated.' : 'Restriction logged.');
+  state.liRestrictionDate = entry_date;
+  await loadLiRestrictionEntries();
+  renderLiRestriction();
+}
+
 
 // =====================================================================
 // REQUEST MODAL
