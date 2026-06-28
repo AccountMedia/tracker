@@ -1127,29 +1127,36 @@ function capitalize(str) {
 function openDayPanel(dateIso) {
   const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status !== STATUS.DECLINED);
   const admin = isAdmin();
+  const today = isoDate(new Date());
   const body = dayEntries.length ? dayEntries.map(e => {
     let groupSuffix = '';
+    let groupStart = null, groupEnd = null;
     if (e.request_group_id) {
       const groupDates = state.leaveEntries
         .filter(g => g.request_group_id === e.request_group_id && g.status !== STATUS.DECLINED)
         .map(g => g.leave_date)
         .sort();
       if (groupDates.length > 1) {
-        groupSuffix = ` · ${formatDateRange(groupDates[0], groupDates[groupDates.length - 1])}`;
+        groupStart = groupDates[0];
+        groupEnd = groupDates[groupDates.length - 1];
+        groupSuffix = ` · ${formatDateRange(groupStart, groupEnd)}`;
       }
     } else if (e.hours) {
       groupSuffix = ` · ${e.hours}h`;
     }
+    const isOwner = e.employee_id === state.profile.employee_id;
+    const canEditDates = e.request_group_id && groupEnd && groupEnd >= today && (admin || isOwner);
     return `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
       <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
       <div style="flex:1;">
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSuffix}</div>
+        ${canEditDates ? `<span class="edit-dates-link" data-id="${e.id}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px;">Edit dates</span>` : ''}
       </div>
       <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
-      ${admin ? `<span class="force-delete-btn" data-id="${e.id}" title="Delete this entry" style="cursor:pointer; color:var(--ink-faint); font-size:13px; margin-left:6px; padding:0 4px; line-height:1;">×</span>` : ''}
-      ${admin && canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px; margin-left:8px;">Cancel</button>` : ''}
+      ${admin && e.leave_date < today ? `<span class="force-delete-btn" data-id="${e.id}" title="Delete this entry" style="cursor:pointer; color:var(--ink-faint); font-size:13px; margin-left:6px; padding:0 4px; line-height:1;">×</span>` : ''}
+      ${admin && e.leave_date >= today && canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px; margin-left:8px;">Cancel</button>` : ''}
     </div>
   `;
   }).join('') : `<p class="muted">No leave logged for this day.</p>`;
@@ -1161,6 +1168,87 @@ function openDayPanel(dateIso) {
   document.querySelectorAll('.force-delete-btn').forEach(b => {
     b.addEventListener('click', () => forceDeleteLeave(b.dataset.id));
   });
+  document.querySelectorAll('.edit-dates-link').forEach(b => {
+    b.addEventListener('click', () => openEditDatesModal(b.dataset.id));
+  });
+}
+
+// =====================================================================
+// EDIT DATE RANGE (for existing multi-day requests)
+// =====================================================================
+
+function openEditDatesModal(entryId) {
+  const entry = state.leaveEntries.find(e => e.id === entryId);
+  if (!entry || !entry.request_group_id) return;
+
+  const groupDates = state.leaveEntries
+    .filter(g => g.request_group_id === entry.request_group_id && g.status !== STATUS.DECLINED)
+    .map(g => g.leave_date)
+    .sort();
+  const currentStart = groupDates[0];
+  const currentEnd = groupDates[groupDates.length - 1];
+  const today = isoDate(new Date());
+
+  const formHtml = `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Editing ${escapeHtml(employeeName(entry.employee_id))}'s leave. Changing the dates will reset this request to pending for review.</p>
+    <form id="edit-dates-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label for="edit-date-from">From</label>
+          <input type="date" id="edit-date-from" required value="${currentStart}" min="${today < currentStart ? today : currentStart}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div style="flex:1;">
+          <label for="edit-date-to">To</label>
+          <input type="date" id="edit-date-to" required value="${currentEnd}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      <p class="faint" style="font-size:11px; margin:-6px 0 0;">Weekends are skipped automatically.</p>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Save new dates</button>
+    </form>
+  `;
+
+  openModal('Edit leave dates', formHtml);
+  document.getElementById('edit-dates-form').addEventListener('submit', (e) => submitEditDates(e, entry));
+}
+
+async function submitEditDates(e, entry) {
+  e.preventDefault();
+  const fromDate = document.getElementById('edit-date-from').value;
+  const toDate = document.getElementById('edit-date-to').value;
+
+  if (!fromDate || !toDate) { showToast('Please fill in both dates.', true); return; }
+  if (toDate < fromDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
+  if (fromDate < isoDate(new Date())) { showToast('You can\'t set a start date that has already passed.', true); return; }
+
+  const newDates = datesInRange(fromDate, toDate, { skipWeekends: true });
+  if (!newDates.length) { showToast('That range has no workdays in it.', true); return; }
+
+  // Replace the old group's rows with new ones for the new date range,
+  // preserving type/note/employee, and reset to pending since the dates
+  // (and therefore the credit impact) have changed.
+  const { error: deleteError } = await sb.from('leave_entries').delete().eq('request_group_id', entry.request_group_id);
+  if (deleteError) { showToast('Could not update the dates.', true); return; }
+
+  const newGroupId = (crypto.randomUUID ? crypto.randomUUID() : null);
+  const rows = newDates.map(d => ({
+    employee_id: entry.employee_id,
+    leave_type: entry.leave_type,
+    leave_date: d,
+    note: entry.note,
+    status: STATUS.PENDING,
+    requested_by: state.profile.username,
+    request_group_id: newDates.length > 1 ? newGroupId : null,
+    hours: entry.hours,
+  }));
+
+  const { error: insertError } = await sb.from('leave_entries').insert(rows);
+  if (insertError) { showToast('Could not save the new dates.', true); return; }
+
+  closeModal();
+  showToast('Leave dates updated — sent back for approval.');
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
 }
 
 // ---- Pending panel --------------------------------------------------
