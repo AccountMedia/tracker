@@ -1880,10 +1880,11 @@ function renderPrioList() {
     return { entry, emp };
   }).filter(r => r.emp);
 
-  // Only Active/Break employees take part in the priority sort; Inactive
-  // (or anyone with no status set yet) is pinned below them, in rank order.
-  const ranked = rows.filter(r => r.entry.status === 'Active' || r.entry.status === 'Break');
-  const unranked = rows.filter(r => !(r.entry.status === 'Active' || r.entry.status === 'Break'));
+  // Only Inactive employees are excluded from the priority sort — they're
+  // pinned below everyone else, in rank order. Active, Break, and blank
+  // (not yet set) all participate normally.
+  const ranked = rows.filter(r => r.entry.status !== 'Inactive');
+  const unranked = rows.filter(r => r.entry.status === 'Inactive');
 
   const anyOutput = ranked.some(r => Number(r.entry.md_output) + Number(r.entry.leads) > 0);
 
@@ -1904,14 +1905,8 @@ function renderPrioList() {
     const total = round2(Number(entry.md_output) + Number(entry.leads));
     const nameColor = colorForName(emp.display_name);
     const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
-    const swatchOptions = ['yellow', 'blue', 'red'].map(c => `
-      <span class="file-color-dot" data-id="${entry.id}" data-color="${c}"
-        title="${capitalize(c)}"
-        style="display:inline-block; width:16px; height:16px; border-radius:50%; cursor:pointer;
-               background:${PRIOLIST_FILE_COLORS[c]};
-               border:2px solid ${entry.file_color === c ? 'var(--ink)' : 'transparent'};
-               box-shadow:0 0 0 1px var(--line);"></span>
-    `).join('');
+    const fileColor = entry.file_color ? PRIOLIST_FILE_COLORS[entry.file_color] : 'var(--ink)';
+    const fileColorOption = (c) => `<option value="${c}" ${entry.file_color === c ? 'selected' : ''} style="color:${PRIOLIST_FILE_COLORS[c]};">${capitalize(c)}</option>`;
 
     return `
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
@@ -1924,7 +1919,18 @@ function renderPrioList() {
           <option value="" ${!entry.status ? 'selected' : ''} style="color:var(--ink);">—</option>
           ${['Active','Break','Inactive'].map(s => `<option value="${s}" ${entry.status===s?'selected':''} style="color:${PRIOLIST_STATUS_COLORS[s]};">${s}</option>`).join('')}
         </select>
-        <span style="display:flex; gap:6px;">${swatchOptions}</span>
+        <select class="priolist-input file-color-input" data-id="${entry.id}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; color:${fileColor}; font-weight:600;">
+          <option value="" ${!entry.file_color ? 'selected' : ''} style="color:var(--ink);">—</option>
+          <optgroup label="Yellow / Blue">
+            ${fileColorOption('yellow')}
+            ${fileColorOption('blue')}
+          </optgroup>
+          <optgroup label="Yellow / Blue / Red">
+            ${fileColorOption('yellow')}
+            ${fileColorOption('blue')}
+            ${fileColorOption('red')}
+          </optgroup>
+        </select>
         <input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
       </div>
     `;
@@ -1962,12 +1968,8 @@ function attachPriolistHandlers() {
   document.querySelectorAll('.note-input').forEach(input => {
     input.addEventListener('change', () => savePriolistField(input.dataset.id, 'note', input.value.trim()));
   });
-  document.querySelectorAll('.file-color-dot').forEach(dot => {
-    dot.addEventListener('click', () => {
-      const entry = state.priolistEntries.find(e => e.id === dot.dataset.id);
-      const newColor = entry && entry.file_color === dot.dataset.color ? null : dot.dataset.color;
-      savePriolistField(dot.dataset.id, 'file_color', newColor);
-    });
+  document.querySelectorAll('.file-color-input').forEach(select => {
+    select.addEventListener('change', () => savePriolistField(select.dataset.id, 'file_color', select.value || null));
   });
 }
 
