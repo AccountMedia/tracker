@@ -2751,24 +2751,33 @@ function renderOtFiling() {
       const hasAssumed = entry && entry.assumed_hours != null;
       const hasActual = entry && entry.actual_hours != null;
       const confirmed = entry && entry.confirmed;
+      const displayVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '—');
+
+      if (confirmed) {
+        // Locked — once confirmed, the hours can no longer be edited by
+        // anyone, including admins.
+        return `
+          <td style="padding:8px; text-align:center; font-size:12.5px;">
+            <div>${displayVal}</div>
+            <div><span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span></div>
+          </td>
+        `;
+      }
 
       if (!canEdit) {
-        const displayVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '—');
         return `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>`;
       }
 
-      // Editable cell for the owner (or admin).
-      const inputVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '');
-      let badge = '';
-      if (hasAssumed && !confirmed) {
-        badge = `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; margin-top:3px; color:var(--amber);">Confirm/adjust</button>`;
-      } else if (confirmed) {
-        badge = `<span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>`;
-      }
+      // Editable cell for the owner (or admin) — only reachable while
+      // still unconfirmed.
+      const inputVal = hasAssumed ? entry.assumed_hours : '';
+      const badge = hasAssumed
+        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:10px; padding:2px 6px; margin-top:3px; color:var(--amber);">Confirm/adjust</button>`
+        : '';
 
       return `
         <td style="padding:6px; text-align:center;">
-          <input type="number" min="0" step="0.5" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
+          <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
             style="width:56px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
           <div>${badge}</div>
         </td>
@@ -2965,6 +2974,13 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
     return;
   }
 
+  const existingCheck = getOtEntry(employeeId, filingDate);
+  if (existingCheck && existingCheck.confirmed) {
+    showToast('This entry has already been confirmed and can no longer be edited.', true);
+    renderOtFiling();
+    return;
+  }
+
   const hours = rawValue === '' ? null : parseFloat(rawValue);
   if (hours !== null && (isNaN(hours) || hours < 0)) {
     showToast('Enter a valid, non-negative number.', true);
@@ -2973,25 +2989,16 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
   }
 
   const existing = getOtEntry(employeeId, filingDate);
-  const alreadyConfirmed = existing && existing.confirmed;
 
   const payload = {
     employee_id: employeeId,
     filing_date: filingDate,
-    confirmed: alreadyConfirmed || false,
+    confirmed: false, // reaching this point means it isn't confirmed yet (checked above)
     updated_at: new Date().toISOString(),
-  };
-
-  if (alreadyConfirmed) {
-    // Already confirmed once — further edits correct the actual hours
-    // directly, leaving the original assumed figure as a record.
-    payload.assumed_hours = existing.assumed_hours;
-    payload.actual_hours = hours;
-  } else {
     // Pre-shift: typing here is always the assumed estimate.
-    payload.assumed_hours = hours;
-    payload.actual_hours = existing ? existing.actual_hours : null;
-  }
+    assumed_hours: hours,
+    actual_hours: existing ? existing.actual_hours : null,
+  };
 
   const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
   if (error) { showToast('Could not save OT hours.', true); return; }
@@ -3004,6 +3011,11 @@ function openOtConfirmModal(employeeId, filingDate) {
   if (!entry) return;
   const emp = state.employees.find(e => e.id === employeeId);
 
+  if (entry.confirmed) {
+    showToast('This entry has already been confirmed and can no longer be edited.', true);
+    return;
+  }
+
   if (!isAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only confirm your own OT hours.', true);
     return;
@@ -3014,7 +3026,7 @@ function openOtConfirmModal(employeeId, filingDate) {
     <form id="ot-confirm-form" style="display:flex; flex-direction:column; gap:14px;">
       <div class="field">
         <label for="ot-actual-hours">Actual OT hours</label>
-        <input type="number" id="ot-actual-hours" min="0" step="0.5" required value="${entry.assumed_hours}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <input type="number" id="ot-actual-hours" min="0" required value="${entry.assumed_hours}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Confirm</button>
     </form>
