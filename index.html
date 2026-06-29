@@ -2915,12 +2915,13 @@ async function resetOtFiling() {
   console.log('resetOtFiling: hours delete error =', hoursError);
   if (hoursError) { showToast('Could not reset OT Hours Filing.', true); return; }
 
-  const { data: totalsData, error: totalsError } = await sb
-    .from('ot_filing_settings')
-    .upsert({ id: 1, total_leads_available: null, total_leads_updated_by: null, updated_at: new Date().toISOString() }, { onConflict: 'id' })
-    .select();
+  const { error: totalsError } = await writeOtFilingSettings({
+    total_leads_available: null,
+    total_leads_updated_by: null,
+    updated_at: new Date().toISOString(),
+  });
 
-  console.log('resetOtFiling: totals upsert result =', totalsData, 'error =', totalsError);
+  console.log('resetOtFiling: totals write error =', totalsError);
 
   if (totalsError) {
     console.error('Resetting Total Leads Available failed:', totalsError);
@@ -3020,6 +3021,29 @@ function downloadOtFilingReport() {
   showToast('Report downloaded.');
 }
 
+// Writes the single ot_filing_settings row without relying on
+// upsert/onConflict, since that requires a real unique constraint on
+// the target table — which may not exist if an older version of this
+// table was created before that constraint was added. Tries an update
+// first; if nothing was actually updated (the row doesn't exist yet),
+// inserts it instead.
+async function writeOtFilingSettings(fields) {
+  const { data: updated, error: updateError } = await sb
+    .from('ot_filing_settings')
+    .update(fields)
+    .eq('id', 1)
+    .select();
+
+  if (updateError) return { error: updateError };
+  if (updated && updated.length > 0) return { error: null };
+
+  const { error: insertError } = await sb
+    .from('ot_filing_settings')
+    .insert({ id: 1, ...fields });
+
+  return { error: insertError };
+}
+
 async function saveOtTotalLeadsAvailable(rawValue) {
   const value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) {
@@ -3028,12 +3052,11 @@ async function saveOtTotalLeadsAvailable(rawValue) {
     return;
   }
 
-  const { error } = await sb.from('ot_filing_settings').upsert({
-    id: 1,
+  const { error } = await writeOtFilingSettings({
     total_leads_available: value,
     total_leads_updated_by: value != null ? state.profile.display_name : null,
     updated_at: new Date().toISOString(),
-  }, { onConflict: 'id' });
+  });
   if (error) {
     console.error('saveOtTotalLeadsAvailable failed:', error);
     const msg = error.message && error.message.toLowerCase().includes('relation')
