@@ -3005,36 +3005,30 @@ function downloadOtFilingReport() {
     .filter(emp => emp.active !== false)
     .sort(byKristinaFirstThenName);
 
-  // Exclude any employee/date combination with nothing logged at all —
-  // only rows with an actual or assumed value are included.
-  const rows = [];
-  dates.forEach(d => {
-    roster.forEach(emp => {
-      const entry = getOtEntry(emp.id, d);
-      const hasAssumed = entry && entry.assumed_hours != null;
-      const hasActual = entry && entry.actual_hours != null;
-      if (!hasAssumed && !hasActual) return; // blank — skip entirely
-      rows.push({ date: d, emp, entry });
-    });
-  });
+  // Wide format: one row per employee, one column per open date, showing
+  // only actual (confirmed) hours — assumed hours are never shown here.
+  // An employee with no actual hours on any date is left out entirely.
+  const rowsWide = roster
+    .map(emp => {
+      const hoursPerDate = dates.map(d => {
+        const entry = getOtEntry(emp.id, d);
+        return entry && entry.actual_hours != null ? entry.actual_hours : null;
+      });
+      return { emp, hoursPerDate };
+    })
+    .filter(r => r.hoursPerDate.some(h => h != null));
 
   const csvRows = [];
   csvRows.push(['OT Hours Filing Report']);
   csvRows.push([]);
-  csvRows.push(['Date', 'Agent', 'Assumed Hours', 'Actual Hours', 'Confirmed']);
+  csvRows.push(['Name', ...dates.map(d => formatPrettyDate(d))]);
 
-  if (rows.length) {
-    rows.forEach(({ date, emp, entry }) => {
-      csvRows.push([
-        formatPrettyDate(date),
-        emp.display_name,
-        entry.assumed_hours != null ? entry.assumed_hours : '',
-        entry.actual_hours != null ? entry.actual_hours : '',
-        entry.confirmed ? 'Yes' : 'No',
-      ]);
+  if (rowsWide.length) {
+    rowsWide.forEach(({ emp, hoursPerDate }) => {
+      csvRows.push([emp.display_name, ...hoursPerDate.map(h => h != null ? h : '')]);
     });
   } else {
-    csvRows.push(['No OT hours logged yet.']);
+    csvRows.push(['No actual OT hours confirmed yet.']);
   }
 
   csvRows.push([]);
