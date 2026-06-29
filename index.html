@@ -527,7 +527,8 @@ const state = {
   liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
   liVerificationFilter: 'all', // 'all', 'verified', or 'unverified' — filters the LinkedIn Verification panel
   liRestrictionTickerHandle: null, // setInterval handle for live status re-check
-  otFilingDates: [],   // open OT filing dates (admin-managed), each with its own total_leads_available
+  otFilingDates: [],   // open OT filing dates (admin-managed)
+  otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
@@ -679,7 +680,7 @@ function switchView(viewName) {
 // =====================================================================
 
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries(), loadOtFilingSettings()]);
   renderDashboard();
   renderLeaveTracker();
   renderPayrollConfirmation();
@@ -692,6 +693,12 @@ async function loadOtFilingDates() {
   const { data, error } = await sb.from('ot_filing_dates').select('*').order('filing_date', { ascending: true });
   if (error) { showToast('Could not load OT filing dates.', true); return; }
   state.otFilingDates = data || [];
+}
+
+async function loadOtFilingSettings() {
+  const { data, error } = await sb.from('ot_filing_settings').select('*').eq('id', 1).maybeSingle();
+  if (error) { showToast('Could not load OT filing settings.', true); return; }
+  if (data) state.otFilingSettings = data;
 }
 
 async function loadOtHoursEntries() {
@@ -1980,16 +1987,26 @@ function colorForName(name) {
 }
 
 const PRIOLIST_FILE_COLORS = {
-  yellow: '#C9A227',
   blue:   '#2D6A9F',
+  yellow: '#C9A227',
   red:    '#B5495B',
+  none:   '#8A8A86', // gray
 };
 
-// "Open for File" is a choice between two whole sets, not individual
-// colors — this maps each set's stored value to the swatches it shows.
-const PRIOLIST_FILE_SETS = {
-  yellow_blue: ['blue', 'yellow'],
-  yellow_blue_red: ['blue', 'yellow', 'red'],
+// A very light wash of each file color, used to highlight the whole
+// status area when that file is selected (None/blank shows no wash).
+const PRIOLIST_FILE_WASH = {
+  blue:   '#E7EEF5',
+  yellow: '#F8F1DD',
+  red:    '#F6E7EA',
+  none:   '#EDEDEB',
+};
+
+const PRIOLIST_FILE_LABELS = {
+  blue: 'Blue',
+  yellow: 'Yellow',
+  red: 'Red',
+  none: 'None',
 };
 
 const PRIOLIST_STATUS_COLORS = {
@@ -2070,24 +2087,32 @@ function renderPrioList() {
     const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
     const isMe = emp.id === state.profile.employee_id;
 
-    const swatchDots = (setKey) => (PRIOLIST_FILE_SETS[setKey] || [])
-      .map(c => `<span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[c]};"></span>`)
-      .join('');
+    // The four file-color buttons only matter (and only show) once the
+    // employee is Active or Break — Inactive/blank doesn't need a file.
+    const needsFileChoice = entry.status === 'Active' || entry.status === 'Break';
+    const fileWash = needsFileChoice && entry.file_color ? PRIOLIST_FILE_WASH[entry.file_color] : null;
 
-    const menuOption = (setKey) => `
-      <div class="file-color-option" data-id="${entry.id}" data-set="${setKey}"
-        style="display:flex; align-items:center; gap:4px; padding:6px 10px; cursor:pointer; border-radius:6px;
-               background:${entry.file_color === setKey ? 'var(--line-soft)' : 'transparent'};">
-        ${swatchDots(setKey)}
-      </div>
+    const statusOptionRow = (value, label) => `
+      <div class="status-dropdown-option" data-id="${entry.id}" data-status="${value}"
+        style="padding:7px 10px; cursor:pointer; border-radius:6px; font-size:12.5px; font-weight:600;
+               color:${value ? PRIOLIST_STATUS_COLORS[value] : 'var(--ink-soft)'};
+               background:${entry.status === value ? 'var(--line-soft)' : 'transparent'};">${label}</div>
     `;
 
-    const triggerContent = entry.file_color
-      ? swatchDots(entry.file_color)
-      : `<span class="faint" style="font-size:11px;">—</span>`;
+    const fileButton = (key) => `
+      <button type="button" class="file-color-btn" data-id="${entry.id}" data-color="${key}"
+        title="${PRIOLIST_FILE_LABELS[key]}"
+        style="width:22px; height:22px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[key]}; cursor:pointer;
+               border:2px solid ${entry.file_color === key ? 'var(--ink)' : 'transparent'};
+               box-shadow:0 0 0 1px var(--line-soft); flex-shrink:0;"></button>
+    `;
+
+    const triggerDot = needsFileChoice && entry.file_color
+      ? `<span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[entry.file_color]}; margin-right:6px; flex-shrink:0;"></span>`
+      : '';
 
     return `
-      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
+      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</span>
         ${isMe
@@ -2097,22 +2122,24 @@ function renderPrioList() {
           ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
           : `<span class="faint">${entry.leads}</span>`}
         <span style="font-weight:600;">${total}</span>
-        <select class="priolist-input status-input" data-id="${entry.id}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; color:${statusColor}; font-weight:600;">
-          <option value="" ${!entry.status ? 'selected' : ''} style="color:var(--ink);">—</option>
-          ${['Active','Break','Inactive'].map(s => `<option value="${s}" ${entry.status===s?'selected':''} style="color:${PRIOLIST_STATUS_COLORS[s]};">${s}</option>`).join('')}
-        </select>
-        <div class="file-color-dropdown" style="position:relative;">
-          <button type="button" class="file-color-trigger" data-id="${entry.id}"
-            style="display:flex; align-items:center; gap:5px; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; font-family:inherit;">
-            ${triggerContent}
+        <div class="status-filecolor-dropdown" style="position:relative; ${fileWash ? `background:${fileWash}; border-radius:8px; padding:2px;` : ''}">
+          <button type="button" class="status-dropdown-trigger" data-id="${entry.id}"
+            style="display:flex; align-items:center; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; font-family:inherit; font-size:12px; color:${statusColor}; font-weight:600;">
+            ${triggerDot}
+            <span>${entry.status || '—'}</span>
             <span class="faint" style="margin-left:auto; font-size:9px;">▾</span>
           </button>
-          <div class="file-color-menu" data-id="${entry.id}"
-            style="display:none; position:absolute; top:100%; left:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:5px; z-index:20; min-width:70px;">
-            <div class="file-color-option" data-id="${entry.id}" data-set=""
-              style="padding:6px 10px; cursor:pointer; border-radius:6px; font-size:11px; color:var(--ink-faint); background:${!entry.file_color ? 'var(--line-soft)' : 'transparent'};">—</div>
-            ${menuOption('yellow_blue')}
-            ${menuOption('yellow_blue_red')}
+          <div class="status-filecolor-menu" data-id="${entry.id}"
+            style="display:none; position:absolute; top:100%; left:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:140px;">
+            ${statusOptionRow('', '—')}
+            ${statusOptionRow('Active', 'Active')}
+            ${statusOptionRow('Break', 'Break')}
+            ${statusOptionRow('Inactive', 'Inactive')}
+            ${needsFileChoice ? `
+              <div style="border-top:1px solid var(--line-soft); margin:6px 2px 4px; padding-top:8px; display:flex; gap:6px; padding-left:8px;">
+                ${fileButton('blue')}${fileButton('yellow')}${fileButton('red')}${fileButton('none')}
+              </div>
+            ` : ''}
           </div>
         </div>
         <input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
@@ -2122,14 +2149,13 @@ function renderPrioList() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+      <div style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
         <span>Rank</span>
         <span>Name</span>
         <span>MD Output</span>
         <span>Leads</span>
         <span>Total</span>
-        <span>Status</span>
-        <span>Open for File</span>
+        <span>Status / File</span>
         <span>Note</span>
       </div>
       ${tableRows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
@@ -2146,38 +2172,41 @@ function attachPriolistHandlers() {
   document.querySelectorAll('.rank-input').forEach(input => {
     input.addEventListener('change', () => savePriolistField(input.dataset.id, 'rank', parseInt(input.value, 10) || 999));
   });
-  document.querySelectorAll('.status-input').forEach(select => {
-    select.addEventListener('change', () => savePriolistField(select.dataset.id, 'status', select.value));
-  });
   document.querySelectorAll('.note-input').forEach(input => {
     input.addEventListener('change', () => savePriolistField(input.dataset.id, 'note', input.value.trim()));
   });
-  document.querySelectorAll('.file-color-trigger').forEach(btn => {
+  document.querySelectorAll('.status-dropdown-trigger').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const menu = document.querySelector(`.file-color-menu[data-id="${btn.dataset.id}"]`);
+      const menu = document.querySelector(`.status-filecolor-menu[data-id="${btn.dataset.id}"]`);
       const isOpen = menu.style.display === 'block';
-      document.querySelectorAll('.file-color-menu').forEach(m => m.style.display = 'none');
+      document.querySelectorAll('.status-filecolor-menu').forEach(m => m.style.display = 'none');
       if (!isOpen) menu.style.display = 'block';
     });
   });
-  document.querySelectorAll('.file-color-option').forEach(opt => {
+  document.querySelectorAll('.status-dropdown-option').forEach(opt => {
     opt.addEventListener('click', (e) => {
       e.stopPropagation();
-      savePriolistField(opt.dataset.id, 'file_color', opt.dataset.set || null);
+      savePriolistField(opt.dataset.id, 'status', opt.dataset.status);
     });
   });
-  closeAllFileColorMenusOnOutsideClick();
+  document.querySelectorAll('.file-color-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      savePriolistField(btn.dataset.id, 'file_color', btn.dataset.color);
+    });
+  });
+  closeAllStatusFileColorMenusOnOutsideClick();
 }
 
 // Registered once per app lifetime (guarded so re-render doesn't stack up
-// duplicate listeners) — closes any open Open-for-File menu on any click
-// outside of it.
-function closeAllFileColorMenusOnOutsideClick() {
-  if (window._fileColorOutsideClickBound) return;
-  window._fileColorOutsideClickBound = true;
+// duplicate listeners) — closes any open Status/File dropdown on any
+// click outside of it.
+function closeAllStatusFileColorMenusOnOutsideClick() {
+  if (window._statusFileColorOutsideClickBound) return;
+  window._statusFileColorOutsideClickBound = true;
   document.addEventListener('click', () => {
-    document.querySelectorAll('.file-color-menu').forEach(m => m.style.display = 'none');
+    document.querySelectorAll('.status-filecolor-menu').forEach(m => m.style.display = 'none');
   });
 }
 
@@ -2216,7 +2245,7 @@ async function savePriolistField(entryId, field, value) {
 
 async function resetAllPriolistOutput() {
   if (!isAdmin()) { showToast('Only admins can reset the PrioList.', true); return; }
-  if (!confirm('Reset everyone\'s PrioList? MD Output, Leads, Total, Status, Open for File, and Note will all be cleared. This cannot be undone.')) return;
+  if (!confirm('Reset everyone\'s PrioList? MD Output, Leads, Total, Status, File color, and Note will all be cleared. This cannot be undone.')) return;
 
   const today = isoDate(new Date());
   const { error } = await sb
@@ -2747,38 +2776,14 @@ function renderOtFiling() {
 
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
 
-  // Total Leads Available is now its own independently-editable figure
-  // per date — not a single shared total carried across dates. Pending
-  // Leads for each date is simply that date's own total minus that
-  // date's own "# of Leads to Validate".
-  const totalLeadsPerDate = dates.map(d => {
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    return dateRecord && dateRecord.total_leads_available != null ? Number(dateRecord.total_leads_available) : null;
-  });
-
-  const totalLeadsEditedByPerDate = dates.map(d => {
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    return dateRecord ? dateRecord.total_leads_updated_by : null;
-  });
-
-  const pendingBalances = dates.map((d, i) => {
-    if (totalLeadsPerDate[i] == null) return null;
-    return round2(totalLeadsPerDate[i] - leadsToValidatePerDate[i]);
-  });
-
-  const totalLeadsRow = dates.map((d, i) => {
-    const val = totalLeadsPerDate[i];
-    const editedBy = totalLeadsEditedByPerDate[i];
-    return `<td style="padding:6px; min-width:140px;">
-      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
-        <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
-          style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-        ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
-      </div>
-    </td>`;
-  }).join('');
-
-  const pendingRow = pendingBalances.map(bal => `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
+  // Total Leads Available is a single shared figure (not per date).
+  // Pending Leads Available = that one total minus the combined
+  // "# of Leads to Validate" across every currently open date.
+  const totalLeadsAvailable = state.otFilingSettings.total_leads_available;
+  const totalLeadsUpdatedBy = state.otFilingSettings.total_leads_updated_by;
+  const pendingLeadsAvailable = totalLeadsAvailable != null
+    ? round2(Number(totalLeadsAvailable) - totalLeadsToValidate)
+    : null;
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
@@ -2867,16 +2872,24 @@ function renderOtFiling() {
           <tr style="border-top:2px solid var(--line);">
             <td style="padding:8px 10px;">
               <div style="font-weight:700; font-size:12px;">Total Leads Available</div>
-              <div class="faint" style="font-size:10.5px; margin-top:2px;">Set the starting total for each date.</div>
+              <div class="faint" style="font-size:10.5px; margin-top:2px;">Set the combined starting total here.</div>
             </td>
-            ${totalLeadsRow}
+            <td colspan="${dates.length}" style="padding:6px;">
+              <div style="display:flex; flex-direction:column; align-items:center; justify-content:flex-start; width:140px;">
+                <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" value="${totalLeadsAvailable != null ? totalLeadsAvailable : ''}" placeholder="Total"
+                  style="width:120px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+                ${totalLeadsUpdatedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(totalLeadsUpdatedBy)}</div>` : ''}
+              </div>
+            </td>
           </tr>
           <tr>
             <td style="padding:8px 10px; font-weight:700; font-size:12px;">
               Pending Leads Available to Work On
-              <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Each date's own total minus its leads to validate</div>
+              <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Total Leads Available minus combined leads to validate</div>
             </td>
-            ${pendingRow}
+            <td colspan="${dates.length}" style="padding:8px; font-size:12.5px; font-weight:600;">
+              <div style="width:140px; text-align:center;">${pendingLeadsAvailable != null ? pendingLeadsAvailable : '—'}</div>
+            </td>
           </tr>
         </tfoot>
       </table>
@@ -2884,7 +2897,7 @@ function renderOtFiling() {
   `;
 
   document.querySelectorAll('.ot-total-leads-input').forEach(input => {
-    input.addEventListener('change', () => saveOtTotalLeadsAvailable(input.dataset.date, input.value));
+    input.addEventListener('change', () => saveOtTotalLeadsAvailable(input.value));
   });
   document.querySelectorAll('.ot-hours-input').forEach(input => {
     input.addEventListener('change', () => saveOtHours(input.dataset.empId, input.dataset.date, input.value));
@@ -2910,25 +2923,37 @@ async function unlockOtEntry(employeeId, filingDate) {
 }
 
 async function resetOtFiling() {
+  console.log('resetOtFiling: button clicked, isAdmin =', isAdmin());
   if (!isAdmin()) { showToast('Only admins can reset OT Hours Filing.', true); return; }
-  if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and every date\'s "Total Leads Available" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.')) return;
+  const confirmed = confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and the "Total Leads Available" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.');
+  console.log('resetOtFiling: user confirmed =', confirmed);
+  if (!confirmed) return;
 
   const { error: hoursError } = await sb
     .from('ot_hours_entries')
     .delete()
     .gte('updated_at', '1900-01-01'); // matches all rows; Supabase requires a filter on delete-all
 
+  console.log('resetOtFiling: hours delete error =', hoursError);
   if (hoursError) { showToast('Could not reset OT Hours Filing.', true); return; }
 
-  const { error: totalsError } = await sb
-    .from('ot_filing_dates')
-    .update({ total_leads_available: null, total_leads_updated_by: null })
-    .gte('created_at', '1900-01-01'); // matches all rows; Supabase requires a filter on update-all
+  const { error: totalsError } = await writeOtFilingSettings({
+    total_leads_available: null,
+    total_leads_updated_by: null,
+    updated_at: new Date().toISOString(),
+  });
 
-  if (totalsError) { showToast('Could not reset Total Leads Available.', true); return; }
+  console.log('resetOtFiling: totals write error =', totalsError);
+
+  if (totalsError) {
+    console.error('Resetting Total Leads Available failed:', totalsError);
+    showToast('Could not reset Total Leads Available — check the console for details.', true);
+    return;
+  }
 
   showToast('OT Hours Filing reset.');
-  await Promise.all([loadOtHoursEntries(), loadOtFilingDates()]);
+  await Promise.all([loadOtHoursEntries(), loadOtFilingSettings()]);
+  console.log('resetOtFiling: after reload, otFilingSettings =', state.otFilingSettings);
   renderOtFiling();
 }
 
@@ -2976,7 +3001,8 @@ function downloadOtFilingReport() {
 
   csvRows.push([]);
   csvRows.push(['Summary']);
-  csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Total Leads Available', 'Pending Leads Available']);
+  csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate']);
+  let combinedLeads = 0;
   dates.forEach(d => {
     const heads = roster.reduce((count, emp) => {
       const entry = getOtEntry(emp.id, d);
@@ -2990,11 +3016,16 @@ function downloadOtFilingReport() {
       return sum + (h ? Number(h) : 0);
     }, 0);
     const leads = round2(hours * 100);
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    const total = dateRecord && dateRecord.total_leads_available != null ? Number(dateRecord.total_leads_available) : null;
-    const pending = total != null ? round2(total - leads) : '';
-    csvRows.push([formatPrettyDate(d), heads, leads, total != null ? total : '', pending]);
+    combinedLeads = round2(combinedLeads + leads);
+    csvRows.push([formatPrettyDate(d), heads, leads]);
   });
+
+  const reportTotalLeadsAvailable = state.otFilingSettings.total_leads_available;
+  const reportPending = reportTotalLeadsAvailable != null ? round2(Number(reportTotalLeadsAvailable) - combinedLeads) : '';
+  csvRows.push([]);
+  csvRows.push(['Combined # of Leads to Validate (all dates)', combinedLeads]);
+  csvRows.push(['Total Leads Available', reportTotalLeadsAvailable != null ? reportTotalLeadsAvailable : '']);
+  csvRows.push(['Pending Leads Available to Work On', reportPending]);
 
   const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -3012,7 +3043,30 @@ function downloadOtFilingReport() {
   showToast('Report downloaded.');
 }
 
-async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
+// Writes the single ot_filing_settings row without relying on
+// upsert/onConflict, since that requires a real unique constraint on
+// the target table — which may not exist if an older version of this
+// table was created before that constraint was added. Tries an update
+// first; if nothing was actually updated (the row doesn't exist yet),
+// inserts it instead.
+async function writeOtFilingSettings(fields) {
+  const { data: updated, error: updateError } = await sb
+    .from('ot_filing_settings')
+    .update(fields)
+    .eq('id', 1)
+    .select();
+
+  if (updateError) return { error: updateError };
+  if (updated && updated.length > 0) return { error: null };
+
+  const { error: insertError } = await sb
+    .from('ot_filing_settings')
+    .insert({ id: 1, ...fields });
+
+  return { error: insertError };
+}
+
+async function saveOtTotalLeadsAvailable(rawValue) {
   const value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) {
     showToast('Enter a valid, non-negative number.', true);
@@ -3020,12 +3074,20 @@ async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
     return;
   }
 
-  const { error } = await sb.from('ot_filing_dates').update({
+  const { error } = await writeOtFilingSettings({
     total_leads_available: value,
     total_leads_updated_by: value != null ? state.profile.display_name : null,
-  }).eq('filing_date', filingDate);
-  if (error) { showToast('Could not save.', true); return; }
-  await loadOtFilingDates();
+    updated_at: new Date().toISOString(),
+  });
+  if (error) {
+    console.error('saveOtTotalLeadsAvailable failed:', error);
+    const msg = error.message && error.message.toLowerCase().includes('relation')
+      ? 'Could not save — the database is missing a required table. Ask your admin to run the latest setup SQL.'
+      : 'Could not save.';
+    showToast(msg, true);
+    return;
+  }
+  await loadOtFilingSettings();
   renderOtFiling();
 }
 
