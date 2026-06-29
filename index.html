@@ -2901,19 +2901,26 @@ async function unlockOtEntry(employeeId, filingDate) {
 }
 
 async function resetOtFiling() {
+  console.log('resetOtFiling: button clicked, isAdmin =', isAdmin());
   if (!isAdmin()) { showToast('Only admins can reset OT Hours Filing.', true); return; }
-  if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and the "Total Leads Available" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.')) return;
+  const confirmed = confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and the "Total Leads Available" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.');
+  console.log('resetOtFiling: user confirmed =', confirmed);
+  if (!confirmed) return;
 
   const { error: hoursError } = await sb
     .from('ot_hours_entries')
     .delete()
     .gte('updated_at', '1900-01-01'); // matches all rows; Supabase requires a filter on delete-all
 
+  console.log('resetOtFiling: hours delete error =', hoursError);
   if (hoursError) { showToast('Could not reset OT Hours Filing.', true); return; }
 
-  const { error: totalsError } = await sb
+  const { data: totalsData, error: totalsError } = await sb
     .from('ot_filing_settings')
-    .upsert({ id: 1, total_leads_available: null, total_leads_updated_by: null, updated_at: new Date().toISOString() }, { onConflict: 'id' });
+    .upsert({ id: 1, total_leads_available: null, total_leads_updated_by: null, updated_at: new Date().toISOString() }, { onConflict: 'id' })
+    .select();
+
+  console.log('resetOtFiling: totals upsert result =', totalsData, 'error =', totalsError);
 
   if (totalsError) {
     console.error('Resetting Total Leads Available failed:', totalsError);
@@ -2923,6 +2930,7 @@ async function resetOtFiling() {
 
   showToast('OT Hours Filing reset.');
   await Promise.all([loadOtHoursEntries(), loadOtFilingSettings()]);
+  console.log('resetOtFiling: after reload, otFilingSettings =', state.otFilingSettings);
   renderOtFiling();
 }
 
