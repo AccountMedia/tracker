@@ -2508,15 +2508,29 @@ function renderLiRestriction() {
       </div>
       <div style="width:300px; flex-shrink:0;">
         <div class="card" style="padding:20px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-            <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--teal);">LinkedIn Verification</h3>
-          </div>
-          <p class="faint" style="font-size:11px; margin:0 0 10px;">Account ID-verification status per agent.</p>
-          <div style="display:flex; gap:6px; margin-bottom:12px;">
-            <button class="btn btn-sm li-verif-filter-btn ${state.liVerificationFilter === 'all' ? 'btn-primary' : 'btn-ghost'}" data-filter="all" style="font-size:11px; padding:4px 10px;">All</button>
-            <button class="btn btn-sm li-verif-filter-btn ${state.liVerificationFilter === 'verified' ? 'btn-primary' : 'btn-ghost'}" data-filter="verified" style="font-size:11px; padding:4px 10px;">Verified</button>
-            <button class="btn btn-sm li-verif-filter-btn ${state.liVerificationFilter === 'unverified' ? 'btn-primary' : 'btn-ghost'}" data-filter="unverified" style="font-size:11px; padding:4px 10px;">Unverified</button>
-          </div>
+          <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">LinkedIn Verification</h3>
+          <p class="faint" style="font-size:11px; margin:0 0 12px;">Account ID-verification status per agent.</p>
+          ${(() => {
+            const verifTabBtn = (key, label, isActive) => `
+              <button type="button" class="li-verif-filter-btn" data-filter="${key}"
+                style="flex:1; padding:8px 6px; font-size:11.5px; font-weight:700; font-family:inherit; cursor:pointer;
+                       border:1px solid var(--line); border-bottom:none;
+                       border-radius:8px 8px 0 0;
+                       background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
+                       color:${isActive ? '#F7F3E8' : 'var(--ink-soft)'};
+                       position:relative; ${isActive ? 'z-index:2;' : 'z-index:1; margin-top:3px;'}">
+                ${label}
+              </button>
+            `;
+            return `
+              <div style="display:flex; gap:4px; margin:0 -20px; padding:0 20px;">
+                ${verifTabBtn('all', 'All', state.liVerificationFilter === 'all')}
+                ${verifTabBtn('verified', 'Verified', state.liVerificationFilter === 'verified')}
+                ${verifTabBtn('unverified', 'Unverified', state.liVerificationFilter === 'unverified')}
+              </div>
+              <div style="border-bottom:1px solid var(--line); margin:0 -20px 14px; padding:0 20px;"></div>
+            `;
+          })()}
           <div style="max-height:560px; overflow-y:auto;">
             ${verificationRows || `<p class="muted" style="font-size:12.5px;">No matches.</p>`}
           </div>
