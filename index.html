@@ -36,7 +36,6 @@
     --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif;
     --font-mono: 'SF Mono', 'IBM Plex Mono', Menlo, Consolas, monospace;
   }
-
   *{ box-sizing: border-box; }
   html, body{ margin:0; padding:0; }
   body{
@@ -50,13 +49,11 @@
   a{ color: inherit; text-decoration: none; }
   button{ font-family: inherit; cursor: pointer; }
   ::selection{ background: var(--gold-line); color: white; }
-
   /* ---------- Layout shell ---------- */
   #app{
     display: flex;
     min-height: 100vh;
   }
-
   /* ---------- Sidebar ---------- */
   .sidebar{
     width: 240px;
@@ -147,7 +144,6 @@
     color: #8EA6A1;
   }
   .sidebar-foot strong{ color:#D7CFAF; font-weight:600; }
-
   /* ---------- Main content ---------- */
   .main{
     flex: 1;
@@ -184,10 +180,8 @@
     color: var(--ink-soft);
     font-size: 13.5px;
   }
-
   .view{ display:none; }
   .view.active{ display:block; }
-
   /* ---------- Generic card ---------- */
   .card{
     background: var(--paper-raised);
@@ -195,7 +189,6 @@
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-sm);
   }
-
   /* ---------- Buttons ---------- */
   .btn{
     display: inline-flex;
@@ -215,7 +208,6 @@
   .btn-ghost:hover{ background: var(--line-soft); color: var(--ink); }
   .btn-sm{ padding: 6px 12px; font-size: 12px; }
   .btn:disabled{ opacity:0.45; cursor:not-allowed; }
-
   /* ---------- Stamp badges (signature element) ---------- */
   .stamp{
     display: inline-flex;
@@ -237,7 +229,6 @@
   .stamp.sl{ color: var(--amber); background: var(--amber-wash); }
   .stamp.el{ color: var(--coral); background: var(--coral-wash); }
   .stamp.pending{ color: var(--ink-soft); background: var(--line-soft); border-style: dashed; opacity:0.85; }
-
   .dot-mark{
     width: 7px; height:7px; border-radius:50%; display:inline-block; flex-shrink:0;
   }
@@ -245,7 +236,6 @@
   .dot-mark.sl{ background: var(--amber); }
   .dot-mark.el{ background: var(--coral); }
   .dot-mark.pending{ background: var(--ink-faint); }
-
   /* ---------- Login ---------- */
   .login-wrap{
     min-height: 100vh;
@@ -304,13 +294,11 @@
     padding: 8px 10px; border-radius: var(--radius-sm); display:none;
   }
   .login-submit{ margin-top: 4px; width:100%; justify-content:center; padding: 11px; }
-
   /* ---------- Misc utility ---------- */
   .muted{ color: var(--ink-soft); }
   .faint{ color: var(--ink-faint); }
   .loading-row{ padding: 30px 0; text-align:center; color: var(--ink-faint); font-size: 13px; }
   .hidden{ display:none !important; }
-
   /* ---------- Toast ---------- */
   #toast{
     position: fixed; bottom: 26px; right: 26px;
@@ -326,7 +314,6 @@
   }
   #toast.show{ transform: translateY(0); opacity: 1; }
   #toast.error{ background: var(--coral); }
-
   @media (max-width: 900px){
     .sidebar{ display:none; }
     .main{ padding: 20px 18px 60px; }
@@ -334,7 +321,6 @@
 </style>
 </head>
 <body>
-
 <div id="login-screen" class="login-wrap">
   <div class="login-card">
     <div class="login-mark">Account Media
@@ -354,7 +340,6 @@
     </form>
   </div>
 </div>
-
 <div id="app" class="hidden">
   <aside class="sidebar">
     <div class="brand">Account Media
@@ -378,9 +363,7 @@
       </div>
     </div>
   </aside>
-
   <main class="main">
-
     <!-- DASHBOARD VIEW -->
     <section class="view" id="view-dashboard">
       <div class="page-head">
@@ -392,7 +375,6 @@
       </div>
       <div id="dashboard-content"></div>
     </section>
-
     <!-- LEAVE TRACKER VIEW -->
     <section class="view" id="view-leave-tracker">
       <div class="page-head">
@@ -404,7 +386,6 @@
       </div>
       <div id="leave-tracker-content"></div>
     </section>
-
     <!-- PAYROLL CONFIRMATION VIEW -->
     <section class="view" id="view-payroll-confirmation">
       <div class="page-head">
@@ -417,7 +398,6 @@
       </div>
       <div id="payroll-confirmation-content"></div>
     </section>
-
     <!-- PRIOLIST VIEW -->
     <section class="view" id="view-priolist">
       <div class="page-head">
@@ -430,7 +410,6 @@
       </div>
       <div id="priolist-content"></div>
     </section>
-
     <!-- LI RESTRICTION DAILY REPORT VIEW -->
     <section class="view" id="view-li-restriction">
       <div class="page-head">
@@ -443,7 +422,6 @@
       </div>
       <div id="li-restriction-content"></div>
     </section>
-
     <!-- OT HOURS FILING VIEW -->
     <section class="view" id="view-ot-filing">
       <div class="page-head">
@@ -456,27 +434,21 @@
       </div>
       <div id="ot-filing-content"></div>
     </section>
-
   </main>
 </div>
-
 <div id="toast"></div>
-
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 // =====================================================================
 // ACCOUNT MEDIA — Team Hub
 // Leave Tracker module (first release)
 // =====================================================================
-
 // ---- Supabase config -------------------------------------------------
 // Replace these with your new Supabase project's values (Project Settings -> API)
 const SUPABASE_URL = 'https://hfndceismzgkmceotlus.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhmbmRjZWlzbXpna21jZW90bHVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0NjYzMTcsImV4cCI6MjA5ODA0MjMxN30.KeCuo8UABVODtoV_TP9BYetOeyYwd9kswKwWN-jtBSU';
-
 let sb = null;
 let SUPABASE_CONFIGURED = false;
-
 try {
   if (SUPABASE_URL.startsWith('http') && SUPABASE_ANON_KEY !== 'YOUR_SUPABASE_ANON_KEY') {
     sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -485,7 +457,6 @@ try {
 } catch (err) {
   console.error('Supabase failed to initialize:', err);
 }
-
 function showSetupNotice() {
   const box = document.getElementById('login-error');
   if (box) {
@@ -493,7 +464,6 @@ function showSetupNotice() {
     box.style.display = 'block';
   }
 }
-
 // ---- Constants ---------------------------------------------------------
 const LEAVE_TYPES = {
   VL:  { label: 'Vacation Leave',   short: 'VL',  cls: 'vl', credit: 'vl' },
@@ -505,12 +475,9 @@ const LEAVE_TYPES = {
   LNP: { label: 'Leave No Pay',     short: 'LNP', cls: 'el', credit: null },
   HLNP:{ label: 'Half-Day No Pay',  short: 'HLNP',cls: 'el', credit: null, half: true },
 };
-
 const STATUS = { PENDING: 'pending', APPROVED: 'approved', DECLINED: 'declined' };
-
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const WEEKDAY_LETTERS = ['S','M','T','W','T','F','S'];
-
 // ---- App state -----------------------------------------------------------
 const state = {
   session: null,
@@ -534,11 +501,9 @@ const state = {
   currentView: 'dashboard',
   creditsEditMode: false, // whether the Leave Credits section is in edit mode
 };
-
 // =====================================================================
 // AUTH
 // =====================================================================
-
 function showToast(msg, isError) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -547,26 +512,22 @@ function showToast(msg, isError) {
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove('show'), 3200);
 }
-
 async function handleLogin(e) {
   e.preventDefault();
   const username = document.getElementById('login-username').value.trim().toLowerCase();
   const password = document.getElementById('login-password').value;
   const errorBox = document.getElementById('login-error');
   errorBox.style.display = 'none';
-
   if (!SUPABASE_CONFIGURED) {
     showSetupNotice();
     return;
   }
-
   try {
     const { data: profileRow, error: profileErr } = await sb
       .from('app_users')
       .select('*')
       .ilike('username', username)
       .maybeSingle();
-
     if (profileErr) {
       console.error('Login query error:', profileErr);
       throw new Error('Something went wrong checking your account. Please try again.');
@@ -574,11 +535,9 @@ async function handleLogin(e) {
     if (!profileRow) {
       throw new Error('Invalid username or password.');
     }
-
     // Simple password check against stored hash column (set up via Supabase function or stored hash)
     const ok = await verifyPassword(password, profileRow.password_hash);
     if (!ok) throw new Error('Invalid username or password.');
-
     state.profile = profileRow;
     sessionStorage.setItem('registry_profile', JSON.stringify(profileRow));
     enterApp();
@@ -587,18 +546,15 @@ async function handleLogin(e) {
     errorBox.style.display = 'block';
   }
 }
-
 async function verifyPassword(plain, hash) {
   const enc = new TextEncoder().encode(plain);
   const buf = await crypto.subtle.digest('SHA-256', enc);
   const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
   return hex === hash;
 }
-
 function isAdmin() {
   return !!state.profile && state.profile.role === 'admin';
 }
-
 function enterApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
@@ -606,7 +562,6 @@ function enterApp() {
   initNav();
   loadAllData();
 }
-
 function checkExistingSession() {
   const stored = sessionStorage.getItem('registry_profile');
   if (stored) {
@@ -614,7 +569,6 @@ function checkExistingSession() {
     enterApp();
   }
 }
-
 function logout() {
   sessionStorage.removeItem('registry_profile');
   sessionStorage.removeItem('registry_active_view');
@@ -625,11 +579,9 @@ function logout() {
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
-
 // =====================================================================
 // NAVIGATION
 // =====================================================================
-
 function initNav() {
   document.querySelectorAll('.nav-item[data-view]').forEach(item => {
     item.addEventListener('click', () => {
@@ -649,7 +601,6 @@ function initNav() {
   const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
-
 function switchView(viewName) {
   state.currentView = viewName;
   sessionStorage.setItem('registry_active_view', viewName);
@@ -659,25 +610,20 @@ function switchView(viewName) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const target = document.getElementById('view-' + viewName);
   if (target) target.classList.add('active');
-
   if (viewName === 'dashboard') renderDashboard();
   if (viewName === 'leave-tracker') renderLeaveTracker();
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
   if (viewName === 'priolist') renderPrioList();
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
-
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
-
   if (viewName === 'li-restriction') startLiRestrictionTicker();
   else stopLiRestrictionTicker();
 }
-
 // =====================================================================
 // DATA LOADING
 // =====================================================================
-
 async function loadAllData() {
   await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
   renderDashboard();
@@ -687,38 +633,32 @@ async function loadAllData() {
   renderLiRestriction();
   renderOtFiling();
 }
-
 async function loadOtFilingDates() {
   const { data, error } = await sb.from('ot_filing_dates').select('*').order('filing_date', { ascending: true });
   if (error) { showToast('Could not load OT filing dates.', true); return; }
   state.otFilingDates = data || [];
 }
-
 async function loadOtHoursEntries() {
   const { data, error } = await sb.from('ot_hours_entries').select('*');
   if (error) { showToast('Could not load OT hours entries.', true); return; }
   state.otHoursEntries = data || [];
 }
-
 async function loadLiVerificationStatus() {
   const { data, error } = await sb.from('li_verification_status').select('*');
   if (error) { showToast('Could not load LI verification status.', true); return; }
   state.liVerificationStatus = data || [];
 }
-
 async function loadLiRestrictionEntries() {
   const { data, error } = await sb.from('li_restriction_entries').select('*').order('entry_date', { ascending: false });
   if (error) { showToast('Could not load LI restriction entries.', true); return; }
   state.liRestrictionEntries = data || [];
 }
-
 async function loadPriolistEntries() {
   const { data, error } = await sb.from('priolist_entries').select('*');
   if (error) { showToast('Could not load PrioList.', true); return; }
   state.priolistEntries = data || [];
   await applyDailyPriolistReset();
 }
-
 // Returns the ISO date string of the most recent 8 AM boundary that has
 // already passed. Before 8 AM, that's yesterday's date; from 8 AM onward,
 // it's today's date. A row resets once per boundary crossed.
@@ -731,37 +671,30 @@ function currentPriolistResetBoundary() {
   }
   return isoDate(boundary);
 }
-
 async function applyDailyPriolistReset() {
   const boundary = currentPriolistResetBoundary();
   const stale = state.priolistEntries.filter(e => e.last_reset_date < boundary);
   if (!stale.length) return;
-
   const { error } = await sb
     .from('priolist_entries')
     .update({ md_output: 0, leads: 0, last_reset_date: boundary })
     .lt('last_reset_date', boundary);
-
   if (error) { console.error('PrioList auto-reset failed:', error); return; }
-
   // Reflect the reset locally immediately rather than re-fetching.
   state.priolistEntries = state.priolistEntries.map(e =>
     e.last_reset_date < boundary ? { ...e, md_output: 0, leads: 0, last_reset_date: boundary } : e
   );
 }
-
 async function loadPayrollConfirmations() {
   const { data, error } = await sb.from('payroll_confirmations').select('*');
   if (error) { showToast('Could not load payroll confirmations.', true); return; }
   state.payrollConfirmations = data || [];
 }
-
 async function loadEmployees() {
   const { data, error } = await sb.from('employees').select('*').order('display_name');
   if (error) { showToast('Could not load employees.', true); return; }
   state.employees = data || [];
 }
-
 async function loadLeaveEntries() {
   const { data, error } = await sb
     .from('leave_entries')
@@ -770,17 +703,14 @@ async function loadLeaveEntries() {
   if (error) { showToast('Could not load leave entries.', true); return; }
   state.leaveEntries = data || [];
 }
-
 // =====================================================================
 // CREDIT CALCULATIONS
 // (mirrors the Excel formulas: VL balance = starting balance - used;
 //  SL balance = 6 - used SL/SLH - used EL/ELH, since EL draws on SL credits)
 // =====================================================================
-
 function entriesForEmployee(employeeId) {
   return state.leaveEntries.filter(e => e.employee_id === employeeId && e.status === STATUS.APPROVED);
 }
-
 // Returns how much of a day a single leave entry counts against credits.
 // If the entry has an explicit `hours` value (a partial-day / hourly
 // request), that's converted to a day-fraction on an 8-hour work day.
@@ -792,7 +722,6 @@ function dayFractionForEntry(entry) {
   }
   return LEAVE_TYPES[entry.leave_type] && LEAVE_TYPES[entry.leave_type].half ? 0.5 : 1;
 }
-
 function getVLBalance(employee) {
   const asOf = employee.balance_as_of_date;
   const used = entriesForEmployee(employee.id)
@@ -801,7 +730,6 @@ function getVLBalance(employee) {
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
   return round2((employee.vl_balance ?? 0) - used);
 }
-
 function getSLBalance(employee) {
   const asOf = employee.balance_as_of_date;
   const used = entriesForEmployee(employee.id)
@@ -810,26 +738,21 @@ function getSLBalance(employee) {
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
   return round2((employee.sl_balance ?? 0) - used);
 }
-
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
-
 // =====================================================================
 // DASHBOARD VIEW
 // =====================================================================
-
 function renderDashboard() {
   const el = document.getElementById('dashboard-content');
   if (!state.employees.length) {
-    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    el.innerHTML = '<div class="loading-row">Loading...</div>';
     return;
   }
-
   const today = isoDate(new Date());
   const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED);
   const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
-
   const now = new Date();
   const payrollYear = now.getFullYear();
   const payrollMonth = now.getMonth() + 1;
@@ -843,7 +766,6 @@ function renderDashboard() {
     return c && c.received;
   }).length;
   const rosterCount = payrollRoster.length;
-
   // Restricted LinkedIn accounts: count anyone who currently has at
   // least one restriction entry that hasn't been lifted yet — not just
   // their most recent entry, since an older incident could still be
@@ -852,7 +774,6 @@ function renderDashboard() {
     const empEntries = state.liRestrictionEntries.filter(e => e.employee_id === emp.id);
     return empEntries.some(entry => getLiEntryStatus(entry) === 'Restricted');
   }).length;
-
   // OT participation for the most recent open filing date: how many
   // people have confirmed their actual hours out of how many logged
   // anything at all for that date. Both read 0 if no date is open or
@@ -864,14 +785,12 @@ function renderDashboard() {
     : [];
   const otLoggedCount = otEntriesForDate.length;
   const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed).length;
-
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; margin-bottom:28px;">
       ${dashboardStatCard('Out today', todayEntries.length, todayEntries.map(e => employeeName(e.employee_id)).join(', ') || 'No one is out today.', 'vl')}
       ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl')}
       ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
     </div>
-
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
       <div class="card" style="padding:20px;">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
@@ -906,7 +825,6 @@ function renderDashboard() {
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${latestOtDate ? (otLoggedCount ? `For ${formatPrettyDate(latestOtDate)}.` : 'No OT logged for the latest date.') : 'No OT filing dates open.'}</div>
       </div>
     </div>
-
     <div class="card" style="padding:22px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
         <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Who's out today</h3>
@@ -926,7 +844,6 @@ function renderDashboard() {
     </div>
   `;
 }
-
 function dashboardStatCard(label, value, sub, accentCls) {
   return `
     <div class="card" style="padding:20px;">
@@ -939,11 +856,9 @@ function dashboardStatCard(label, value, sub, accentCls) {
     </div>
   `;
 }
-
 // =====================================================================
 // LEAVE TRACKER VIEW
 // =====================================================================
-
 function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
   actionsEl.style.marginBottom = '6px';
@@ -954,13 +869,11 @@ function renderLeaveTracker() {
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
   const reportBtn = document.getElementById('btn-download-report');
   if (reportBtn) reportBtn.addEventListener('click', downloadMonthlyReport);
-
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
-    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    el.innerHTML = '<div class="loading-row">Loading...</div>';
     return;
   }
-
   el.innerHTML = `
     <div class="tracker-grid">
       <div class="tracker-col-main">
@@ -991,7 +904,6 @@ function renderLeaveTracker() {
       }
     </style>
   `;
-
   attachCalendarHandlers();
   if (isAdmin()) {
     attachPendingHandlers();
@@ -1000,16 +912,13 @@ function renderLeaveTracker() {
   }
   attachCreditEditHandlers();
 }
-
 // ---- My requests (staff view) ----------------------------------------
-
 function renderMyRequestsPanel() {
   const myEntries = state.leaveEntries
     .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED);
   const groups = groupLeaveEntries(myEntries)
     .sort((a, b) => b.startDate.localeCompare(a.startDate))
     .slice(0, 10);
-
   return `
     <div class="card" style="padding:20px;">
       <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">My recent requests</h3>
@@ -1042,11 +951,9 @@ function renderMyRequestsPanel() {
     </div>
   `;
 }
-
 function canCancel(entry) {
   if (entry.status === STATUS.PENDING) return true; // a pending request was never taken, so it can always be withdrawn
   if (entry.status !== STATUS.APPROVED) return false;
-
   // For a multi-day request, the relevant date is the END of the whole
   // stretch, not just whichever single day happened to be clicked — a
   // request that runs from the past into the future should still be
@@ -1058,10 +965,8 @@ function canCancel(entry) {
       .map(g => g.leave_date);
     if (groupDates.length) latestDate = groupDates.sort().slice(-1)[0];
   }
-
   return latestDate >= isoDate(new Date());
 }
-
 function attachMyRequestsHandlers() {
   document.querySelectorAll('.cancel-leave-btn').forEach(b => {
     b.addEventListener('click', () => cancelLeave(b.dataset.id));
@@ -1070,20 +975,16 @@ function attachMyRequestsHandlers() {
     b.addEventListener('click', () => openEditDatesModal(b.dataset.id));
   });
 }
-
 async function cancelLeave(id, closeAfter) {
   const entry = state.leaveEntries.find(e => e.id === id);
   const groupId = entry ? entry.request_group_id : null;
   const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
-
   const msg = groupCount > 1
     ? `Cancel this leave? It covers ${groupCount} days and this cannot be undone.`
     : 'Cancel this leave? This cannot be undone.';
   if (!confirm(msg)) return;
-
   const query = sb.from('leave_entries').delete();
   const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
-
   if (error) { showToast('Could not cancel the leave.', true); return; }
   showToast(groupCount > 1 ? `Cancelled ${groupCount} days of leave.` : 'Leave cancelled.');
   if (closeAfter) closeModal();
@@ -1091,25 +992,20 @@ async function cancelLeave(id, closeAfter) {
   renderLeaveTracker();
   renderDashboard();
 }
-
 // Admin-only, unconditional delete of a single leave entry — bypasses the
 // normal Cancel button's date restriction entirely. Intended for testing
 // and data cleanup, not regular day-to-day use.
 async function forceDeleteLeave(id) {
   if (!isAdmin()) { showToast('Only admins can delete entries.', true); return; }
-
   const entry = state.leaveEntries.find(e => e.id === id);
   const groupId = entry ? entry.request_group_id : null;
   const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
-
   const msg = groupCount > 1
     ? `Are you sure you want to delete this entry? It covers ${groupCount} days and all of them will be removed. This cannot be undone.`
     : 'Are you sure you want to delete this entry? This cannot be undone.';
   if (!confirm(msg)) return;
-
   const query = sb.from('leave_entries').delete();
   const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
-
   if (error) { showToast('Could not delete the entry.', true); return; }
   showToast(groupCount > 1 ? `Deleted ${groupCount} days of leave.` : 'Entry deleted.');
   closeModal();
@@ -1117,21 +1013,17 @@ async function forceDeleteLeave(id) {
   renderLeaveTracker();
   renderDashboard();
 }
-
 function renderCalendarCard() {
   const year = state.calendarYear;
   const month = state.calendarMonth;
   const firstDay = new Date(year, month, 1);
   const startWeekday = firstDay.getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
-
   const cells = [];
   for (let i = 0; i < startWeekday; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
   while (cells.length % 7 !== 0) cells.push(null);
-
   const todayIso = isoDate(new Date());
-
   let gridHtml = '';
   cells.forEach(d => {
     if (d === null) {
@@ -1143,14 +1035,12 @@ function renderCalendarCard() {
     const pendingCount = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.PENDING && !e.request_group_id).length;
     const isToday = dateIso === todayIso;
     const isWeekend = [0,6].includes(new Date(year, month, d).getDay());
-
     // Multi-day leave bars: one per distinct request_group_id active on this
     // day (pending or approved), with rounded caps only where the stretch
     // actually starts/ends, so consecutive days read as one connected bar.
     const groupBars = multiDayBarsForDate(dateIso).map(bar => `
       <div class="cal-multiday-bar ${bar.cls} ${bar.isStart ? 'bar-start' : ''} ${bar.isEnd ? 'bar-end' : ''}" title="${escapeHtml(bar.title)}"></div>
     `).join('');
-
     gridHtml += `
       <div class="cal-cell ${isToday ? 'cal-cell-today' : ''} ${isWeekend ? 'cal-cell-weekend' : ''}" data-date="${dateIso}">
         <div class="cal-daynum">${d}</div>
@@ -1163,7 +1053,6 @@ function renderCalendarCard() {
       </div>
     `;
   });
-
   return `
     <div class="card calendar-card" style="padding:26px; display:flex; flex-direction:column;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:10px;">
@@ -1212,7 +1101,6 @@ function renderCalendarCard() {
     </style>
   `;
 }
-
 function attachCalendarHandlers() {
   const prev = document.getElementById('cal-prev');
   const next = document.getElementById('cal-next');
@@ -1222,7 +1110,6 @@ function attachCalendarHandlers() {
     cell.addEventListener('click', () => openDayPanel(cell.getAttribute('data-date')));
   });
 }
-
 function shiftMonth(delta) {
   let m = state.calendarMonth + delta;
   let y = state.calendarYear;
@@ -1232,17 +1119,13 @@ function shiftMonth(delta) {
   state.calendarYear = y;
   renderLeaveTracker();
 }
-
 // ---- Monthly report export -------------------------------------------
-
 function downloadMonthlyReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
-
   const year = state.calendarYear;
   const month = state.calendarMonth;
   const monthStart = isoDate(new Date(year, month, 1));
   const monthEnd = isoDate(new Date(year, month + 1, 0));
-
   const entries = state.leaveEntries
     .filter(e => e.leave_date >= monthStart && e.leave_date <= monthEnd)
     .filter(e => e.status !== STATUS.DECLINED) // exclude declined/cancelled leave (belt-and-suspenders; these rows are normally deleted outright)
@@ -1252,12 +1135,9 @@ function downloadMonthlyReport() {
       if (dateCompare !== 0) return dateCompare;
       return employeeName(a.employee_id).localeCompare(employeeName(b.employee_id));
     });
-
   const csvRows = [];
-
   csvRows.push([`Leave Report — ${MONTH_NAMES[month]} ${year}`]);
   csvRows.push([]);
-
   csvRows.push(['Date', 'Employee', 'Leave Type', 'Hours', 'Status', 'Note']);
   if (entries.length) {
     entries.forEach(e => {
@@ -1273,7 +1153,6 @@ function downloadMonthlyReport() {
   } else {
     csvRows.push(['No leave recorded for this month.']);
   }
-
   csvRows.push([]);
   csvRows.push([`Remaining Leave Credits (as of ${formatPrettyDate(isoDate(new Date()))})`]);
   csvRows.push(['Employee', 'VL Remaining', 'SL Remaining']);
@@ -1283,11 +1162,9 @@ function downloadMonthlyReport() {
     .forEach(emp => {
       csvRows.push([emp.display_name, getVLBalance(emp), getSLBalance(emp)]);
     });
-
   const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
-
   const filename = `Leave Report - ${MONTH_NAMES[month]} ${year}.csv`;
   const link = document.createElement('a');
   link.href = url;
@@ -1296,10 +1173,8 @@ function downloadMonthlyReport() {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
-
   showToast('Report downloaded.');
 }
-
 function csvEscape(value) {
   const str = String(value ?? '');
   if (/[",\r\n]/.test(str)) {
@@ -1307,12 +1182,10 @@ function csvEscape(value) {
   }
   return str;
 }
-
 function capitalize(str) {
   if (!str) return '';
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
-
 function openDayPanel(dateIso) {
   const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status !== STATUS.DECLINED);
   const admin = isAdmin();
@@ -1349,7 +1222,6 @@ function openDayPanel(dateIso) {
     </div>
   `;
   }).join('') : `<p class="muted">No leave logged for this day.</p>`;
-
   openModal(formatPrettyDate(dateIso), `<div>${body}</div>`);
   document.querySelectorAll('.cancel-leave-btn').forEach(b => {
     b.addEventListener('click', () => cancelLeave(b.dataset.id, true));
@@ -1361,15 +1233,12 @@ function openDayPanel(dateIso) {
     b.addEventListener('click', () => openEditDatesModal(b.dataset.id));
   });
 }
-
 // =====================================================================
 // EDIT DATE RANGE (for existing multi-day requests)
 // =====================================================================
-
 function openEditDatesModal(entryId) {
   const entry = state.leaveEntries.find(e => e.id === entryId);
   if (!entry || !entry.request_group_id) return;
-
   const groupDates = state.leaveEntries
     .filter(g => g.request_group_id === entry.request_group_id && g.status !== STATUS.DECLINED)
     .map(g => g.leave_date)
@@ -1377,7 +1246,6 @@ function openEditDatesModal(entryId) {
   const currentStart = groupDates[0];
   const currentEnd = groupDates[groupDates.length - 1];
   const today = isoDate(new Date());
-
   const formHtml = `
     <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Editing ${escapeHtml(employeeName(entry.employee_id))}'s leave. Changing the dates will reset this request to pending for review.</p>
     <form id="edit-dates-form" style="display:flex; flex-direction:column; gap:14px;">
@@ -1395,29 +1263,23 @@ function openEditDatesModal(entryId) {
       <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Save new dates</button>
     </form>
   `;
-
   openModal('Edit leave dates', formHtml);
   document.getElementById('edit-dates-form').addEventListener('submit', (e) => submitEditDates(e, entry));
 }
-
 async function submitEditDates(e, entry) {
   e.preventDefault();
   const fromDate = document.getElementById('edit-date-from').value;
   const toDate = document.getElementById('edit-date-to').value;
-
   if (!fromDate || !toDate) { showToast('Please fill in both dates.', true); return; }
   if (toDate < fromDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
   if (fromDate < isoDate(new Date())) { showToast('You can\'t set a start date that has already passed.', true); return; }
-
   const newDates = datesInRange(fromDate, toDate, { skipWeekends: true });
   if (!newDates.length) { showToast('That range has no workdays in it.', true); return; }
-
   // Replace the old group's rows with new ones for the new date range,
   // preserving type/note/employee, and reset to pending since the dates
   // (and therefore the credit impact) have changed.
   const { error: deleteError } = await sb.from('leave_entries').delete().eq('request_group_id', entry.request_group_id);
   if (deleteError) { showToast('Could not update the dates.', true); return; }
-
   const newGroupId = (crypto.randomUUID ? crypto.randomUUID() : null);
   const rows = newDates.map(d => ({
     employee_id: entry.employee_id,
@@ -1429,23 +1291,18 @@ async function submitEditDates(e, entry) {
     request_group_id: newDates.length > 1 ? newGroupId : null,
     hours: entry.hours,
   }));
-
   const { error: insertError } = await sb.from('leave_entries').insert(rows);
   if (insertError) { showToast('Could not save the new dates.', true); return; }
-
   closeModal();
   showToast('Leave dates updated — sent back for approval.');
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
 }
-
 // ---- Pending panel --------------------------------------------------
-
 function renderPendingPanel() {
   const groups = groupLeaveEntries(state.leaveEntries.filter(e => e.status === STATUS.PENDING))
     .sort((a, b) => a.startDate.localeCompare(b.startDate));
-
   return `
     <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Pending requests</h3>
@@ -1484,7 +1341,6 @@ function renderPendingPanel() {
     </div>
   `;
 }
-
 // Groups leave entries that belong to the same multi-day request (matching
 // request_group_id) into a single summary object. Ungrouped entries become
 // their own single-day group. Used so a week-long request shows as one
@@ -1492,7 +1348,6 @@ function renderPendingPanel() {
 function groupLeaveEntries(entries) {
   const byGroup = new Map();
   const singles = [];
-
   entries.forEach(e => {
     if (e.request_group_id) {
       if (!byGroup.has(e.request_group_id)) byGroup.set(e.request_group_id, []);
@@ -1501,7 +1356,6 @@ function groupLeaveEntries(entries) {
       singles.push(e);
     }
   });
-
   const groups = [];
   byGroup.forEach(days => {
     days.sort((a, b) => a.leave_date.localeCompare(b.leave_date));
@@ -1529,12 +1383,10 @@ function groupLeaveEntries(entries) {
   });
   return groups;
 }
-
 function formatMonthDay(iso) {
   const d = new Date(iso + 'T00:00:00');
   return `${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
 }
-
 // Returns one entry per distinct multi-day request_group_id active on the
 // given date (pending or approved, never declined since those are deleted).
 // Single-day requests are excluded — they're already shown via the dot
@@ -1545,24 +1397,18 @@ function multiDayBarsForDate(dateIso) {
     e.status !== STATUS.DECLINED &&
     e.request_group_id
   );
-
   const seenGroups = new Set();
   const bars = [];
-
   onThisDay.forEach(e => {
     if (seenGroups.has(e.request_group_id)) return;
     seenGroups.add(e.request_group_id);
-
     const groupDays = state.leaveEntries
       .filter(g => g.request_group_id === e.request_group_id && g.status !== STATUS.DECLINED)
       .map(g => g.leave_date)
       .sort();
-
     if (groupDays.length < 2) return; // shouldn't happen, but guard anyway
-
     const startDate = groupDays[0];
     const endDate = groupDays[groupDays.length - 1];
-
     bars.push({
       cls: LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].cls : '',
       isStart: dateIso === startDate,
@@ -1570,10 +1416,8 @@ function multiDayBarsForDate(dateIso) {
       title: `${employeeName(e.employee_id)} — ${LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type} (${formatDateRange(startDate, endDate)})`,
     });
   });
-
   return bars;
 }
-
 function formatDateRange(startIso, endIso) {
   if (startIso === endIso) return formatPrettyDate(startIso);
   const startYear = startIso.slice(0, 4);
@@ -1583,20 +1427,16 @@ function formatDateRange(startIso, endIso) {
   }
   return `${formatMonthDay(startIso)} – ${formatMonthDay(endIso)}`;
 }
-
 function attachPendingHandlers() {
   document.querySelectorAll('.approve-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.APPROVED)));
   document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.DECLINED)));
 }
-
 async function decideRequest(id, decision) {
   if (!isAdmin()) { showToast('Only admins can approve or decline requests.', true); return; }
-
   const entry = state.leaveEntries.find(e => e.id === id);
   const groupId = entry ? entry.request_group_id : null;
   const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
   const label = groupCount > 1 ? `${groupCount} days of leave` : 'Leave';
-
   if (decision === STATUS.DECLINED) {
     const query = sb.from('leave_entries').delete();
     const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
@@ -1612,20 +1452,16 @@ async function decideRequest(id, decision) {
   renderLeaveTracker();
   renderDashboard();
 }
-
 // ---- Leave Credits table --------------------------------------------
-
 function renderCreditTableCard() {
   const admin = isAdmin();
   const editMode = admin && state.creditsEditMode;
-
   const rows = state.employees
     .filter(e => e.active !== false)
     .sort(byKristinaFirstThenName)
     .map(emp => {
       const vl = getVLBalance(emp);
       const sl = getSLBalance(emp);
-
       if (editMode) {
         return `
           <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px;">
@@ -1644,7 +1480,6 @@ function renderCreditTableCard() {
           </div>
         `;
       }
-
       return `
         <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px;">
           <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
@@ -1655,7 +1490,6 @@ function renderCreditTableCard() {
         </div>
       `;
     }).join('');
-
   return `
     <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
@@ -1682,7 +1516,6 @@ function renderCreditTableCard() {
     </div>
   `;
 }
-
 function attachCreditEditHandlers() {
   const toggle = document.getElementById('credits-edit-toggle');
   if (toggle) {
@@ -1701,31 +1534,25 @@ function attachCreditEditHandlers() {
     });
   });
 }
-
 async function saveCreditEdit(empId) {
   if (!isAdmin()) return;
   const employee = state.employees.find(e => e.id === empId);
   if (!employee) return;
-
   const row = document.querySelector(`.credit-row-editing[data-emp-id="${empId}"]`);
   if (!row) return;
   const vlInput = row.querySelector('.vl-input');
   const slInput = row.querySelector('.sl-input');
-
   const newVL = parseFloat(vlInput.value);
   const newSL = parseFloat(slInput.value);
-
   if (isNaN(newVL) || newVL < 0 || isNaN(newSL) || newSL < 0) {
     showToast('Enter valid, non-negative numbers for both VL and SL.', true);
     return;
   }
-
   const currentVL = getVLBalance(employee);
   const currentSL = getSLBalance(employee);
   if (newVL === currentVL && newSL === currentSL) {
     return; // no change, nothing to save — stay in edit mode
   }
-
   // Re-baseline the stored snapshot to today so both new figures are exactly
   // right going forward.
   const updates = {
@@ -1733,21 +1560,16 @@ async function saveCreditEdit(empId) {
     vl_balance: newVL,
     sl_balance: newSL,
   };
-
   const { error } = await sb.from('employees').update(updates).eq('id', empId);
   if (error) { showToast('Could not save the new balance.', true); return; }
-
   showToast('Credit balance updated.');
   await loadEmployees();
   renderLeaveTracker();
 }
-
 // =====================================================================
 // PAYROLL CONFIRMATION
 // =====================================================================
-
 const PAYROLL_MONTH_NAMES = MONTH_NAMES;
-
 function findConfirmation(employeeId, year, month, half) {
   return state.payrollConfirmations.find(c =>
     c.employee_id === employeeId &&
@@ -1756,21 +1578,17 @@ function findConfirmation(employeeId, year, month, half) {
     c.period_half === half
   );
 }
-
 function renderPayrollConfirmation() {
   const actionsEl = document.getElementById('payroll-confirmation-actions');
   actionsEl.innerHTML = '';
-
   const el = document.getElementById('payroll-confirmation-content');
   if (!state.employees.length) {
-    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    el.innerHTML = '<div class="loading-row">Loading...</div>';
     return;
   }
-
   const admin = isAdmin();
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
-
   const rows = state.employees
     .filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia')
     .sort(byKristinaFirstThenName)
@@ -1779,7 +1597,6 @@ function renderPayrollConfirmation() {
       const half2 = findConfirmation(emp.id, year, month, 2);
       const canMark = admin || emp.id === state.profile.employee_id;
       const isMe = emp.id === state.profile.employee_id;
-
       return `
         <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
           <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
@@ -1789,7 +1606,6 @@ function renderPayrollConfirmation() {
         </div>
       `;
     }).join('');
-
   el.innerHTML = `
     <div class="card" style="padding:22px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
@@ -1816,7 +1632,6 @@ function renderPayrollConfirmation() {
       </div>
     </div>
   `;
-
   document.getElementById('payroll-prev').addEventListener('click', () => shiftPayrollPeriod(-1));
   document.getElementById('payroll-next').addEventListener('click', () => shiftPayrollPeriod(1));
   document.querySelectorAll('.mark-received-btn').forEach(b => {
@@ -1830,7 +1645,6 @@ function renderPayrollConfirmation() {
   const resetBtn = document.getElementById('payroll-reset');
   if (resetBtn) resetBtn.addEventListener('click', resetPayrollPeriod);
 }
-
 function renderPayrollCell(employeeId, year, month, half, confirmation, canMark) {
   if (confirmation && confirmation.received) {
     return `
@@ -1846,7 +1660,6 @@ function renderPayrollCell(employeeId, year, month, half, confirmation, canMark)
   }
   return `<span class="faint">Not yet</span>`;
 }
-
 function shiftPayrollPeriod(delta) {
   let m = state.payrollPeriodMonth + delta;
   let y = state.payrollPeriodYear;
@@ -1856,12 +1669,10 @@ function shiftPayrollPeriod(delta) {
   state.payrollPeriodYear = y;
   renderPayrollConfirmation();
 }
-
 async function markPayrollReceived(employeeId, half) {
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
   const nowIso = new Date().toISOString();
-
   const { error } = await sb.from('payroll_confirmations').upsert({
     employee_id: employeeId,
     period_year: year,
@@ -1871,13 +1682,11 @@ async function markPayrollReceived(employeeId, half) {
     received_at: nowIso,
     confirmed_by: state.profile.username,
   }, { onConflict: 'employee_id,period_year,period_month,period_half' });
-
   if (error) { showToast('Could not save the confirmation.', true); return; }
   showToast('Marked as received.');
   await loadPayrollConfirmations();
   renderPayrollConfirmation();
 }
-
 async function undoPayrollReceived(confirmationId) {
   if (!confirm('Undo this confirmation?')) return;
   const { error } = await sb.from('payroll_confirmations').delete().eq('id', confirmationId);
@@ -1886,46 +1695,36 @@ async function undoPayrollReceived(confirmationId) {
   await loadPayrollConfirmations();
   renderPayrollConfirmation();
 }
-
 async function resetPayrollPeriod() {
   if (!isAdmin()) { showToast('Only admins can reset payroll confirmations.', true); return; }
-
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
   const monthLabel = `${PAYROLL_MONTH_NAMES[month - 1]} ${year}`;
-
   if (!confirm(`Reset all payroll confirmations for ${monthLabel}? Every "Received" mark for this month will be cleared, and everyone will go back to "Mark received." This cannot be undone.`)) {
     return;
   }
-
   const { error } = await sb
     .from('payroll_confirmations')
     .delete()
     .eq('period_year', year)
     .eq('period_month', month);
-
   if (error) { showToast('Could not reset this period.', true); return; }
   showToast(`${monthLabel} confirmations reset.`);
   await loadPayrollConfirmations();
   renderPayrollConfirmation();
 }
-
 function downloadPayrollReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
-
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
   const monthLabel = `${PAYROLL_MONTH_NAMES[month - 1]} ${year}`;
-
   const employees = state.employees
     .filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia')
     .sort(byKristinaFirstThenName);
-
   const csvRows = [];
   csvRows.push([`Payroll Confirmation Report — ${monthLabel}`]);
   csvRows.push([]);
   csvRows.push(['Agent', 'Bank', '1st Half Status', '1st Half Date/Time', '2nd Half Status', '2nd Half Date/Time']);
-
   employees.forEach(emp => {
     const half1 = findConfirmation(emp.id, year, month, 1);
     const half2 = findConfirmation(emp.id, year, month, 2);
@@ -1938,11 +1737,9 @@ function downloadPayrollReport() {
       half2 && half2.received ? formatDateTime(half2.received_at) : '',
     ]);
   });
-
   const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
-
   const filename = `Payroll Confirmation - ${monthLabel}.csv`;
   const link = document.createElement('a');
   link.href = url;
@@ -1951,10 +1748,8 @@ function downloadPayrollReport() {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
-
   showToast('Report downloaded.');
 }
-
 function formatDateTime(isoString) {
   if (!isoString) return '';
   const d = new Date(isoString);
@@ -1963,11 +1758,9 @@ function formatDateTime(isoString) {
     hour: 'numeric', minute: '2-digit',
   });
 }
-
 // =====================================================================
 // PRIOLIST
 // =====================================================================
-
 // Deterministic, readable color per employee name — same name always
 // gets the same color, distinct enough to tell people apart at a glance.
 function colorForName(name) {
@@ -1978,26 +1771,22 @@ function colorForName(name) {
   const hue = hash % 360;
   return `hsl(${hue}, 55%, 30%)`;
 }
-
 const PRIOLIST_FILE_COLORS = {
   yellow: '#C9A227',
   blue:   '#2D6A9F',
   red:    '#B5495B',
 };
-
 // "Open for File" is a choice between two whole sets, not individual
 // colors — this maps each set's stored value to the swatches it shows.
 const PRIOLIST_FILE_SETS = {
   yellow_blue: ['blue', 'yellow'],
   yellow_blue_red: ['blue', 'yellow', 'red'],
 };
-
 const PRIOLIST_STATUS_COLORS = {
   Active:   '#2D6A4F', // green
   Break:    '#B58B00', // yellow/amber
   Inactive: '#7B4FA0', // purple
 };
-
 // Polls for changes made by other people while the PrioList tab is open,
 // so the list re-sorts live as MD Output / Leads come in from multiple
 // employees at once — without anyone needing to refresh the page.
@@ -2011,14 +1800,12 @@ function startPriolistPolling() {
     renderPrioList();
   }, 5000);
 }
-
 function stopPriolistPolling() {
   if (state.priolistPollHandle) {
     clearInterval(state.priolistPollHandle);
     state.priolistPollHandle = null;
   }
 }
-
 function renderPrioList() {
   const actionsEl = document.getElementById('priolist-actions');
   actionsEl.innerHTML = isAdmin()
@@ -2026,18 +1813,15 @@ function renderPrioList() {
     : '';
   const resetBtn = document.getElementById('priolist-reset-btn');
   if (resetBtn) resetBtn.addEventListener('click', resetAllPriolistOutput);
-
   const el = document.getElementById('priolist-content');
   if (!state.employees.length) {
-    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    el.innerHTML = '<div class="loading-row">Loading...</div>';
     return;
   }
-
   const rows = state.priolistEntries.map(entry => {
     const emp = state.employees.find(e => e.id === entry.employee_id);
     return { entry, emp };
   }).filter(r => r.emp);
-
   // Two distinct states:
   //   1. Every single status is still blank -> show everyone in plain
   //      reversed rank order (rank 32 at the top, rank 1 at the bottom).
@@ -2046,14 +1830,12 @@ function renderPrioList() {
   //      first); everyone else (Break, Inactive, or still blank) is
   //      pinned below them, in rank order.
   const allStatusesBlank = rows.every(r => !r.entry.status);
-
   let orderedRows;
   if (allStatusesBlank) {
     orderedRows = rows.slice().sort((a, b) => b.entry.rank - a.entry.rank);
   } else {
     const ranked = rows.filter(r => r.entry.status === 'Active');
     const unranked = rows.filter(r => r.entry.status !== 'Active');
-
     ranked.sort((a, b) => {
       const totalA = Number(a.entry.md_output) + Number(a.entry.leads);
       const totalB = Number(b.entry.md_output) + Number(b.entry.leads);
@@ -2061,19 +1843,15 @@ function renderPrioList() {
       return a.entry.rank - b.entry.rank;
     });
     unranked.sort((a, b) => b.entry.rank - a.entry.rank);
-
     orderedRows = [...ranked, ...unranked];
   }
-
   const tableRows = orderedRows.map(({ entry, emp }) => {
     const total = round2(Number(entry.md_output) + Number(entry.leads));
     const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
     const isMe = emp.id === state.profile.employee_id;
-
     const swatchDots = (setKey) => (PRIOLIST_FILE_SETS[setKey] || [])
       .map(c => `<span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[c]};"></span>`)
       .join('');
-
     const menuOption = (setKey) => `
       <div class="file-color-option" data-id="${entry.id}" data-set="${setKey}"
         style="display:flex; align-items:center; gap:4px; padding:6px 10px; cursor:pointer; border-radius:6px;
@@ -2081,11 +1859,9 @@ function renderPrioList() {
         ${swatchDots(setKey)}
       </div>
     `;
-
     const triggerContent = entry.file_color
       ? swatchDots(entry.file_color)
       : `<span class="faint" style="font-size:11px;">—</span>`;
-
     return `
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
@@ -2119,7 +1895,6 @@ function renderPrioList() {
       </div>
     `;
   }).join('');
-
   el.innerHTML = `
     <div class="card" style="padding:22px;">
       <div style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.2fr 1.4fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
@@ -2135,10 +1910,8 @@ function renderPrioList() {
       ${tableRows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
     </div>
   `;
-
   attachPriolistHandlers();
 }
-
 function attachPriolistHandlers() {
   document.querySelectorAll('.md-input, .leads-input').forEach(input => {
     input.addEventListener('change', () => savePriolistOutput(input.dataset.id));
@@ -2169,7 +1942,6 @@ function attachPriolistHandlers() {
   });
   closeAllFileColorMenusOnOutsideClick();
 }
-
 // Registered once per app lifetime (guarded so re-render doesn't stack up
 // duplicate listeners) — closes any open Open-for-File menu on any click
 // outside of it.
@@ -2180,7 +1952,6 @@ function closeAllFileColorMenusOnOutsideClick() {
     document.querySelectorAll('.file-color-menu').forEach(m => m.style.display = 'none');
   });
 }
-
 async function savePriolistOutput(entryId) {
   const entry = state.priolistEntries.find(e => e.id === entryId);
   if (!entry || entry.employee_id !== state.profile.employee_id) {
@@ -2188,23 +1959,19 @@ async function savePriolistOutput(entryId) {
     renderPrioList();
     return;
   }
-
   const mdInput = document.querySelector(`.md-input[data-id="${entryId}"]`);
   const leadsInput = document.querySelector(`.leads-input[data-id="${entryId}"]`);
   const md = parseFloat(mdInput.value);
   const leads = parseFloat(leadsInput.value);
-
   if (isNaN(md) || md < 0 || isNaN(leads) || leads < 0) {
     showToast('Enter valid, non-negative numbers.', true);
     return;
   }
-
   const { error } = await sb.from('priolist_entries').update({ md_output: md, leads: leads }).eq('id', entryId);
   if (error) { showToast('Could not save.', true); return; }
   await loadPriolistEntries();
   renderPrioList();
 }
-
 async function savePriolistField(entryId, field, value) {
   const updates = {};
   updates[field] = value;
@@ -2213,37 +1980,30 @@ async function savePriolistField(entryId, field, value) {
   await loadPriolistEntries();
   renderPrioList();
 }
-
 async function resetAllPriolistOutput() {
   if (!isAdmin()) { showToast('Only admins can reset the PrioList.', true); return; }
   if (!confirm('Reset everyone\'s PrioList? MD Output, Leads, Total, Status, Open for File, and Note will all be cleared. This cannot be undone.')) return;
-
   const today = isoDate(new Date());
   const { error } = await sb
     .from('priolist_entries')
     .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', last_reset_date: today })
     .gte('rank', 0); // matches all rows; Supabase requires a filter on update-all
-
   if (error) { showToast('Could not reset the PrioList.', true); return; }
   showToast('PrioList reset.');
   await loadPriolistEntries();
   renderPrioList();
 }
-
 // =====================================================================
 // LI RESTRICTION DAILY REPORT
 // =====================================================================
-
 const LI_RESTRICTION_TYPES = ['Temporary Restriction', 'Impt Notice: of using Automation', 'ID Verification', 'Auto-Logged-Out'];
 const LI_ACTIONS = ['Filled-out LI-Form', 'Agreed to Comply', 'Created LI-Ticket', 'Completed a Puzzle'];
 const LI_OUTCOMES = ['Lifted', 'Still Restricted', 'Pending Ticket', 'Error: Max Reached'];
 const LI_THIRD_ACTIONS = ['Using other LI Premium (on-leave agent)', 'Switched to NON-Premium BU account --- premium account on rest.', 'Incognito Method', 'Change Google Account', 'Exchanged LI accounts with other agents.'];
 const LI_VERIFICATION_OPTIONS = ['VERIFIED', 'Unverified / No Passport'];
-
 function getLiVerification(employeeId) {
   return state.liVerificationStatus.find(v => v.employee_id === employeeId);
 }
-
 // An entry counts as "Lifted" if either outcome field says so, or if its
 // scheduled lift date/time (in Philippine time) has already passed.
 // Otherwise it's still "Restricted".
@@ -2252,7 +2012,6 @@ function getLiEntryStatus(entry) {
   if (entry.restriction_lift_at && entry.restriction_lift_at <= new Date().toISOString()) return 'Lifted';
   return 'Restricted';
 }
-
 // Re-renders periodically while this tab is open so entries whose
 // scheduled lift time has just passed flip to "Lifted" and move down
 // without needing a manual refresh or any extra network requests —
@@ -2263,14 +2022,12 @@ function startLiRestrictionTicker() {
     renderLiRestriction();
   }, 30000);
 }
-
 function stopLiRestrictionTicker() {
   if (state.liRestrictionTickerHandle) {
     clearInterval(state.liRestrictionTickerHandle);
     state.liRestrictionTickerHandle = null;
   }
 }
-
 function renderLiRestriction() {
   const actionsEl = document.getElementById('li-restriction-actions');
   actionsEl.innerHTML = `
@@ -2280,18 +2037,15 @@ function renderLiRestriction() {
   document.getElementById('li-add-entry-btn').addEventListener('click', () => openLiEntryModal());
   const liReportBtn = document.getElementById('li-download-report-btn');
   if (liReportBtn) liReportBtn.addEventListener('click', downloadLiRestrictionReport);
-
   const el = document.getElementById('li-restriction-content');
   if (!state.employees.length) {
-    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    el.innerHTML = '<div class="loading-row">Loading...</div>';
     return;
   }
-
   const admin = isAdmin();
   const roster = state.employees
     .filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia')
     .sort(byKristinaFirstThenName);
-
   const dateEntries = state.liRestrictionEntries
     .filter(e => e.entry_date === state.liRestrictionDate)
     .slice()
@@ -2300,7 +2054,6 @@ function renderLiRestriction() {
       const statusB = getLiEntryStatus(b) === 'Lifted' ? 1 : 0;
       return statusA - statusB; // Restricted (0) before Lifted (1)
     });
-
   const verificationRows = roster
     .filter(emp => {
       const v = getLiVerification(emp.id);
@@ -2325,7 +2078,6 @@ function renderLiRestriction() {
       </div>
     `;
   }).join('');
-
   const logCards = dateEntries.length ? dateEntries.map(e => {
     const emp = state.employees.find(x => x.id === e.employee_id);
     const status = getLiEntryStatus(e);
@@ -2359,7 +2111,6 @@ function renderLiRestriction() {
       </div>
     `;
   }).join('') : `<p class="muted">No restrictions logged for this day.</p>`;
-
   el.innerHTML = `
     <div style="display:flex; gap:24px; align-items:flex-start;">
       <div style="flex:1; min-width:0;">
@@ -2390,17 +2141,14 @@ function renderLiRestriction() {
       </div>
     </div>
   `;
-
   document.getElementById('li-day-prev').addEventListener('click', () => shiftLiRestrictionDate(-1));
   document.getElementById('li-day-next').addEventListener('click', () => shiftLiRestrictionDate(1));
-
   document.querySelectorAll('.li-verif-filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       state.liVerificationFilter = btn.dataset.filter;
       renderLiRestriction();
     });
   });
-
   if (admin) {
     document.querySelectorAll('.li-verification-input').forEach(select => {
       select.addEventListener('change', () => saveLiVerification(select.dataset.empId, select.value));
@@ -2413,10 +2161,8 @@ function renderLiRestriction() {
     btn.addEventListener('click', () => deleteLiEntry(btn.dataset.id));
   });
 }
-
 function downloadLiRestrictionReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
-
   const viewDate = new Date(state.liRestrictionDate + 'T00:00:00');
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth(); // 0-indexed, matches MONTH_NAMES
@@ -2424,7 +2170,6 @@ function downloadLiRestrictionReport() {
   const monthEnd = isoDate(new Date(year, month + 1, 0));
   const monthLabel = `${MONTH_NAMES[month]} ${year}`;
   const admin = isAdmin();
-
   let entries = state.liRestrictionEntries
     .filter(e => e.entry_date >= monthStart && e.entry_date <= monthEnd);
   if (!admin) {
@@ -2435,12 +2180,10 @@ function downloadLiRestrictionReport() {
     if (dateCompare !== 0) return dateCompare;
     return employeeName(a.employee_id).localeCompare(employeeName(b.employee_id));
   });
-
   const csvRows = [];
   csvRows.push([`LI Restriction Report — ${monthLabel}${admin ? '' : ' (' + state.profile.display_name + ')'}`]);
   csvRows.push([]);
   csvRows.push(['Date', 'Agent', 'Status', 'Restriction Type', 'Occurrence #', '1st Action', '1st Outcome', '2nd Action', '2nd Outcome', 'Co-Agent', 'Lift Date & Time (PH)', '3rd Action / Working Option', 'Note']);
-
   if (entries.length) {
     entries.forEach(e => {
       csvRows.push([
@@ -2462,11 +2205,9 @@ function downloadLiRestrictionReport() {
   } else {
     csvRows.push(['No restrictions logged for this month.']);
   }
-
   const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
-
   const filename = `LI Restriction Report - ${monthLabel}.csv`;
   const link = document.createElement('a');
   link.href = url;
@@ -2475,30 +2216,25 @@ function downloadLiRestrictionReport() {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
-
   showToast('Report downloaded.');
 }
-
 function shiftLiRestrictionDate(deltaDays) {
   const d = new Date(state.liRestrictionDate + 'T00:00:00');
   d.setDate(d.getDate() + deltaDays);
   state.liRestrictionDate = isoDate(d);
   renderLiRestriction();
 }
-
 async function saveLiVerification(employeeId, status) {
   const { error } = await sb.from('li_verification_status').upsert({
     employee_id: employeeId,
     status,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'employee_id' });
-
   if (error) { showToast('Could not save verification status.', true); return; }
   showToast('Verification status updated.');
   await loadLiVerificationStatus();
   renderLiRestriction();
 }
-
 async function deleteLiEntry(entryId) {
   const entry = state.liRestrictionEntries.find(e => e.id === entryId);
   if (!entry) return;
@@ -2513,20 +2249,16 @@ async function deleteLiEntry(entryId) {
   await loadLiRestrictionEntries();
   renderLiRestriction();
 }
-
 function openLiEntryModal(entryId) {
   const editing = entryId ? state.liRestrictionEntries.find(e => e.id === entryId) : null;
   const admin = isAdmin();
-
   if (editing && !admin && editing.employee_id !== state.profile.employee_id) {
     showToast('You can only manage your own restriction entries.', true);
     return;
   }
-
   const eligibleEmployees = state.employees
     .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
     .sort(byKristinaFirstThenName);
-
   const selectField = (id, label, options, current) => `
     <div class="field">
       <label for="${id}">${label}</label>
@@ -2536,7 +2268,6 @@ function openLiEntryModal(entryId) {
       </select>
     </div>
   `;
-
   const employeeFieldHtml = admin
     ? searchableEmployeeFieldHtml('li-employee', 'Agent', eligibleEmployees, editing ? editing.employee_id : null)
     : `
@@ -2545,7 +2276,6 @@ function openLiEntryModal(entryId) {
         <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line); background:var(--line-soft); font-weight:600;">${escapeHtml(state.profile.display_name)}</div>
       </div>
   `;
-
   const formHtml = `
     <form id="li-entry-form" style="display:flex; flex-direction:column; gap:14px;">
       ${employeeFieldHtml}
@@ -2584,7 +2314,6 @@ function openLiEntryModal(entryId) {
       <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">${editing ? 'Save changes' : 'Log restriction'}</button>
     </form>
   `;
-
   openModal(editing ? 'Edit restriction entry' : 'Log a restriction', formHtml);
   if (admin) {
     attachSearchableEmployeeField('li-employee', eligibleEmployees);
@@ -2595,7 +2324,6 @@ function openLiEntryModal(entryId) {
   }
   document.getElementById('li-entry-form').addEventListener('submit', (e) => submitLiEntry(e, editing));
 }
-
 async function submitLiEntry(e, editing) {
   e.preventDefault();
   const employeeSelect = document.getElementById('li-employee');
@@ -2611,28 +2339,24 @@ async function submitLiEntry(e, editing) {
   const restriction_lift_at = phLocalToUtcIso(document.getElementById('li-lift-datetime').value);
   const action_3 = document.getElementById('li-action-3').value || null;
   const note = document.getElementById('li-note').value.trim() || null;
-
   if (!employee_id) { showToast('Your account is not linked to an employee record yet.', true); return; }
   if (!entry_date) { showToast('Please choose a date.', true); return; }
   if (!isAdmin() && employee_id !== state.profile.employee_id) {
     showToast('You can only log restrictions for yourself.', true);
     return;
   }
-
   const payload = {
     employee_id, entry_date, occurrence_number, restriction_type,
     action_1, outcome_1, action_2, outcome_2,
     co_agent_name, restriction_lift_at, action_3, note,
     logged_by: state.profile.username,
   };
-
   let error;
   if (editing) {
     ({ error } = await sb.from('li_restriction_entries').update(payload).eq('id', editing.id));
   } else {
     ({ error } = await sb.from('li_restriction_entries').insert(payload));
   }
-
   if (error) { showToast('Could not save the entry.', true); return; }
   closeModal();
   showToast(editing ? 'Entry updated.' : 'Restriction logged.');
@@ -2640,23 +2364,18 @@ async function submitLiEntry(e, editing) {
   await loadLiRestrictionEntries();
   renderLiRestriction();
 }
-
-
 // =====================================================================
 // OT HOURS FILING
 // =====================================================================
-
 function getOtEntry(employeeId, filingDate) {
   return state.otHoursEntries.find(e => e.employee_id === employeeId && e.filing_date === filingDate);
 }
-
 function formatOtDateHeader(isoStr) {
   const d = new Date(isoStr + 'T00:00:00');
   const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
   const monthDay = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   return `${weekday}<br>${monthDay}`;
 }
-
 function renderOtFiling() {
   const actionsEl = document.getElementById('ot-filing-actions');
   actionsEl.innerHTML = isAdmin() ? `
@@ -2670,16 +2389,13 @@ function renderOtFiling() {
   if (downloadBtn) downloadBtn.addEventListener('click', downloadOtFilingReport);
   const resetBtn = document.getElementById('ot-reset-btn');
   if (resetBtn) resetBtn.addEventListener('click', resetOtFiling);
-
   const el = document.getElementById('ot-filing-content');
   if (!state.employees.length) {
-    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    el.innerHTML = '<div class="loading-row">Loading...</div>';
     return;
   }
-
   const admin = isAdmin();
   const dates = state.otFilingDates.map(d => d.filing_date);
-
   // Anyone who has logged assumed/actual hours on at least one of the
   // currently open dates is listed first; everyone still blank across
   // every date follows below. Alphabetical (Kristina-first) order is
@@ -2690,7 +2406,6 @@ function renderOtFiling() {
       return entry && (entry.assumed_hours != null || entry.actual_hours != null);
     });
   }
-
   const roster = state.employees
     .filter(emp => emp.active !== false)
     .sort(byKristinaFirstThenName)
@@ -2699,7 +2414,6 @@ function renderOtFiling() {
       const bHas = hasAnyLoggedHours(b.id) ? 0 : 1;
       return aHas - bHas;
     });
-
   if (!dates.length) {
     el.innerHTML = `
       <div class="card" style="padding:30px; text-align:center;">
@@ -2709,9 +2423,7 @@ function renderOtFiling() {
     `;
     return;
   }
-
   const headerCells = dates.map(d => `<th style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; min-width:140px;">${formatOtDateHeader(d)}</th>`).join('');
-
   // "# of Heads working" is a headcount: anyone who has logged anything
   // at all for that date counts as 1, regardless of how many hours.
   function headsForDate(d) {
@@ -2721,7 +2433,6 @@ function renderOtFiling() {
       return count + (hasAny ? 1 : 0);
     }, 0);
   }
-
   // "# of Leads to Validate" scales with actual hours logged, not with
   // headcount: each hour of OT is assumed capable of validating 100
   // leads (the spreadsheet's original 8 hours = 800 leads ratio).
@@ -2733,20 +2444,15 @@ function renderOtFiling() {
       return sum + (h ? Number(h) : 0);
     }, 0);
   }
-
   const headsRow = dates.map(d => {
     const heads = headsForDate(d);
     return `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
   }).join('');
-
   const leadsToValidatePerDate = dates.map(d => round2(hoursForDate(d) * 100));
-
   const leadsRow = dates.map((d, i) => {
     return `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
   }).join('');
-
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
-
   // Total Leads Available is now its own independently-editable figure
   // per date — not a single shared total carried across dates. Pending
   // Leads for each date is simply that date's own total minus that
@@ -2755,17 +2461,14 @@ function renderOtFiling() {
     const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
     return dateRecord && dateRecord.total_leads_available != null ? Number(dateRecord.total_leads_available) : null;
   });
-
   const totalLeadsEditedByPerDate = dates.map(d => {
     const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
     return dateRecord ? dateRecord.total_leads_updated_by : null;
   });
-
   const pendingBalances = dates.map((d, i) => {
     if (totalLeadsPerDate[i] == null) return null;
     return round2(totalLeadsPerDate[i] - leadsToValidatePerDate[i]);
   });
-
   const totalLeadsRow = dates.map((d, i) => {
     const val = totalLeadsPerDate[i];
     const editedBy = totalLeadsEditedByPerDate[i];
@@ -2777,9 +2480,7 @@ function renderOtFiling() {
       </div>
     </td>`;
   }).join('');
-
   const pendingRow = pendingBalances.map(bal => `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
-
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
     const cells = dates.map(d => {
@@ -2789,7 +2490,6 @@ function renderOtFiling() {
       const hasActual = entry && entry.actual_hours != null;
       const confirmed = entry && entry.confirmed;
       const displayVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '—');
-
       if (confirmed) {
         // Locked for everyone once confirmed — admins get a deliberate
         // "Unlock" action to override this if a correction is genuinely
@@ -2804,18 +2504,15 @@ function renderOtFiling() {
           </td>
         `;
       }
-
       if (!canEdit) {
         return `<td style="padding:8px; text-align:center; font-size:12.5px; min-width:140px;">${displayVal}</td>`;
       }
-
       // Editable cell for the owner (or admin) — only reachable while
       // still unconfirmed.
       const inputVal = hasAssumed ? entry.assumed_hours : '';
       const badge = hasAssumed
         ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; font-size:10px; padding:2px 6px; color:var(--amber); white-space:nowrap;">Confirm</button>`
         : '';
-
       return `
         <td style="padding:4px; min-width:140px; text-align:center;">
           <div style="position:relative; display:inline-block;">
@@ -2826,7 +2523,6 @@ function renderOtFiling() {
         </td>
       `;
     }).join('');
-
     return `
       <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:#DCEFEA;' : ''}">
         <td style="padding:8px 10px; font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</td>
@@ -2834,7 +2530,6 @@ function renderOtFiling() {
       </tr>
     `;
   }).join('');
-
   el.innerHTML = `
     <div class="card" style="padding:22px; overflow-x:auto;">
       <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm" to confirm the number is accurate or correct it to your actual hours.</p>
@@ -2882,7 +2577,6 @@ function renderOtFiling() {
       </table>
     </div>
   `;
-
   document.querySelectorAll('.ot-total-leads-input').forEach(input => {
     input.addEventListener('change', () => saveOtTotalLeadsAvailable(input.dataset.date, input.value));
   });
@@ -2896,52 +2590,40 @@ function renderOtFiling() {
     btn.addEventListener('click', () => unlockOtEntry(btn.dataset.empId, btn.dataset.date));
   });
 }
-
 async function unlockOtEntry(employeeId, filingDate) {
   if (!isAdmin()) { showToast('Only admins can unlock a confirmed entry.', true); return; }
   const emp = state.employees.find(e => e.id === employeeId);
   if (!confirm(`Unlock ${emp ? emp.display_name : 'this'}'s confirmed OT hours for ${formatPrettyDate(filingDate)}? This will make it editable again.`)) return;
-
   const { error } = await sb.from('ot_hours_entries').update({ confirmed: false }).eq('employee_id', employeeId).eq('filing_date', filingDate);
   if (error) { showToast('Could not unlock the entry.', true); return; }
   showToast('Entry unlocked.');
   await loadOtHoursEntries();
   renderOtFiling();
 }
-
 async function resetOtFiling() {
   if (!isAdmin()) { showToast('Only admins can reset OT Hours Filing.', true); return; }
   if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and every date\'s "Total Leads Available" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.')) return;
-
   const { error: hoursError } = await sb
     .from('ot_hours_entries')
     .delete()
     .gte('updated_at', '1900-01-01'); // matches all rows; Supabase requires a filter on delete-all
-
   if (hoursError) { showToast('Could not reset OT Hours Filing.', true); return; }
-
   const { error: totalsError } = await sb
     .from('ot_filing_dates')
     .update({ total_leads_available: null, total_leads_updated_by: null })
     .gte('created_at', '1900-01-01'); // matches all rows; Supabase requires a filter on update-all
-
   if (totalsError) { showToast('Could not reset Total Leads Available.', true); return; }
-
   showToast('OT Hours Filing reset.');
   await Promise.all([loadOtHoursEntries(), loadOtFilingDates()]);
   renderOtFiling();
 }
-
 function downloadOtFilingReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
-
   const dates = state.otFilingDates.map(d => d.filing_date).sort();
   if (!dates.length) { showToast('No OT filing dates to report on.', true); return; }
-
   const roster = state.employees
     .filter(emp => emp.active !== false)
     .sort(byKristinaFirstThenName);
-
   // Exclude any employee/date combination with nothing logged at all —
   // only rows with an actual or assumed value are included.
   const rows = [];
@@ -2954,12 +2636,10 @@ function downloadOtFilingReport() {
       rows.push({ date: d, emp, entry });
     });
   });
-
   const csvRows = [];
   csvRows.push(['OT Hours Filing Report']);
   csvRows.push([]);
   csvRows.push(['Date', 'Agent', 'Assumed Hours', 'Actual Hours', 'Confirmed']);
-
   if (rows.length) {
     rows.forEach(({ date, emp, entry }) => {
       csvRows.push([
@@ -2973,7 +2653,6 @@ function downloadOtFilingReport() {
   } else {
     csvRows.push(['No OT hours logged yet.']);
   }
-
   csvRows.push([]);
   csvRows.push(['Summary']);
   csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Total Leads Available', 'Pending Leads Available']);
@@ -2995,11 +2674,9 @@ function downloadOtFilingReport() {
     const pending = total != null ? round2(total - leads) : '';
     csvRows.push([formatPrettyDate(d), heads, leads, total != null ? total : '', pending]);
   });
-
   const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
-
   const filename = `OT Hours Filing Report - ${isoDate(new Date())}.csv`;
   const link = document.createElement('a');
   link.href = url;
@@ -3008,10 +2685,8 @@ function downloadOtFilingReport() {
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
-
   showToast('Report downloaded.');
 }
-
 async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
   const value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) {
@@ -3019,7 +2694,6 @@ async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
     renderOtFiling();
     return;
   }
-
   const { error } = await sb.from('ot_filing_dates').update({
     total_leads_available: value,
     total_leads_updated_by: value != null ? state.profile.display_name : null,
@@ -3028,30 +2702,25 @@ async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
   await loadOtFilingDates();
   renderOtFiling();
 }
-
 async function saveOtHours(employeeId, filingDate, rawValue) {
   if (!isAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only log your own OT hours.', true);
     renderOtFiling();
     return;
   }
-
   const existingCheck = getOtEntry(employeeId, filingDate);
   if (existingCheck && existingCheck.confirmed) {
     showToast('This entry has already been confirmed and can no longer be edited.', true);
     renderOtFiling();
     return;
   }
-
   const hours = rawValue === '' ? null : parseFloat(rawValue);
   if (hours !== null && (isNaN(hours) || hours < 0)) {
     showToast('Enter a valid, non-negative number.', true);
     renderOtFiling();
     return;
   }
-
   const existing = getOtEntry(employeeId, filingDate);
-
   const payload = {
     employee_id: employeeId,
     filing_date: filingDate,
@@ -3061,28 +2730,23 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
     assumed_hours: hours,
     actual_hours: existing ? existing.actual_hours : null,
   };
-
   const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
   if (error) { showToast('Could not save OT hours.', true); return; }
   await loadOtHoursEntries();
   renderOtFiling();
 }
-
 function openOtConfirmModal(employeeId, filingDate) {
   const entry = getOtEntry(employeeId, filingDate);
   if (!entry) return;
   const emp = state.employees.find(e => e.id === employeeId);
-
   if (entry.confirmed) {
     showToast('This entry has already been confirmed and can no longer be edited.', true);
     return;
   }
-
   if (!isAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only confirm your own OT hours.', true);
     return;
   }
-
   const formHtml = `
     <p class="muted" style="font-size:12.5px; margin:0 0 14px;">You logged <strong>${entry.assumed_hours}</strong> assumed OT hour(s) for ${escapeHtml(emp.display_name)} on ${formatPrettyDate(filingDate)}. Is that accurate?</p>
     <form id="ot-confirm-form" style="display:flex; flex-direction:column; gap:14px;">
@@ -3093,19 +2757,16 @@ function openOtConfirmModal(employeeId, filingDate) {
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Confirm</button>
     </form>
   `;
-
   openModal('Confirm OT hours', formHtml);
   document.getElementById('ot-confirm-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const actualHours = parseFloat(document.getElementById('ot-actual-hours').value);
     if (isNaN(actualHours) || actualHours < 0) { showToast('Enter a valid, non-negative number.', true); return; }
-
     const { error } = await sb.from('ot_hours_entries').update({
       actual_hours: actualHours,
       confirmed: true,
       updated_at: new Date().toISOString(),
     }).eq('employee_id', employeeId).eq('filing_date', filingDate);
-
     if (error) { showToast('Could not save the confirmation.', true); return; }
     closeModal();
     showToast('OT hours confirmed.');
@@ -3113,10 +2774,8 @@ function openOtConfirmModal(employeeId, filingDate) {
     renderOtFiling();
   });
 }
-
 function openOtManageDatesModal() {
   if (!isAdmin()) { showToast('Only admins can manage OT filing dates.', true); return; }
-
   const datesListHtml = state.otFilingDates.length
     ? state.otFilingDates.map(d => `
         <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft); font-size:13px;">
@@ -3125,7 +2784,6 @@ function openOtManageDatesModal() {
         </div>
       `).join('')
     : `<p class="muted" style="font-size:13px;">No dates open yet.</p>`;
-
   const formHtml = `
     <div style="margin-bottom:16px;">
       ${datesListHtml}
@@ -3138,19 +2796,16 @@ function openOtManageDatesModal() {
       <button type="submit" class="btn btn-primary" style="padding:9px 16px;">Add</button>
     </form>
   `;
-
   openModal('Manage OT filing dates', formHtml);
   document.querySelectorAll('.ot-remove-date-btn').forEach(btn => {
     btn.addEventListener('click', () => removeOtFilingDate(btn.dataset.id));
   });
   document.getElementById('ot-add-date-form').addEventListener('submit', addOtFilingDate);
 }
-
 async function addOtFilingDate(e) {
   e.preventDefault();
   const filing_date = document.getElementById('ot-new-date').value;
   if (!filing_date) return;
-
   const { error } = await sb.from('ot_filing_dates').insert({ filing_date });
   if (error) {
     showToast(error.code === '23505' ? 'That date is already open for filing.' : 'Could not add the date.', true);
@@ -3161,7 +2816,6 @@ async function addOtFilingDate(e) {
   openOtManageDatesModal();
   renderOtFiling();
 }
-
 async function removeOtFilingDate(dateId) {
   if (!confirm('Remove this filing date? Any hours already logged for it will stay in the system but the column will be hidden.')) return;
   const { error } = await sb.from('ot_filing_dates').delete().eq('id', dateId);
@@ -3171,12 +2825,9 @@ async function removeOtFilingDate(dateId) {
   openOtManageDatesModal();
   renderOtFiling();
 }
-
-
 // =====================================================================
 // REQUEST MODAL
 // =====================================================================
-
 function openRequestModal() {
   const eligibleEmployees = state.employees
     .filter(e => e.active !== false)
@@ -3184,7 +2835,6 @@ function openRequestModal() {
   const typeOptions = Object.entries(LEAVE_TYPES)
     .filter(([k]) => !['LNP','HLNP'].includes(k))
     .map(([k,v]) => `<option value="${k}">${v.label}</option>`).join('');
-
   const employeeFieldHtml = isAdmin()
     ? searchableEmployeeFieldHtml('req-employee', 'Employee', eligibleEmployees, null)
     : `
@@ -3193,7 +2843,6 @@ function openRequestModal() {
         <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line); background:var(--line-soft); font-weight:600;">${escapeHtml(state.profile.display_name)}</div>
       </div>
   `;
-
   const formHtml = `
     <form id="request-form" style="display:flex; flex-direction:column; gap:14px;">
       ${employeeFieldHtml}
@@ -3230,7 +2879,6 @@ function openRequestModal() {
       <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Submit request</button>
     </form>
   `;
-
   openModal('Request leave', formHtml);
   if (isAdmin()) attachSearchableEmployeeField('req-employee', eligibleEmployees);
   const fromInput = document.getElementById('req-date-from');
@@ -3238,13 +2886,11 @@ function openRequestModal() {
   const useHoursCheckbox = document.getElementById('req-use-hours');
   const hoursField = document.getElementById('req-hours-field');
   const hoursInput = document.getElementById('req-hours');
-
   fromInput.addEventListener('change', () => {
     if (!toInput.value || toInput.value < fromInput.value || useHoursCheckbox.checked) {
       toInput.value = fromInput.value;
     }
   });
-
   useHoursCheckbox.addEventListener('change', () => {
     const on = useHoursCheckbox.checked;
     hoursField.style.display = on ? 'block' : 'none';
@@ -3254,10 +2900,8 @@ function openRequestModal() {
       toInput.value = fromInput.value;
     }
   });
-
   document.getElementById('request-form').addEventListener('submit', submitLeaveRequest);
 }
-
 async function submitLeaveRequest(e) {
   e.preventDefault();
   const employeeSelect = document.getElementById('req-employee');
@@ -3268,13 +2912,10 @@ async function submitLeaveRequest(e) {
   const note = document.getElementById('req-note').value.trim();
   const useHours = document.getElementById('req-use-hours').checked;
   const hoursRaw = document.getElementById('req-hours').value;
-
   if (!employee_id) { showToast('Your account is not linked to an employee record yet.', true); return; }
-
   const fromInput = document.getElementById('req-date-from');
   const toInput = document.getElementById('req-date-to');
   fromInput.style.borderColor = fromDate ? 'var(--line)' : 'var(--coral)';
-
   let hours = null;
   if (useHours) {
     toDate = fromDate; // hourly leave is always a single day
@@ -3287,18 +2928,15 @@ async function submitLeaveRequest(e) {
     // irrelevant here — normalize VLH/SLH/ELH down to their base type.
     leave_type = leave_type.replace(/H$/, '');
   }
-
   toInput.style.borderColor = toDate ? 'var(--line)' : 'var(--coral)';
   if (!fromDate || !toDate) { showToast('Please fill in both the "From" and "To" dates.', true); return; }
   if (toDate < fromDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
   if (fromDate < isoDate(new Date())) { showToast('You can\'t request leave for a date that has already passed.', true); return; }
-
   const dates = datesInRange(fromDate, toDate, { skipWeekends: true });
   if (!dates.length) { showToast('That range has no workdays in it.', true); return; }
   if (dates.length > 30) {
     if (!confirm(`That's ${dates.length} workdays. Continue?`)) return;
   }
-
   const groupId = (crypto.randomUUID ? crypto.randomUUID() : null);
   const rows = dates.map(d => ({
     employee_id, leave_type, leave_date: d, note,
@@ -3307,9 +2945,7 @@ async function submitLeaveRequest(e) {
     request_group_id: dates.length > 1 ? groupId : null,
     hours: hours,
   }));
-
   const { error } = await sb.from('leave_entries').insert(rows);
-
   if (error) {
     console.error('Leave request insert failed:', error);
     const msg = error.message && error.message.includes('column')
@@ -3327,7 +2963,6 @@ async function submitLeaveRequest(e) {
   renderLeaveTracker();
   renderDashboard();
 }
-
 // Returns an array of ISO date strings from start to end (inclusive).
 // Weekends (Sat/Sun) are skipped when skipWeekends is true, matching how
 // the original spreadsheet only logged workdays.
@@ -3344,11 +2979,9 @@ function datesInRange(startIso, endIso, { skipWeekends = false } = {}) {
   }
   return result;
 }
-
 // =====================================================================
 // CHANGE PASSWORD
 // =====================================================================
-
 function openChangePasswordModal() {
   const formHtml = `
     <form id="change-password-form" style="display:flex; flex-direction:column; gap:14px;">
@@ -3371,7 +3004,6 @@ function openChangePasswordModal() {
   openModal('Change password', formHtml);
   document.getElementById('change-password-form').addEventListener('submit', submitChangePassword);
 }
-
 async function submitChangePassword(e) {
   e.preventDefault();
   const current = document.getElementById('cp-current').value;
@@ -3379,23 +3011,18 @@ async function submitChangePassword(e) {
   const confirm = document.getElementById('cp-confirm').value;
   const errorBox = document.getElementById('cp-error');
   errorBox.style.display = 'none';
-
   try {
     const currentOk = await verifyPassword(current, state.profile.password_hash);
     if (!currentOk) throw new Error('Current password is incorrect.');
     if (next !== confirm) throw new Error('New passwords do not match.');
     if (next.length < 4) throw new Error('New password is too short.');
-
     const enc = new TextEncoder().encode(next);
     const buf = await crypto.subtle.digest('SHA-256', enc);
     const newHash = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
-
     const { error } = await sb.from('app_users').update({ password_hash: newHash }).eq('id', state.profile.id);
     if (error) throw new Error('Could not save the new password. Please try again.');
-
     state.profile.password_hash = newHash;
     sessionStorage.setItem('registry_profile', JSON.stringify(state.profile));
-
     closeModal();
     showToast('Password updated.');
   } catch (err) {
@@ -3403,11 +3030,9 @@ async function submitChangePassword(e) {
     errorBox.style.display = 'block';
   }
 }
-
 // =====================================================================
 // MODAL (lightweight, shared)
 // =====================================================================
-
 function openModal(title, bodyHtml) {
   let overlay = document.getElementById('modal-overlay');
   if (!overlay) {
@@ -3431,21 +3056,17 @@ function openModal(title, bodyHtml) {
   document.getElementById('modal-close-btn').addEventListener('click', closeModal);
   overlay.style.display = 'flex';
 }
-
 function closeModal() {
   const overlay = document.getElementById('modal-overlay');
   if (overlay) overlay.style.display = 'none';
 }
-
 // =====================================================================
 // HELPERS
 // =====================================================================
-
 function employeeName(id) {
   const emp = state.employees.find(e => e.id === id);
   return emp ? emp.display_name : 'Unknown';
 }
-
 // Kristina is the manager and should always appear first; everyone else
 // sorts alphabetically by display name.
 function byKristinaFirstThenName(a, b) {
@@ -3455,7 +3076,6 @@ function byKristinaFirstThenName(a, b) {
   if (bIsKristina && !aIsKristina) return 1;
   return a.display_name.localeCompare(b.display_name);
 }
-
 // =====================================================================
 // SEARCHABLE EMPLOYEE DROPDOWN
 // A lightweight, reusable search-as-you-type picker for admin employee
@@ -3463,14 +3083,13 @@ function byKristinaFirstThenName(a, b) {
 // selected employee id (so existing code that reads
 // document.getElementById(idPrefix).value keeps working unchanged).
 // =====================================================================
-
 function searchableEmployeeFieldHtml(idPrefix, label, employees, selectedId) {
   const selectedEmp = employees.find(e => e.id === selectedId);
   return `
     <div class="field searchable-emp-field" style="position:relative;">
       <label for="${idPrefix}-search">${label}</label>
       <input type="text" id="${idPrefix}-search" class="searchable-emp-search" autocomplete="off"
-        placeholder="Type a name to search…"
+        placeholder="Type a name to search..."
         value="${selectedEmp ? escapeHtml(selectedEmp.display_name) : ''}"
         data-prefix="${idPrefix}"
         style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
@@ -3481,7 +3100,6 @@ function searchableEmployeeFieldHtml(idPrefix, label, employees, selectedId) {
     </div>
   `;
 }
-
 // Call once after inserting a searchableEmployeeFieldHtml(...) into the
 // DOM. `employees` is the same list passed to the HTML generator above.
 // `onSelect` (optional) fires with the chosen employee id.
@@ -3490,7 +3108,6 @@ function attachSearchableEmployeeField(idPrefix, employees, onSelect) {
   const hiddenInput = document.getElementById(idPrefix);
   const menu = document.getElementById(`${idPrefix}-menu`);
   if (!searchInput || !hiddenInput || !menu) return;
-
   function renderMenu(filterText) {
     const q = filterText.trim().toLowerCase();
     const matches = employees.filter(e => e.display_name.toLowerCase().includes(q)).slice(0, 50);
@@ -3515,7 +3132,6 @@ function attachSearchableEmployeeField(idPrefix, employees, onSelect) {
     }
     menu.style.display = 'block';
   }
-
   searchInput.addEventListener('focus', () => renderMenu(searchInput.value));
   searchInput.addEventListener('input', () => {
     hiddenInput.value = ''; // typing invalidates the previous selection until a new one is clicked
@@ -3527,18 +3143,15 @@ function attachSearchableEmployeeField(idPrefix, employees, onSelect) {
     setTimeout(() => { menu.style.display = 'none'; }, 120);
   });
 }
-
 function isoDate(d) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
-
 // Philippine time is always UTC+8, with no daylight saving — so the
 // offset is fixed and doesn't need a timezone library.
 const PH_UTC_OFFSET_MINUTES = 8 * 60;
-
 // Takes a "YYYY-MM-DDTHH:mm" string (as typed into a datetime-local
 // input, meant to represent Philippine wall-clock time) and returns the
 // correct UTC ISO timestamp string for storage.
@@ -3553,7 +3166,6 @@ function phLocalToUtcIso(localStr) {
   asUtc.setUTCMinutes(asUtc.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
   return asUtc.toISOString();
 }
-
 // Takes a stored UTC ISO timestamp and returns a "YYYY-MM-DDTHH:mm"
 // string representing that instant in Philippine time, suitable for a
 // datetime-local input's value.
@@ -3569,7 +3181,6 @@ function utcIsoToPhLocal(isoStr) {
   const mm = String(ph.getUTCMinutes()).padStart(2, '0');
   return `${y}-${m}-${d}T${hh}:${mm}`;
 }
-
 // Formats a stored UTC ISO timestamp as a readable PH-time string, with
 // an explicit "PH time" label so there's never ambiguity about which
 // timezone is being shown.
@@ -3584,22 +3195,18 @@ function formatPhDateTime(isoStr) {
   const hour12 = hh % 12 === 0 ? 12 : hh % 12;
   return `${dateLabel}, ${hour12}:${mm.toString().padStart(2,'0')} ${period} (PH time)`;
 }
-
 function formatPrettyDate(iso) {
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 }
-
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
 }
-
 // =====================================================================
 // INIT
 // =====================================================================
-
 window.addEventListener('error', function (e) {
   console.error('Unhandled error:', e.error || e.message);
   const box = document.getElementById('login-error');
@@ -3608,13 +3215,10 @@ window.addEventListener('error', function (e) {
     box.style.display = 'block';
   }
 });
-
 document.getElementById('login-form').addEventListener('submit', handleLogin);
-
 if (!SUPABASE_CONFIGURED) {
   showSetupNotice();
 }
-
 // Auto-select the full contents of any editable text-like field the
 // moment it's focused (by click or by tab), so correcting a value never
 // requires manually selecting the old one first. Uses event delegation
@@ -3636,9 +3240,7 @@ document.addEventListener('focusin', (e) => {
     }, 0);
   }
 });
-
 checkExistingSession();
-
 </script>
 </body>
 </html>
