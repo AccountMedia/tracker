@@ -953,11 +953,14 @@ function renderLeaveTracker() {
   actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
     ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report" style="margin-right:8px;">Download monthly report</button>` : ''}
+    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-excel-import" style="margin-right:8px;">Export for Excel tracker</button>` : ''}
     <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
   `;
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
   const reportBtn = document.getElementById('btn-download-report');
   if (reportBtn) reportBtn.addEventListener('click', downloadMonthlyReport);
+  const excelImportBtn = document.getElementById('btn-download-excel-import');
+  if (excelImportBtn) excelImportBtn.addEventListener('click', downloadExcelTrackerImport);
 
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
@@ -1309,6 +1312,59 @@ function downloadMonthlyReport() {
   URL.revokeObjectURL(url);
 
   showToast('Report downloaded.');
+}
+
+// Produces a CSV shaped specifically to feed the Excel-tracker-format
+// generator script (one row per employee per leave day, with that
+// employee's current SL/VL balance repeated on every row, short leave
+// codes, ISO dates) — this is a machine-readable companion to the
+// human-readable "Download monthly report" above, not a replacement for it.
+function downloadExcelTrackerImport() {
+  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
+
+  const year = state.calendarYear;
+  const month = state.calendarMonth;
+  const monthStart = isoDate(new Date(year, month, 1));
+  const monthEnd = isoDate(new Date(year, month + 1, 0));
+
+  const entries = state.leaveEntries
+    .filter(e => e.leave_date >= monthStart && e.leave_date <= monthEnd)
+    .filter(e => e.status === STATUS.APPROVED); // only confirmed leave belongs on the official tracker
+
+  const csvRows = [];
+  csvRows.push(['employee_name', 'sl_balance', 'vl_balance', 'leave_date', 'leave_type']);
+
+  const roster = state.employees
+    .filter(emp => emp.active !== false)
+    .sort(byKristinaFirstThenName);
+
+  roster.forEach(emp => {
+    const empEntries = entries.filter(e => e.employee_id === emp.id);
+    const vl = getVLBalance(emp);
+    const sl = getSLBalance(emp);
+    if (empEntries.length) {
+      empEntries.forEach(e => {
+        csvRows.push([emp.display_name, sl, vl, e.leave_date, e.leave_type]);
+      });
+    } else {
+      csvRows.push([emp.display_name, sl, vl, '', '']); // keeps them in the roster even with no leave this month
+    }
+  });
+
+  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const filename = `Excel Tracker Import - ${MONTH_NAMES[month]} ${year}.csv`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  showToast('Export downloaded.');
 }
 
 function csvEscape(value) {
