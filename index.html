@@ -1000,13 +1000,12 @@ function renderLeaveTracker() {
   if (isAdmin()) {
     attachPendingHandlers();
     attachMyRequestsHandlers(); // also needed when the admin has toggled to "My requests"
-    const pendingToggleBtn = document.getElementById('pending-panel-toggle-btn');
-    if (pendingToggleBtn) {
-      pendingToggleBtn.addEventListener('click', () => {
-        state.pendingPanelShowMine = !state.pendingPanelShowMine;
+    document.querySelectorAll('.pending-panel-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        state.pendingPanelShowMine = tab.dataset.tab === 'mine';
         renderLeaveTracker();
       });
-    }
+    });
   } else {
     attachMyRequestsHandlers();
   }
@@ -1457,11 +1456,24 @@ async function submitEditDates(e, entry) {
 function renderPendingPanel() {
   const showMine = state.pendingPanelShowMine;
 
+  const tabBtn = (key, label, isActive) => `
+    <button type="button" class="pending-panel-tab" data-tab="${key}"
+      style="flex:1; padding:9px 10px; font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer;
+             border:1px solid var(--line); border-bottom:none;
+             border-radius:10px 10px 0 0;
+             background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
+             color:${isActive ? '#F7F3E8' : 'var(--ink-soft)'};
+             position:relative; ${isActive ? 'z-index:2;' : 'z-index:1; margin-top:3px;'}">
+      ${label}
+    </button>
+  `;
+
   const header = `
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:8px;">
-      <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--teal);">${showMine ? 'My requests' : 'Pending requests'}</h3>
-      <button class="btn btn-ghost btn-sm" id="pending-panel-toggle-btn" style="font-size:11px; padding:4px 10px; flex-shrink:0;">${showMine ? 'Show pending' : 'My recent requests'}</button>
+    <div style="display:flex; gap:4px; margin:0 -20px; padding:0 20px;">
+      ${tabBtn('pending', 'Pending Requests', !showMine)}
+      ${tabBtn('mine', 'My Requests', showMine)}
     </div>
+    <div style="border-bottom:1px solid var(--line); margin:0 -20px 14px; padding:0 20px;"></div>
   `;
 
   if (showMine) {
