@@ -2783,7 +2783,7 @@ function getLiEntryStatus(entry) {
 function startLiRestrictionTicker() {
   stopLiRestrictionTicker();
   state.liRestrictionTickerHandle = setInterval(() => {
-    renderLiRestriction();
+    renderPreservingScroll(['.li-verification-scroll'], renderLiRestriction);
   }, 30000);
 }
 
@@ -2805,7 +2805,7 @@ function startLeaveTrackerPolling() {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('credit-input')) return;
     await Promise.all([loadLeaveEntries(), loadEmployees()]);
-    renderLeaveTracker();
+    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }, 4000);
 }
 
@@ -2848,7 +2848,7 @@ function startOtFilingPolling() {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return;
     await Promise.all([loadOtFilingDates(), loadOtHoursEntries()]);
-    renderOtFiling();
+    renderPreservingScroll(['.ot-filing-scroll'], renderOtFiling);
   }, 4000);
 }
 
@@ -3022,7 +3022,7 @@ function renderLiRestriction() {
               <div style="border-bottom:1px solid var(--line); margin:0 -20px 14px; padding:0 20px;"></div>
             `;
           })()}
-          <div style="max-height:560px; overflow-y:auto;">
+          <div class="li-verification-scroll" style="max-height:560px; overflow-y:auto;">
             ${verificationRows || `<p class="muted" style="font-size:12.5px;">No matches.</p>`}
           </div>
         </div>
@@ -3479,7 +3479,7 @@ function renderOtFiling() {
   }).join('');
 
   el.innerHTML = `
-    <div class="card" style="padding:22px; overflow-x:auto;">
+    <div class="card ot-filing-scroll" style="padding:22px; overflow-x:auto;">
       <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm" to confirm the number is accurate or correct it to your actual hours.</p>
       <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
@@ -4195,6 +4195,28 @@ function attachSearchableEmployeeField(idPrefix, employees, onSelect) {
     // Slight delay so a mousedown on an option (which also blurs the
     // input) still gets to run its handler first.
     setTimeout(() => { menu.style.display = 'none'; }, 120);
+  });
+}
+
+// Runs `renderFn`, but preserves the scroll position (both vertical and
+// horizontal) of every element matching any of `selectors` across the
+// re-render — since replacing innerHTML always resets scroll position
+// to 0, which is exactly what makes auto-refresh polling feel
+// disruptive on any scrollable list or wide table. Matches elements by
+// position (1st .foo, 2nd .foo, ...) rather than by a stored reference,
+// since the old DOM nodes are destroyed by the re-render and a fresh
+// set is created in their place.
+function renderPreservingScroll(selectors, renderFn) {
+  const before = selectors.map(sel => Array.from(document.querySelectorAll(sel)).map(el => ({ top: el.scrollTop, left: el.scrollLeft })));
+  renderFn();
+  selectors.forEach((sel, i) => {
+    const els = document.querySelectorAll(sel);
+    els.forEach((el, j) => {
+      if (before[i] && before[i][j] != null) {
+        el.scrollTop = before[i][j].top;
+        el.scrollLeft = before[i][j].left;
+      }
+    });
   });
 }
 
