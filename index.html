@@ -834,6 +834,13 @@ function renderDashboard() {
   const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED);
   const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
+  // Leave Without Pay, today specifically: anyone whose approved leave
+  // for today is LNP/HLNP — whether they requested it as such directly,
+  // or it was auto-converted at approval time because their credit pool
+  // was exhausted (see planLeaveWithoutPayConversion). The note (if any)
+  // explains residual partial credit, e.g. "3h still covered."
+  const lwopToday = todayEntries.filter(e => e.leave_type === 'LNP' || e.leave_type === 'HLNP');
+
   const now = new Date();
   const payrollYear = now.getFullYear();
   const payrollMonth = now.getMonth() + 1;
@@ -876,7 +883,7 @@ function renderDashboard() {
       ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
     </div>
 
-    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
+    <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:18px; margin-bottom:28px;">
       <div class="card" style="padding:20px;">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark vl"></span>
@@ -909,6 +916,14 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${otConfirmedCount} / ${otLoggedCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${latestOtDate ? (otLoggedCount ? `For ${formatPrettyDate(latestOtDate)}.` : 'No OT logged for the latest date.') : 'No OT filing dates open.'}</div>
       </div>
+      <div class="card" style="padding:20px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+          <span class="dot-mark el"></span>
+          <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Leave Without Pay</span>
+        </div>
+        <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${lwopToday.length}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopToday.length ? 'See details below.' : 'No one on unpaid leave today.'}</div>
+      </div>
     </div>
 
     <div class="card" style="padding:22px;">
@@ -928,6 +943,24 @@ function renderDashboard() {
         </div>
       ` : `<p class="muted" style="margin:0;">Everyone's in today.</p>`}
     </div>
+
+    ${lwopToday.length ? `
+      <div class="card" style="padding:22px; margin-top:18px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Leave Without Pay — today</h3>
+          <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          ${lwopToday.map(e => `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+              <span class="stamp el">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
+              <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
+              <span class="faint" style="margin-left:auto; font-size:12px; text-align:right; max-width:60%;">${escapeHtml(e.note || '')}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
   `;
 }
 
@@ -1671,6 +1704,123 @@ function attachPendingHandlers() {
   document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.DECLINED)));
 }
 
+// Given an employee and a leave type, returns which credit pool it draws
+// from ('vl' or 'sl'), or null for types that don't draw credits at all
+// (LNP/HLNP are already fully unpaid).
+function creditPoolForType(leaveType) {
+  return LEAVE_TYPES[leaveType] ? LEAVE_TYPES[leaveType].credit : null;
+}
+
+// Returns the employee's current balance in the given pool ('vl' or
+// 'sl'), using the same live calculation as the Leave Credits card.
+function poolBalance(employee, pool) {
+  return pool === 'vl' ? getVLBalance(employee) : getSLBalance(employee);
+}
+
+// The "no pay" counterpart for a given paid leave type — used when a
+// request would exceed (or already has exceeded) the relevant credit
+// pool. Half-day types map to HLNP so the day-fraction math stays
+// consistent; full-day types map to LNP.
+function noPayEquivalent(leaveType) {
+  return LEAVE_TYPES[leaveType] && LEAVE_TYPES[leaveType].half ? 'HLNP' : 'LNP';
+}
+
+// Walks a freshly-approved group of leave_entries rows (already sorted
+// by date) and, for any row whose credit pool is exhausted at the point
+// it's applied, converts that row (or the uncovered remainder of it) to
+// Leave Without Pay. Returns the list of database operations needed:
+// rows to update in place, and any new "overflow" rows to insert for a
+// partially-covered single entry (e.g. an 8h request with only 3h of
+// credit left becomes a 3h paid row + a 5h LNP row).
+//
+// This only ever runs at approval time, against the balance as it
+// stands at that moment — it never retroactively touches leave that's
+// already been approved.
+function planLeaveWithoutPayConversion(employee, groupRows) {
+  const updates = []; // { id, fields }
+  const inserts = []; // new row objects (overflow portions)
+
+  // Track how much of each pool has been "virtually" consumed by rows
+  // earlier in this same group, so a multi-day request that crosses the
+  // exhaustion point partway through is handled day-by-day correctly.
+  const virtualUsed = { vl: 0, sl: 0 };
+
+  groupRows.forEach(row => {
+    const pool = creditPoolForType(row.leave_type);
+    if (!pool) return; // already LNP/HLNP — nothing to do
+
+    const balanceBefore = round2(poolBalance(employee, pool) - virtualUsed[pool]);
+    const requestedFraction = dayFractionForEntry(row); // in "days" (1 = full day)
+    const requestedHours = row.hours != null && row.hours !== '' ? Number(row.hours) : requestedFraction * 8;
+
+    if (balanceBefore <= 0) {
+      // Nothing left at all — the whole row becomes unpaid.
+      updates.push({
+        id: row.id,
+        fields: {
+          leave_type: noPayEquivalent(row.leave_type),
+          note: appendAutoNote(row.note, 'Auto-marked Leave Without Pay — no remaining credit.'),
+        },
+      });
+      return; // virtualUsed unchanged: nothing was actually drawn from the pool
+    }
+
+    const availableHours = round2(balanceBefore * 8);
+    if (availableHours >= requestedHours) {
+      // Fully covered — leave it exactly as requested, just track usage.
+      virtualUsed[pool] = round2(virtualUsed[pool] + requestedHours / 8);
+      return;
+    }
+
+    // Partial coverage: split into a covered portion (stays paid) and an
+    // unpaid overflow portion, with a note recording exactly how much
+    // credit was still applied.
+    const overflowHours = round2(requestedHours - availableHours);
+    const coveredNote = availableHours > 0
+      ? `Auto-split: ${availableHours}h still covered by remaining credit; ${overflowHours}h marked Leave Without Pay.`
+      : 'Auto-marked Leave Without Pay — no remaining credit.';
+
+    if (availableHours > 0) {
+      updates.push({
+        id: row.id,
+        fields: {
+          hours: availableHours,
+          note: appendAutoNote(row.note, coveredNote),
+        },
+      });
+      inserts.push({
+        employee_id: row.employee_id,
+        leave_type: noPayEquivalent(row.leave_type),
+        leave_date: row.leave_date,
+        note: appendAutoNote(row.note, coveredNote),
+        status: STATUS.APPROVED,
+        requested_by: row.requested_by,
+        request_group_id: row.request_group_id,
+        hours: overflowHours,
+      });
+    } else {
+      updates.push({
+        id: row.id,
+        fields: {
+          leave_type: noPayEquivalent(row.leave_type),
+          note: appendAutoNote(row.note, coveredNote),
+        },
+      });
+    }
+
+    virtualUsed[pool] = round2(virtualUsed[pool] + availableHours / 8);
+  });
+
+  return { updates, inserts };
+}
+
+// Appends an automatic system note to whatever note (if any) the person
+// already wrote, rather than overwriting it.
+function appendAutoNote(existingNote, autoText) {
+  const trimmed = (existingNote || '').trim();
+  return trimmed ? `${trimmed} — ${autoText}` : autoText;
+}
+
 async function decideRequest(id, decision) {
   if (!isAdmin()) { showToast('Only admins can approve or decline requests.', true); return; }
 
@@ -1688,7 +1838,35 @@ async function decideRequest(id, decision) {
     const query = sb.from('leave_entries').update({ status: decision });
     const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
     if (error) { showToast('Could not update the request.', true); return; }
-    showToast(`${label} approved.`);
+
+    // Re-fetch so the Leave-Without-Pay check runs against the database's
+    // own freshly-approved rows, then apply the conversion before
+    // reporting success.
+    await loadLeaveEntries();
+    const employee = state.employees.find(e => e.id === entry.employee_id);
+    if (employee) {
+      const groupRows = groupId
+        ? state.leaveEntries.filter(e => e.request_group_id === groupId && e.status === STATUS.APPROVED).sort((a, b) => a.leave_date.localeCompare(b.leave_date))
+        : state.leaveEntries.filter(e => e.id === id && e.status === STATUS.APPROVED);
+
+      const { updates, inserts } = planLeaveWithoutPayConversion(employee, groupRows);
+
+      for (const u of updates) {
+        const { error: updateErr } = await sb.from('leave_entries').update(u.fields).eq('id', u.id);
+        if (updateErr) console.error('LWNP conversion update failed:', updateErr);
+      }
+      if (inserts.length) {
+        const { error: insertErr } = await sb.from('leave_entries').insert(inserts);
+        if (insertErr) console.error('LWNP conversion insert failed:', insertErr);
+      }
+      if (updates.length || inserts.length) {
+        showToast(`${label} approved — some days auto-marked Leave Without Pay due to exhausted credit.`);
+      } else {
+        showToast(`${label} approved.`);
+      }
+    } else {
+      showToast(`${label} approved.`);
+    }
   }
   await loadLeaveEntries();
   renderLeaveTracker();
