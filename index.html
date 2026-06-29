@@ -532,6 +532,7 @@ const state = {
   leaveTrackerPollHandle: null, // setInterval handle for auto-refresh while viewing Leave Tracker
   payrollPollHandle: null, // setInterval handle for auto-refresh while viewing Payroll Confirmation
   otFilingPollHandle: null, // setInterval handle for auto-refresh while viewing OT Hours Filing
+  dashboardPollHandle: null, // setInterval handle for auto-refresh while viewing the Dashboard
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -632,6 +633,7 @@ function logout() {
   stopLeaveTrackerPolling();
   stopPayrollPolling();
   stopOtFilingPolling();
+  stopDashboardPolling();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -691,6 +693,9 @@ function switchView(viewName) {
 
   if (viewName === 'ot-filing') startOtFilingPolling();
   else stopOtFilingPolling();
+
+  if (viewName === 'dashboard') startDashboardPolling();
+  else stopDashboardPolling();
 }
 
 // =====================================================================
@@ -2851,6 +2856,37 @@ function stopOtFilingPolling() {
   if (state.otFilingPollHandle) {
     clearInterval(state.otFilingPollHandle);
     state.otFilingPollHandle = null;
+  }
+}
+
+// Auto-refreshes the Dashboard every 4 seconds while it's open, so its
+// summary cards (pending requests, payroll confirmations, LinkedIn
+// restrictions, OT confirmations, Leave Without Pay) stay current
+// without a manual refresh. The Dashboard has no inputs of its own, so
+// no typing guard is needed — only a check that no modal is currently
+// open elsewhere in the app, since several of its numbers reflect
+// data that could be mid-edit in another tab's modal.
+function startDashboardPolling() {
+  stopDashboardPolling();
+  state.dashboardPollHandle = setInterval(async () => {
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay && overlay.style.display === 'flex') return;
+    await Promise.all([
+      loadEmployees(),
+      loadLeaveEntries(),
+      loadPayrollConfirmations(),
+      loadLiRestrictionEntries(),
+      loadOtFilingDates(),
+      loadOtHoursEntries(),
+    ]);
+    renderDashboard();
+  }, 4000);
+}
+
+function stopDashboardPolling() {
+  if (state.dashboardPollHandle) {
+    clearInterval(state.dashboardPollHandle);
+    state.dashboardPollHandle = null;
   }
 }
 
