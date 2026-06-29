@@ -1711,8 +1711,25 @@ function formatDateRange(startIso, endIso) {
 }
 
 function attachPendingHandlers() {
-  document.querySelectorAll('.approve-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.APPROVED)));
-  document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => decideRequest(b.dataset.id, STATUS.DECLINED)));
+  document.querySelectorAll('.approve-btn').forEach(b => b.addEventListener('click', () => {
+    disablePendingCardButtons(b);
+    decideRequest(b.dataset.id, STATUS.APPROVED);
+  }));
+  document.querySelectorAll('.decline-btn').forEach(b => b.addEventListener('click', () => {
+    disablePendingCardButtons(b);
+    decideRequest(b.dataset.id, STATUS.DECLINED);
+  }));
+}
+
+// Immediately disables both the Approve and Decline buttons on the same
+// pending card the moment either is clicked, so a fast double-click (the
+// most likely real-world way decideRequest could fire twice) can't reach
+// the server a second time before the first call has finished and the
+// card itself is re-rendered away.
+function disablePendingCardButtons(clickedBtn) {
+  const card = clickedBtn.closest('.pending-card');
+  if (!card) return;
+  card.querySelectorAll('.approve-btn, .decline-btn').forEach(b => { b.disabled = true; });
 }
 
 // Given an employee and a leave type, returns which credit pool it draws
@@ -1765,11 +1782,15 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     const requestedHours = row.hours != null && row.hours !== '' ? Number(row.hours) : requestedFraction * 8;
 
     if (balanceBefore <= 0) {
-      // Nothing left at all — the whole row becomes unpaid.
+      // Nothing left at all — the whole row becomes unpaid. Hours are
+      // set explicitly (even for a plain full-day request that never
+      // had an hours value before) so the dashboard badge always shows
+      // exactly how many hours were marked unpaid.
       updates.push({
         id: row.id,
         fields: {
           leave_type: noPayEquivalent(row.leave_type),
+          hours: requestedHours,
           note: appendAutoNote(row.note, 'Auto-marked Leave Without Pay — no remaining credit.'),
         },
       });
@@ -1832,11 +1853,22 @@ function appendAutoNote(existingNote, autoText) {
   return trimmed ? `${trimmed} — ${autoText}` : autoText;
 }
 
+// Tracks request ids currently being approved/declined, so a double
+// click (or any other accidental double-fire) can't run the same
+// approval — and therefore the Leave-Without-Pay conversion — twice
+// against rows that the first call has already split or converted.
+const requestsBeingDecided = new Set();
+
 async function decideRequest(id, decision) {
   if (!isAdmin()) { showToast('Only admins can approve or decline requests.', true); return; }
 
   const entry = state.leaveEntries.find(e => e.id === id);
   const groupId = entry ? entry.request_group_id : null;
+  const guardKey = groupId || id;
+  if (requestsBeingDecided.has(guardKey)) return; // already in progress — ignore the repeat click
+  requestsBeingDecided.add(guardKey);
+
+  try {
   const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
   const label = groupCount > 1 ? `${groupCount} days of leave` : 'Leave';
 
@@ -1878,6 +1910,9 @@ async function decideRequest(id, decision) {
     } else {
       showToast(`${label} approved.`);
     }
+  }
+  } finally {
+    requestsBeingDecided.delete(guardKey);
   }
   await loadLeaveEntries();
   renderLeaveTracker();
