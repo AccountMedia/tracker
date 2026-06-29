@@ -2913,10 +2913,13 @@ async function resetOtFiling() {
 
   const { error: totalsError } = await sb
     .from('ot_filing_settings')
-    .update({ total_leads_available: null, total_leads_updated_by: null, updated_at: new Date().toISOString() })
-    .eq('id', 1);
+    .upsert({ id: 1, total_leads_available: null, total_leads_updated_by: null, updated_at: new Date().toISOString() }, { onConflict: 'id' });
 
-  if (totalsError) { showToast('Could not reset Total Leads Available.', true); return; }
+  if (totalsError) {
+    console.error('Resetting Total Leads Available failed:', totalsError);
+    showToast('Could not reset Total Leads Available — check the console for details.', true);
+    return;
+  }
 
   showToast('OT Hours Filing reset.');
   await Promise.all([loadOtHoursEntries(), loadOtFilingSettings()]);
@@ -3017,11 +3020,12 @@ async function saveOtTotalLeadsAvailable(rawValue) {
     return;
   }
 
-  const { error } = await sb.from('ot_filing_settings').update({
+  const { error } = await sb.from('ot_filing_settings').upsert({
+    id: 1,
     total_leads_available: value,
     total_leads_updated_by: value != null ? state.profile.display_name : null,
     updated_at: new Date().toISOString(),
-  }).eq('id', 1);
+  }, { onConflict: 'id' });
   if (error) {
     console.error('saveOtTotalLeadsAvailable failed:', error);
     const msg = error.message && error.message.toLowerCase().includes('relation')
