@@ -2041,9 +2041,9 @@ function renderPrioList() {
   // Two distinct states:
   //   1. Every single status is still blank -> show everyone in plain
   //      reversed rank order (rank 32 at the top, rank 1 at the bottom).
-  //   2. As soon as any status has been set -> only Active/Break
-  //      employees take part in the priority sort (by Total output,
-  //      lowest first); everyone else (Inactive, or still blank) is
+  //   2. As soon as any status has been set -> only Active employees
+  //      take part in the priority sort (by Total output, lowest
+  //      first); everyone else (Break, Inactive, or still blank) is
   //      pinned below them, in rank order.
   const allStatusesBlank = rows.every(r => !r.entry.status);
 
@@ -2051,8 +2051,8 @@ function renderPrioList() {
   if (allStatusesBlank) {
     orderedRows = rows.slice().sort((a, b) => b.entry.rank - a.entry.rank);
   } else {
-    const ranked = rows.filter(r => r.entry.status === 'Active' || r.entry.status === 'Break');
-    const unranked = rows.filter(r => !(r.entry.status === 'Active' || r.entry.status === 'Break'));
+    const ranked = rows.filter(r => r.entry.status === 'Active');
+    const unranked = rows.filter(r => r.entry.status !== 'Active');
 
     ranked.sort((a, b) => {
       const totalA = Number(a.entry.md_output) + Number(a.entry.leads);
