@@ -400,13 +400,7 @@
           <span class="eyebrow">PH Team</span>
           <h1>Leave Tracker</h1>
         </div>
-        <div style="display:flex; align-items:center; gap:10px;">
-          <select id="leave-tracker-view-select" style="padding:8px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:13px; background:var(--paper-raised); color:var(--ink);">
-            <option value="calendar">Calendar</option>
-            <option value="spreadsheet">Spreadsheet</option>
-          </select>
-          <div id="leave-tracker-actions"></div>
-        </div>
+        <div id="leave-tracker-actions"></div>
       </div>
       <div id="leave-tracker-content"></div>
     </section>
@@ -469,7 +463,6 @@
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.full.min.js"></script>
 <script>
 // =====================================================================
 // ACCOUNT MEDIA — Team Hub
@@ -541,9 +534,6 @@ const state = {
   otHoursEntries: [],  // OT hours entries
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
-  leaveTrackerSubView: 'calendar', // 'calendar' or 'spreadsheet' — selected via the dropdown on the Leave Tracker page
-  excelTrackerMonth: new Date().getMonth(),
-  excelTrackerYear: new Date().getFullYear(),
   currentView: 'dashboard',
   creditsEditMode: false, // whether the Leave Credits section is in edit mode
   pendingPanelShowMine: false, // admin view: toggles the Pending Requests panel to show the admin's own requests instead
@@ -959,21 +949,6 @@ function dashboardStatCard(label, value, sub, accentCls) {
 // =====================================================================
 
 function renderLeaveTracker() {
-  const subViewSelect = document.getElementById('leave-tracker-view-select');
-  if (subViewSelect) {
-    subViewSelect.value = state.leaveTrackerSubView;
-    subViewSelect.onchange = () => {
-      state.leaveTrackerSubView = subViewSelect.value;
-      renderLeaveTracker();
-    };
-  }
-
-  if (state.leaveTrackerSubView === 'spreadsheet') {
-    document.getElementById('leave-tracker-actions').innerHTML = '';
-    renderExcelTracker();
-    return;
-  }
-
   const actionsEl = document.getElementById('leave-tracker-actions');
   actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
@@ -2124,252 +2099,7 @@ function formatDateTime(isoString) {
 }
 
 // =====================================================================
-// EXCEL-STYLE TRACKER (live, in-app recreation of the original Excel
-// leave tracker's look — logo, color-coded leave codes, month band,
-// date/weekday grid — reading straight from the same live data as
-// every other tab, with no download step.)
-// =====================================================================
-
-const EXCEL_TRACKER_LEAVE_COLORS = {
-  VL:   { bg: '#92D050', text: '#1A1A1A' },
-  VLH:  { bg: '#92D050', text: '#1A1A1A' },
-  SL:   { bg: '#92D050', text: '#1A1A1A' },
-  SLH:  { bg: '#FFFF00', text: '#1A1A1A' },
-  EL:   { bg: '#F7CAAC', text: '#1A1A1A' },
-  ELH:  { bg: '#F7CAAC', text: '#1A1A1A' },
-  LNP:  { bg: '#E09DC1', text: '#1A1A1A' },
-  HLNP: { bg: '#E09DC1', text: '#1A1A1A' },
-};
-
-const EXCEL_TRACKER_MONTH_BAND_COLORS = ['#4430BE', '#C63FC9', '#33C2E9']; // cycles every 3 months, matching the original file
-
-// Plain 6-digit hex (no '#') versions of the same colors above, used
-// specifically for the real .xlsx export — xlsx-js-style expects raw hex.
-const EXCEL_TRACKER_LEAVE_COLORS_HEX = {
-  VL: '92D050', VLH: '92D050', SL: '92D050',
-  SLH: 'FFFF00',
-  EL: 'F7CAAC', ELH: 'F7CAAC',
-  LNP: 'E09DC1', HLNP: 'E09DC1',
-};
-const EXCEL_TRACKER_MONTH_BAND_COLORS_HEX = ['4430BE', 'C63FC9', '33C2E9'];
-const EXCEL_TRACKER_LOGO_BASE64 = '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';
-
-function shiftExcelTrackerMonth(delta) {
-  let m = state.excelTrackerMonth + delta;
-  let y = state.excelTrackerYear;
-  if (m < 0) { m = 11; y--; }
-  if (m > 11) { m = 0; y++; }
-  state.excelTrackerMonth = m;
-  state.excelTrackerYear = y;
-  renderExcelTracker();
-}
-
-function renderExcelTracker() {
-  const el = document.getElementById('leave-tracker-content');
-  if (!state.employees.length) {
-    el.innerHTML = '<div class="loading-row">Loading…</div>';
-    return;
-  }
-
-  const year = state.excelTrackerYear;
-  const month = state.excelTrackerMonth; // 0-indexed
-  const monthStart = isoDate(new Date(year, month, 1));
-  const monthEnd = isoDate(new Date(year, month + 1, 0));
-  const workdays = datesInRange(monthStart, monthEnd, { skipWeekends: true });
-
-  const approvedThisMonth = state.leaveEntries.filter(e =>
-    e.status === STATUS.APPROVED && e.leave_date >= monthStart && e.leave_date <= monthEnd
-  );
-
-  const roster = state.employees
-    .filter(emp => emp.active !== false)
-    .sort(byKristinaFirstThenName);
-
-  const bandColor = EXCEL_TRACKER_MONTH_BAND_COLORS[month % 3];
-
-  const dateHeaderCells = workdays.map(d => {
-    const dt = new Date(d + 'T00:00:00');
-    return `<th style="min-width:46px; padding:4px 2px; font-size:10.5px; font-weight:600; text-align:center; border:1px solid #D9D9D9; background:#fff;">${dt.getDate()}-${MONTH_NAMES[dt.getMonth()].slice(0,3)}</th>`;
-  }).join('');
-
-  const weekdayHeaderCells = workdays.map(d => {
-    const dt = new Date(d + 'T00:00:00');
-    const wd = dt.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
-    return `<th style="padding:3px 2px; font-size:9.5px; font-weight:500; color:#7F7F7F; text-align:center; border:1px solid #D9D9D9; background:#fff;">${wd}</th>`;
-  }).join('');
-
-  const bodyRows = roster.map(emp => {
-    const vl = getVLBalance(emp);
-    const sl = getSLBalance(emp);
-    const slColor = sl === 0 ? '#FF0000' : '#0070C0';
-    const vlColor = vl === 0 ? '#FF0000' : '#0070C0';
-
-    const empLeaveByDate = {};
-    approvedThisMonth.filter(e => e.employee_id === emp.id).forEach(e => {
-      empLeaveByDate[e.leave_date] = e.leave_type;
-    });
-
-    const dayCells = workdays.map(d => {
-      const type = empLeaveByDate[d];
-      const colorSet = type ? EXCEL_TRACKER_LEAVE_COLORS[type] : null;
-      return `<td style="border:1px solid #D9D9D9; text-align:center; font-size:10.5px; font-weight:700; padding:3px 2px; ${colorSet ? `background:${colorSet.bg}; color:${colorSet.text};` : ''}">${type || ''}</td>`;
-    }).join('');
-
-    return `
-      <tr>
-        <td style="border:1px solid #D9D9D9; text-align:center; font-size:11px; color:${slColor}; padding:3px 4px;">${sl}</td>
-        <td style="border:1px solid #D9D9D9; text-align:center; font-size:11px; color:${vlColor}; padding:3px 4px;">${vl}</td>
-        <td style="border:1px solid #D9D9D9; font-size:11px; font-weight:700; padding:3px 6px; white-space:nowrap; background:#fff; position:sticky; left:0;">${escapeHtml(emp.display_name)}</td>
-        ${dayCells}
-      </tr>
-    `;
-  }).join('');
-
-  el.innerHTML = `
-    <div class="card" style="padding:18px; overflow-x:auto;">
-      <div style="display:flex; align-items:center; gap:14px; margin-bottom:14px;">
-        <button class="btn btn-ghost btn-sm" id="excel-tracker-prev">←</button>
-        <h3 style="margin:0; font-family:var(--font-display); font-size:16px; color:var(--teal); min-width:160px; text-align:center;">${MONTH_NAMES[month]} ${year}</h3>
-        <button class="btn btn-ghost btn-sm" id="excel-tracker-next">→</button>
-        ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="excel-tracker-download">Download as Excel</button>` : ''}
-        <span class="faint" style="font-size:11px; margin-left:auto;">Live — reflects approved leave automatically.</span>
-      </div>
-      <table style="border-collapse:collapse; font-family:Calibri, Arial, sans-serif;">
-        <thead>
-          <tr>
-            <th rowspan="3" style="min-width:54px; padding:4px; font-size:10px; font-weight:700; background:#F2DCFC; color:#FF0000; border:1px solid #D9D9D9;">Sick Leave<br>Credits</th>
-            <th rowspan="3" style="min-width:54px; padding:4px; font-size:10px; font-weight:700; background:#C63FC9; color:#fff; border:1px solid #D9D9D9;">VL<br>Credits</th>
-            <th rowspan="3" style="min-width:160px; padding:4px; font-size:11px; font-weight:700; border:1px solid #D9D9D9; background:#fff; position:sticky; left:0;">
-              <img src="data:image/png;base64,${EXCEL_TRACKER_LOGO_BASE64}" style="height:18px; vertical-align:middle; margin-right:6px;">
-              EE Name - PH
-            </th>
-            <th colspan="${workdays.length}" style="padding:6px; font-size:13px; font-weight:700; color:#fff; background:${bandColor}; letter-spacing:0.1em; border:1px solid #D9D9D9;">
-              ${MONTH_NAMES[month].toUpperCase()} ${year}
-            </th>
-          </tr>
-          <tr>${dateHeaderCells}</tr>
-          <tr>${weekdayHeaderCells}</tr>
-        </thead>
-        <tbody>
-          ${bodyRows}
-        </tbody>
-      </table>
-    </div>
-  `;
-
-  document.getElementById('excel-tracker-prev').addEventListener('click', () => shiftExcelTrackerMonth(-1));
-  document.getElementById('excel-tracker-next').addEventListener('click', () => shiftExcelTrackerMonth(1));
-  const downloadBtn = document.getElementById('excel-tracker-download');
-  if (downloadBtn) downloadBtn.addEventListener('click', downloadExcelTrackerXlsx);
-}
-
-function downloadExcelTrackerXlsx() {
-  if (!isAdmin()) { showToast('Only admins can download this.', true); return; }
-  if (typeof XLSX === 'undefined') { showToast('Excel export library failed to load — check your connection and try again.', true); return; }
-
-  const year = state.excelTrackerYear;
-  const month = state.excelTrackerMonth;
-  const monthStart = isoDate(new Date(year, month, 1));
-  const monthEnd = isoDate(new Date(year, month + 1, 0));
-  const workdays = datesInRange(monthStart, monthEnd, { skipWeekends: true });
-
-  const approvedThisMonth = state.leaveEntries.filter(e =>
-    e.status === STATUS.APPROVED && e.leave_date >= monthStart && e.leave_date <= monthEnd
-  );
-
-  const roster = state.employees
-    .filter(emp => emp.active !== false)
-    .sort(byKristinaFirstThenName);
-
-  const bandColor = EXCEL_TRACKER_MONTH_BAND_COLORS_HEX[month % 3];
-  const FIRST_DATA_COL = 3; // 0-indexed: A=SL, B=VL, C=Name, D.. = dates
-
-  const thinBorder = { style: 'thin', color: { rgb: 'D9D9D9' } };
-  const allThinBorder = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
-
-  const aoa = [];
-  const row0 = ['Sick Leave\nCredits', 'VL\nCredits', 'EE Name - PH'];
-  workdays.forEach((d, i) => row0.push(i === 0 ? `${MONTH_NAMES[month].toUpperCase()} ${year}` : ''));
-  aoa.push(row0);
-  const row1 = ['', '', ''];
-  workdays.forEach(d => row1.push(new Date(d + 'T00:00:00')));
-  aoa.push(row1);
-  const row2 = ['', '', ''];
-  workdays.forEach(d => {
-    const dt = new Date(d + 'T00:00:00');
-    row2.push(dt.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase());
-  });
-  aoa.push(row2);
-
-  roster.forEach(emp => {
-    const vl = getVLBalance(emp);
-    const sl = getSLBalance(emp);
-    const empLeaveByDate = {};
-    approvedThisMonth.filter(e => e.employee_id === emp.id).forEach(e => { empLeaveByDate[e.leave_date] = e.leave_type; });
-    const row = [sl, vl, emp.display_name];
-    workdays.forEach(d => row.push(empLeaveByDate[d] || ''));
-    aoa.push(row);
-  });
-
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-
-  ws['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 2, c: 0 } },
-    { s: { r: 0, c: 1 }, e: { r: 2, c: 1 } },
-    { s: { r: 0, c: 2 }, e: { r: 2, c: 2 } },
-    { s: { r: 0, c: FIRST_DATA_COL }, e: { r: 0, c: FIRST_DATA_COL + workdays.length - 1 } },
-  ];
-
-  ws['!cols'] = [{ wch: 12 }, { wch: 10 }, { wch: 22 }, ...workdays.map(() => ({ wch: 6 }))];
-  ws['!rows'] = [{ hpt: 30 }, { hpt: 16 }, { hpt: 14 }];
-
-  function setStyle(r, c, style) {
-    const addr = XLSX.utils.encode_cell({ r, c });
-    if (!ws[addr]) ws[addr] = { v: '', t: 's' };
-    ws[addr].s = style;
-  }
-
-  const baseFont = { name: 'Calibri', sz: 9 };
-
-  setStyle(0, 0, { font: { ...baseFont, bold: true, color: { rgb: 'FF0000' } }, fill: { fgColor: { rgb: 'F2DCFC' } }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: allThinBorder });
-  setStyle(0, 1, { font: { ...baseFont, bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: 'C63FC9' } }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: allThinBorder });
-  setStyle(0, 2, { font: { ...baseFont, bold: true }, alignment: { horizontal: 'center', vertical: 'center' }, border: allThinBorder });
-  setStyle(0, FIRST_DATA_COL, { font: { name: 'Calibri', sz: 12, bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: bandColor } }, alignment: { horizontal: 'center', vertical: 'center' }, border: allThinBorder });
-
-  workdays.forEach((d, i) => {
-    const col = FIRST_DATA_COL + i;
-    setStyle(1, col, { font: baseFont, alignment: { horizontal: 'center', vertical: 'center' }, numFmt: 'd-mmm', border: allThinBorder });
-    setStyle(2, col, { font: { ...baseFont, color: { rgb: '7F7F7F' } }, alignment: { horizontal: 'center', vertical: 'center' }, border: allThinBorder });
-  });
-
-  roster.forEach((emp, rowIdx) => {
-    const r = 3 + rowIdx;
-    const vl = getVLBalance(emp);
-    const sl = getSLBalance(emp);
-    setStyle(r, 0, { font: { ...baseFont, color: { rgb: sl === 0 ? 'FF0000' : '0070C0' } }, alignment: { horizontal: 'center' }, border: allThinBorder });
-    setStyle(r, 1, { font: { ...baseFont, color: { rgb: vl === 0 ? 'FF0000' : '0070C0' } }, alignment: { horizontal: 'center' }, border: allThinBorder });
-    setStyle(r, 2, { font: { ...baseFont, bold: true }, border: allThinBorder });
-
-    const empLeaveByDate = {};
-    approvedThisMonth.filter(e => e.employee_id === emp.id).forEach(e => { empLeaveByDate[e.leave_date] = e.leave_type; });
-    workdays.forEach((d, i) => {
-      const col = FIRST_DATA_COL + i;
-      const type = empLeaveByDate[d];
-      const colorSet = type ? EXCEL_TRACKER_LEAVE_COLORS_HEX[type] : null;
-      const style = { font: { ...baseFont, bold: true }, alignment: { horizontal: 'center', vertical: 'center' }, border: allThinBorder };
-      if (colorSet) style.fill = { fgColor: { rgb: colorSet } };
-      setStyle(r, col, style);
-    });
-  });
-
-  ws['!freeze'] = { xSplit: FIRST_DATA_COL, ySplit: 3 };
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Leave Tracker');
-  XLSX.writeFile(wb, `Leave Tracker - ${MONTH_NAMES[month]} ${year}.xlsx`);
-  showToast('Excel file downloaded.');
-}
-
+// PRIOLIST
 // =====================================================================
 
 // Deterministic, readable color per employee name — same name always
