@@ -536,7 +536,7 @@ const state = {
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
   creditsEditMode: false, // whether the Leave Credits section is in edit mode
-  pendingPanelTab: 'pending', // admin view: 'pending', 'mine', or 'cancellations' — which tab of the Pending Requests panel is active
+  pendingPanelTab: 'pending', // admin view: 'pending' or 'mine' — which tab of the Pending Requests panel is active. Cancellation requests now appear inline within 'pending', not as a separate tab.
 };
 
 // =====================================================================
@@ -1052,7 +1052,7 @@ function renderLeaveTracker() {
   if (isAdmin()) {
     attachPendingHandlers();
     attachMyRequestsHandlers(); // also needed when the admin has toggled to "My requests"
-    attachCancellationHandlers(); // also needed when the admin has toggled to "Cancellations"
+    attachCancellationHandlers(); // cancellation requests can appear inline within the same Pending list
     document.querySelectorAll('.pending-panel-tab').forEach(tab => {
       tab.addEventListener('click', () => {
         state.pendingPanelTab = tab.dataset.tab;
@@ -1623,11 +1623,11 @@ async function submitEditDates(e, entry) {
 // ---- Pending panel --------------------------------------------------
 
 function renderPendingPanel() {
-  const activeTab = state.pendingPanelTab;
+  const showMine = state.pendingPanelTab === 'mine';
 
   const tabBtn = (key, label, isActive) => `
     <button type="button" class="pending-panel-tab" data-tab="${key}"
-      style="flex:1; padding:9px 8px; font-size:12px; font-weight:700; font-family:inherit; cursor:pointer;
+      style="flex:1; padding:9px 10px; font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer;
              border:1px solid var(--line); border-bottom:none;
              border-radius:10px 10px 0 0;
              background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
@@ -1637,63 +1637,15 @@ function renderPendingPanel() {
     </button>
   `;
 
-  const cancellationCount = state.leaveEntries.filter(e => e.status === STATUS.CANCELLATION_PENDING && !e.request_group_id).length
-    + new Set(state.leaveEntries.filter(e => e.status === STATUS.CANCELLATION_PENDING && e.request_group_id).map(e => e.request_group_id)).size;
-
   const header = `
     <div style="display:flex; gap:4px; margin:0 -20px; padding:0 20px;">
-      ${tabBtn('pending', 'Pending', activeTab === 'pending')}
-      ${tabBtn('mine', 'My Requests', activeTab === 'mine')}
-      ${tabBtn('cancellations', `Cancellations${cancellationCount ? ` (${cancellationCount})` : ''}`, activeTab === 'cancellations')}
+      ${tabBtn('pending', 'Pending Requests', !showMine)}
+      ${tabBtn('mine', 'My Requests', showMine)}
     </div>
     <div style="border-bottom:1px solid var(--line); margin:0 -20px 14px; padding:0 20px;"></div>
   `;
 
-  if (activeTab === 'cancellations') {
-    const groups = groupLeaveEntries(state.leaveEntries.filter(e => e.status === STATUS.CANCELLATION_PENDING))
-      .sort((a, b) => a.startDate.localeCompare(b.startDate));
-
-    return `
-      <div class="card" style="padding:20px; display:flex; flex-direction:column;">
-        ${header}
-        ${groups.length ? `
-          <div class="pending-scroll">
-            ${groups.map(g => {
-              const hrs = g.days[0].hours;
-              const cancelNote = g.days[0].cancel_note;
-              return `
-              <div class="pending-card" data-id="${g.firstId}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
-                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
-                  <div>
-                    <div style="font-weight:600; font-size:13px;">${employeeName(g.employee_id)}</div>
-                    <div class="faint" style="font-size:11.5px; margin-top:2px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : hrs ? ` · ${hrs}h` : ''}</div>
-                  </div>
-                  <span class="stamp ${LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
-                </div>
-                ${cancelNote ? `<div class="muted" style="font-size:12px; margin-top:6px;"><span class="faint">Reason:</span> ${escapeHtml(cancelNote)}</div>` : ''}
-                <div style="display:flex; gap:6px; margin-top:10px;">
-                  <button class="btn btn-sm approve-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center; background:var(--coral); color:#F7F3E8;">Approve Cancellation</button>
-                  <button class="btn btn-ghost btn-sm decline-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>
-                </div>
-              </div>
-            `;
-            }).join('')}
-          </div>
-          <style>
-            .pending-scroll{
-              display:flex; flex-direction:column; gap:10px;
-              flex: 1;
-              min-height: 0;
-              overflow-y:auto;
-              padding-right:4px;
-            }
-          </style>
-        ` : `<p class="muted" style="margin:0; font-size:13px;">No cancellation requests waiting on review.</p>`}
-      </div>
-    `;
-  }
-
-  if (activeTab === 'mine') {
+  if (showMine) {
     const myEntries = state.leaveEntries
       .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED);
     const groups = groupLeaveEntries(myEntries)
@@ -1742,7 +1694,12 @@ function renderPendingPanel() {
     `;
   }
 
-  const groups = groupLeaveEntries(state.leaveEntries.filter(e => e.status === STATUS.PENDING))
+  // Combined list: brand-new leave requests AND cancellation requests
+  // appear together, sorted by date — the only visual difference is the
+  // approval button's color (red for a cancellation, the normal teal
+  // for a new leave request), so admins review everything in one place
+  // rather than hunting across separate tabs.
+  const groups = groupLeaveEntries(state.leaveEntries.filter(e => e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING))
     .sort((a, b) => a.startDate.localeCompare(b.startDate));
 
   return `
@@ -1752,19 +1709,27 @@ function renderPendingPanel() {
         <div class="pending-scroll">
           ${groups.map(g => {
             const hrs = g.days[0].hours;
+            const isCancellation = g.days[0].status === STATUS.CANCELLATION_PENDING;
+            const cancelNote = g.days[0].cancel_note;
             return `
             <div class="pending-card" data-id="${g.firstId}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
                 <div>
                   <div style="font-weight:600; font-size:13px;">${employeeName(g.employee_id)}</div>
                   <div class="faint" style="font-size:11.5px; margin-top:2px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : hrs ? ` · ${hrs}h` : ''}</div>
+                  ${isCancellation ? `<div class="faint" style="font-size:10.5px; margin-top:3px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--coral);">Cancellation request</div>` : ''}
                 </div>
                 <span class="stamp pending">${LEAVE_TYPES[g.leave_type].short}</span>
               </div>
-              ${g.note ? `<div class="muted" style="font-size:12px; margin-top:6px;">${escapeHtml(g.note)}</div>` : ''}
+              ${isCancellation && cancelNote ? `<div class="muted" style="font-size:12px; margin-top:6px;"><span class="faint">Reason:</span> ${escapeHtml(cancelNote)}</div>` : ''}
+              ${!isCancellation && g.note ? `<div class="muted" style="font-size:12px; margin-top:6px;">${escapeHtml(g.note)}</div>` : ''}
               <div style="display:flex; gap:6px; margin-top:10px;">
-                <button class="btn btn-primary btn-sm approve-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Approve</button>
-                <button class="btn btn-ghost btn-sm decline-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>
+                ${isCancellation
+                  ? `<button class="btn btn-sm approve-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center; background:var(--coral); color:#F7F3E8;">Approve Cancellation</button>
+                     <button class="btn btn-ghost btn-sm decline-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>`
+                  : `<button class="btn btn-primary btn-sm approve-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Approve</button>
+                     <button class="btn btn-ghost btn-sm decline-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>`
+                }
               </div>
             </div>
           `;
