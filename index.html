@@ -1768,6 +1768,18 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
   const updates = []; // { id, fields }
   const inserts = []; // new row objects (overflow portions)
 
+  // By the time this runs, groupRows have already been written to the
+  // database with status 'approved' — so the live balance computed by
+  // getVLBalance/getSLBalance already has THIS group's own hours
+  // subtracted from it. We need the balance as it stood immediately
+  // BEFORE this group, so we add this group's own (pre-conversion)
+  // hours back in per pool before doing the exhaustion check below.
+  const alreadyCountedAgainstSelf = { vl: 0, sl: 0 };
+  groupRows.forEach(row => {
+    const pool = creditPoolForType(row.leave_type);
+    if (pool) alreadyCountedAgainstSelf[pool] = round2(alreadyCountedAgainstSelf[pool] + dayFractionForEntry(row));
+  });
+
   // Track how much of each pool has been "virtually" consumed by rows
   // earlier in this same group, so a multi-day request that crosses the
   // exhaustion point partway through is handled day-by-day correctly.
@@ -1777,7 +1789,8 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     const pool = creditPoolForType(row.leave_type);
     if (!pool) return; // already LNP/HLNP — nothing to do
 
-    const balanceBefore = round2(poolBalance(employee, pool) - virtualUsed[pool]);
+    const balanceBeforeGroup = round2(poolBalance(employee, pool) + alreadyCountedAgainstSelf[pool]);
+    const balanceBefore = round2(balanceBeforeGroup - virtualUsed[pool]);
     const requestedFraction = dayFractionForEntry(row); // in "days" (1 = full day)
     const requestedHours = row.hours != null && row.hours !== '' ? Number(row.hours) : requestedFraction * 8;
 
@@ -1883,9 +1896,9 @@ async function decideRequest(id, decision) {
     if (error) { showToast('Could not update the request.', true); return; }
 
     // Re-fetch so the Leave-Without-Pay check runs against the database's
-    // own freshly-approved rows, then apply the conversion before
-    // reporting success.
-    await loadLeaveEntries();
+    // own freshly-approved rows and current stored balance, then apply
+    // the conversion before reporting success.
+    await Promise.all([loadLeaveEntries(), loadEmployees()]);
     const employee = state.employees.find(e => e.id === entry.employee_id);
     if (employee) {
       const groupRows = groupId
