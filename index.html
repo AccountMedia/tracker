@@ -835,10 +835,6 @@ function renderDashboard() {
   }
 
   const today = isoDate(new Date());
-  // Excludes LNP/HLNP — Leave Without Pay gets its own dedicated section
-  // below, so it isn't duplicated here under regular paid leave.
-  const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED && e.leave_type !== 'LNP' && e.leave_type !== 'HLNP');
-  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
   // Leave Without Pay, today specifically: anyone whose approved leave
   // for today is LNP/HLNP — whether they requested it as such directly,
@@ -846,6 +842,15 @@ function renderDashboard() {
   // was exhausted (see planLeaveWithoutPayConversion). The note (if any)
   // explains residual partial credit, e.g. "3h still covered."
   const lwopToday = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'));
+  const lwopEmployeeIdsToday = new Set(lwopToday.map(e => e.employee_id));
+
+  // Excludes anyone with any LNP/HLNP entry today, even if the same day
+  // was split and part of it is genuinely paid leave — that person is
+  // already fully represented under the Leave Without Pay section below,
+  // so they shouldn't also show here for just the paid sliver of their day.
+  const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED && e.leave_type !== 'LNP' && e.leave_type !== 'HLNP' && !lwopEmployeeIdsToday.has(e.employee_id));
+
+  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
   const now = new Date();
   const payrollYear = now.getFullYear();
@@ -953,7 +958,7 @@ function renderDashboard() {
     ${lwopToday.length ? `
       <div class="card" style="padding:22px; margin-top:18px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-          <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Leave Without Pay — today</h3>
+          <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Leave Without Pay today</h3>
           <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
         </div>
         <div style="display:flex; flex-direction:column; gap:10px;">
