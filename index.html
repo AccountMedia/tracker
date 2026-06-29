@@ -529,6 +529,9 @@ const state = {
   liVerificationFilter: 'all', // 'all', 'verified', or 'unverified' — filters the LinkedIn Verification panel
   liRestrictionShowMineOnly: false, // when true, the day's restriction log only shows the logged-in person's own entries
   liRestrictionTickerHandle: null, // setInterval handle for live status re-check
+  leaveTrackerPollHandle: null, // setInterval handle for auto-refresh while viewing Leave Tracker
+  payrollPollHandle: null, // setInterval handle for auto-refresh while viewing Payroll Confirmation
+  otFilingPollHandle: null, // setInterval handle for auto-refresh while viewing OT Hours Filing
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -626,6 +629,9 @@ function logout() {
   state.creditsEditMode = false;
   stopPriolistPolling();
   stopLiRestrictionTicker();
+  stopLeaveTrackerPolling();
+  stopPayrollPolling();
+  stopOtFilingPolling();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -676,6 +682,15 @@ function switchView(viewName) {
 
   if (viewName === 'li-restriction') startLiRestrictionTicker();
   else stopLiRestrictionTicker();
+
+  if (viewName === 'leave-tracker') startLeaveTrackerPolling();
+  else stopLeaveTrackerPolling();
+
+  if (viewName === 'payroll-confirmation') startPayrollPolling();
+  else stopPayrollPolling();
+
+  if (viewName === 'ot-filing') startOtFilingPolling();
+  else stopOtFilingPolling();
 }
 
 // =====================================================================
@@ -2771,6 +2786,71 @@ function stopLiRestrictionTicker() {
   if (state.liRestrictionTickerHandle) {
     clearInterval(state.liRestrictionTickerHandle);
     state.liRestrictionTickerHandle = null;
+  }
+}
+
+// Auto-refreshes the Leave Tracker every 4 seconds while it's open, so
+// new requests, approvals, and credit edits made by anyone else show up
+// without needing a manual page refresh. Skips a cycle while the admin
+// is actively editing a Leave Credits field, so a keystroke is never
+// interrupted mid-edit.
+function startLeaveTrackerPolling() {
+  stopLeaveTrackerPolling();
+  state.leaveTrackerPollHandle = setInterval(async () => {
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('credit-input')) return;
+    await Promise.all([loadLeaveEntries(), loadEmployees()]);
+    renderLeaveTracker();
+  }, 4000);
+}
+
+function stopLeaveTrackerPolling() {
+  if (state.leaveTrackerPollHandle) {
+    clearInterval(state.leaveTrackerPollHandle);
+    state.leaveTrackerPollHandle = null;
+  }
+}
+
+// Auto-refreshes Payroll Confirmation every 4 seconds while it's open,
+// so a "Mark received" from another agent (or an admin's Reset) shows
+// up live. This tab has no text inputs to protect mid-keystroke, so no
+// typing guard is needed — only a check that no modal is open, so a
+// re-render doesn't visually disturb an admin mid-action elsewhere.
+function startPayrollPolling() {
+  stopPayrollPolling();
+  state.payrollPollHandle = setInterval(async () => {
+    const overlay = document.getElementById('modal-overlay');
+    if (overlay && overlay.style.display === 'flex') return;
+    await loadPayrollConfirmations();
+    renderPayrollConfirmation();
+  }, 4000);
+}
+
+function stopPayrollPolling() {
+  if (state.payrollPollHandle) {
+    clearInterval(state.payrollPollHandle);
+    state.payrollPollHandle = null;
+  }
+}
+
+// Auto-refreshes OT Hours Filing every 4 seconds while it's open, so
+// hours logged or confirmed by other agents (and admin changes to
+// filing dates or Total Leads Available) show up live. Skips a cycle
+// while anyone is actively typing into one of its number fields.
+function startOtFilingPolling() {
+  stopOtFilingPolling();
+  state.otFilingPollHandle = setInterval(async () => {
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('priolist-input')) return;
+    await Promise.all([loadOtFilingDates(), loadOtHoursEntries()]);
+    renderOtFiling();
+  }, 4000);
+}
+
+function stopOtFilingPolling() {
+  if (state.otFilingPollHandle) {
+    clearInterval(state.otFilingPollHandle);
+    state.otFilingPollHandle = null;
   }
 }
 
