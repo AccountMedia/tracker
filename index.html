@@ -798,9 +798,13 @@ function dayFractionForEntry(entry) {
 }
 
 function getVLBalance(employee) {
+  // >= (not >): balance_as_of_date marks the day the stored number was
+  // last set, so leave taken ON that same day still needs to be
+  // deducted — otherwise leave requested the same day a balance is
+  // edited would silently not count against it.
   const asOf = employee.balance_as_of_date;
   const used = entriesForEmployee(employee.id)
-    .filter(e => e.leave_date > asOf)
+    .filter(e => e.leave_date >= asOf)
     .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === 'vl')
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
   return round2((employee.vl_balance ?? 0) - used);
@@ -809,7 +813,7 @@ function getVLBalance(employee) {
 function getSLBalance(employee) {
   const asOf = employee.balance_as_of_date;
   const used = entriesForEmployee(employee.id)
-    .filter(e => e.leave_date > asOf)
+    .filter(e => e.leave_date >= asOf)
     .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === 'sl')
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
   return round2((employee.sl_balance ?? 0) - used);
@@ -831,7 +835,9 @@ function renderDashboard() {
   }
 
   const today = isoDate(new Date());
-  const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED);
+  // Excludes LNP/HLNP — Leave Without Pay gets its own dedicated section
+  // below, so it isn't duplicated here under regular paid leave.
+  const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED && e.leave_type !== 'LNP' && e.leave_type !== 'HLNP');
   const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
   // Leave Without Pay, today specifically: anyone whose approved leave
@@ -839,7 +845,7 @@ function renderDashboard() {
   // or it was auto-converted at approval time because their credit pool
   // was exhausted (see planLeaveWithoutPayConversion). The note (if any)
   // explains residual partial credit, e.g. "3h still covered."
-  const lwopToday = todayEntries.filter(e => e.leave_type === 'LNP' || e.leave_type === 'HLNP');
+  const lwopToday = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'));
 
   const now = new Date();
   const payrollYear = now.getFullYear();
