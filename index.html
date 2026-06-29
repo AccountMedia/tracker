@@ -2853,7 +2853,7 @@ function renderOtFiling() {
               <div class="faint" style="font-size:10.5px; margin-top:2px;">Set the combined starting total here.</div>
             </td>
             <td colspan="${dates.length}" style="padding:6px;">
-              <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+              <div style="display:flex; flex-direction:column; align-items:center; justify-content:flex-start; width:140px;">
                 <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" value="${totalLeadsAvailable != null ? totalLeadsAvailable : ''}" placeholder="Total"
                   style="width:120px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
                 ${totalLeadsUpdatedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(totalLeadsUpdatedBy)}</div>` : ''}
@@ -2865,8 +2865,8 @@ function renderOtFiling() {
               Pending Leads Available to Work On
               <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Total Leads Available minus combined leads to validate</div>
             </td>
-            <td colspan="${dates.length}" style="padding:8px; text-align:center; font-size:12.5px; font-weight:600;">
-              ${pendingLeadsAvailable != null ? pendingLeadsAvailable : '—'}
+            <td colspan="${dates.length}" style="padding:8px; font-size:12.5px; font-weight:600;">
+              <div style="width:140px; text-align:center;">${pendingLeadsAvailable != null ? pendingLeadsAvailable : '—'}</div>
             </td>
           </tr>
         </tfoot>
@@ -3022,7 +3022,14 @@ async function saveOtTotalLeadsAvailable(rawValue) {
     total_leads_updated_by: value != null ? state.profile.display_name : null,
     updated_at: new Date().toISOString(),
   }).eq('id', 1);
-  if (error) { showToast('Could not save.', true); return; }
+  if (error) {
+    console.error('saveOtTotalLeadsAvailable failed:', error);
+    const msg = error.message && error.message.toLowerCase().includes('relation')
+      ? 'Could not save — the database is missing a required table. Ask your admin to run the latest setup SQL.'
+      : 'Could not save.';
+    showToast(msg, true);
+    return;
+  }
   await loadOtFilingSettings();
   renderOtFiling();
 }
