@@ -2067,7 +2067,7 @@ function renderPrioList() {
       const totalA = Number(a.entry.md_output) + Number(a.entry.leads);
       const totalB = Number(b.entry.md_output) + Number(b.entry.leads);
       if (totalA !== totalB) return totalA - totalB; // lowest output first
-      return a.entry.rank - b.entry.rank;
+      return b.entry.rank - a.entry.rank; // tied total: higher rank number appears first
     });
     unranked.sort((a, b) => b.entry.rank - a.entry.rank);
 
