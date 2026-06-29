@@ -522,6 +522,7 @@ const state = {
   payrollPeriodMonth: new Date().getMonth() + 1, // 1-12
   priolistEntries: [],    // PrioList rows
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
+  priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
   liVerificationStatus: [], // LinkedIn verification status per employee
   liRestrictionEntries: [], // LI restriction log entries
   liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
@@ -1762,7 +1763,11 @@ function findConfirmation(employeeId, year, month, half) {
 
 function renderPayrollConfirmation() {
   const actionsEl = document.getElementById('payroll-confirmation-actions');
-  actionsEl.innerHTML = '';
+  const admin = isAdmin();
+  actionsEl.innerHTML = admin ? `
+    <button class="btn btn-ghost" id="payroll-download" style="margin-right:8px;">Download report</button>
+    <button class="btn btn-ghost" id="payroll-reset" style="color:var(--coral); border-color:var(--coral-wash);">Reset</button>
+  ` : '';
 
   const el = document.getElementById('payroll-confirmation-content');
   if (!state.employees.length) {
@@ -1770,7 +1775,6 @@ function renderPayrollConfirmation() {
     return;
   }
 
-  const admin = isAdmin();
   const year = state.payrollPeriodYear;
   const month = state.payrollPeriodMonth;
 
@@ -1795,18 +1799,10 @@ function renderPayrollConfirmation() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
-        <div style="display:flex; align-items:center; gap:12px;">
-          <button class="btn btn-ghost btn-sm" id="payroll-prev">←</button>
-          <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
-          <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
-        </div>
-        ${admin ? `
-          <div style="display:flex; gap:8px;">
-            <button class="btn btn-ghost btn-sm" id="payroll-download">Download report</button>
-            <button class="btn btn-ghost btn-sm" id="payroll-reset" style="color:var(--coral); border-color:var(--coral-wash);">Reset</button>
-          </div>
-        ` : ''}
+      <div style="display:flex; justify-content:center; align-items:center; margin-bottom:18px; gap:12px;">
+        <button class="btn btn-ghost btn-sm" id="payroll-prev">←</button>
+        <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
+        <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
       </div>
       <div class="payroll-table">
         <div style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
@@ -2080,17 +2076,26 @@ function renderPrioList() {
 
   const tableRows = orderedRows.map(({ entry, emp }) => {
     const total = round2(Number(entry.md_output) + Number(entry.leads));
-    const statusColor = PRIOLIST_STATUS_COLORS[entry.status] || 'var(--ink-soft)';
     const isMe = emp.id === state.profile.employee_id;
 
-    // The four file-color buttons only matter (and only show) once the
-    // employee is Active or Break — Inactive/blank doesn't need a file.
-    const needsFileChoice = entry.status === 'Active' || entry.status === 'Break';
-    const fileWash = needsFileChoice && entry.file_color ? PRIOLIST_FILE_WASH[entry.file_color] : null;
+    // A file color must be picked before a status can be chosen at all.
+    // Once file_color is set, status unlocks (and stays unlocked even if
+    // the status is later cleared back to blank).
+    const hasFileColor = !!entry.file_color;
+    const statusLabel = entry.status || '—';
+    const statusLocked = !hasFileColor;
+
+    // The trigger button itself takes on the chosen file color as its
+    // background (rather than a small dot), so it's unmistakable even
+    // for similar tones like blue vs. gray.
+    const triggerBg = hasFileColor ? PRIOLIST_FILE_COLORS[entry.file_color] : 'var(--paper-raised)';
+    const triggerTextColor = hasFileColor ? '#FFFFFF' : (entry.status ? PRIOLIST_STATUS_COLORS[entry.status] : 'var(--ink-soft)');
 
     const statusOptionRow = (value, label) => `
-      <div class="status-dropdown-option" data-id="${entry.id}" data-status="${value}"
-        style="padding:7px 10px; cursor:pointer; border-radius:6px; font-size:12.5px; font-weight:600;
+      <div class="status-dropdown-option ${statusLocked ? 'status-dropdown-option-locked' : ''}" data-id="${entry.id}" data-status="${value}"
+        style="padding:7px 10px; border-radius:6px; font-size:12.5px; font-weight:600;
+               cursor:${statusLocked ? 'not-allowed' : 'pointer'};
+               opacity:${statusLocked ? '0.4' : '1'};
                color:${value ? PRIOLIST_STATUS_COLORS[value] : 'var(--ink-soft)'};
                background:${entry.status === value ? 'var(--line-soft)' : 'transparent'};">${label}</div>
     `;
@@ -2098,14 +2103,12 @@ function renderPrioList() {
     const fileButton = (key) => `
       <button type="button" class="file-color-btn" data-id="${entry.id}" data-color="${key}"
         title="${PRIOLIST_FILE_LABELS[key]}"
-        style="width:22px; height:22px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[key]}; cursor:pointer;
+        style="width:24px; height:24px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[key]}; cursor:pointer;
                border:2px solid ${entry.file_color === key ? 'var(--ink)' : 'transparent'};
                box-shadow:0 0 0 1px var(--line-soft); flex-shrink:0;"></button>
     `;
 
-    const triggerDot = needsFileChoice && entry.file_color
-      ? `<span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:${PRIOLIST_FILE_COLORS[entry.file_color]}; margin-right:6px; flex-shrink:0;"></span>`
-      : '';
+    const menuIsOpen = state.priolistOpenMenuId === entry.id;
 
     return `
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
@@ -2118,24 +2121,23 @@ function renderPrioList() {
           ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
           : `<span class="faint">${entry.leads}</span>`}
         <span style="font-weight:600;">${total}</span>
-        <div class="status-filecolor-dropdown" style="position:relative; ${fileWash ? `background:${fileWash}; border-radius:8px; padding:2px;` : ''}">
+        <div class="status-filecolor-dropdown" style="position:relative;">
           <button type="button" class="status-dropdown-trigger" data-id="${entry.id}"
-            style="display:flex; align-items:center; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; font-family:inherit; font-size:12px; color:${statusColor}; font-weight:600;">
-            ${triggerDot}
-            <span>${entry.status || '—'}</span>
-            <span class="faint" style="margin-left:auto; font-size:9px;">▾</span>
+            style="display:flex; align-items:center; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:${triggerBg}; cursor:pointer; font-family:inherit; font-size:12px; color:${triggerTextColor}; font-weight:700;">
+            <span>${statusLabel}</span>
+            <span style="margin-left:auto; font-size:9px; opacity:0.8;">▾</span>
           </button>
           <div class="status-filecolor-menu" data-id="${entry.id}"
-            style="display:none; position:absolute; top:100%; left:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:140px;">
+            style="display:${menuIsOpen ? 'block' : 'none'}; position:absolute; top:100%; left:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:150px;">
+            <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 10px 4px;">1. Pick a file</div>
+            <div style="display:flex; gap:6px; padding:0 6px 8px;">
+              ${fileButton('blue')}${fileButton('yellow')}${fileButton('red')}${fileButton('none')}
+            </div>
+            <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 10px 4px; border-top:1px solid var(--line-soft); padding-top:8px;">2. Pick a status${statusLocked ? ' (choose a file first)' : ''}</div>
             ${statusOptionRow('', '—')}
             ${statusOptionRow('Active', 'Active')}
             ${statusOptionRow('Break', 'Break')}
             ${statusOptionRow('Inactive', 'Inactive')}
-            ${needsFileChoice ? `
-              <div style="border-top:1px solid var(--line-soft); margin:6px 2px 4px; padding-top:8px; display:flex; gap:6px; padding-left:8px;">
-                ${fileButton('blue')}${fileButton('yellow')}${fileButton('red')}${fileButton('none')}
-              </div>
-            ` : ''}
           </div>
         </div>
         <input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
@@ -2174,22 +2176,24 @@ function attachPriolistHandlers() {
   document.querySelectorAll('.status-dropdown-trigger').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const menu = document.querySelector(`.status-filecolor-menu[data-id="${btn.dataset.id}"]`);
-      const isOpen = menu.style.display === 'block';
-      document.querySelectorAll('.status-filecolor-menu').forEach(m => m.style.display = 'none');
-      if (!isOpen) menu.style.display = 'block';
+      state.priolistOpenMenuId = state.priolistOpenMenuId === btn.dataset.id ? null : btn.dataset.id;
+      renderPrioList();
     });
   });
   document.querySelectorAll('.status-dropdown-option').forEach(opt => {
     opt.addEventListener('click', (e) => {
       e.stopPropagation();
-      savePriolistField(opt.dataset.id, 'status', opt.dataset.status);
+      if (opt.classList.contains('status-dropdown-option-locked')) {
+        showToast('Pick a file color first.', true);
+        return;
+      }
+      savePriolistFieldKeepingMenuOpen(opt.dataset.id, 'status', opt.dataset.status);
     });
   });
   document.querySelectorAll('.file-color-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      savePriolistField(btn.dataset.id, 'file_color', btn.dataset.color);
+      savePriolistFieldKeepingMenuOpen(btn.dataset.id, 'file_color', btn.dataset.color);
     });
   });
   closeAllStatusFileColorMenusOnOutsideClick();
@@ -2202,7 +2206,10 @@ function closeAllStatusFileColorMenusOnOutsideClick() {
   if (window._statusFileColorOutsideClickBound) return;
   window._statusFileColorOutsideClickBound = true;
   document.addEventListener('click', () => {
-    document.querySelectorAll('.status-filecolor-menu').forEach(m => m.style.display = 'none');
+    if (state.priolistOpenMenuId !== null && state.currentView === 'priolist') {
+      state.priolistOpenMenuId = null;
+      renderPrioList();
+    }
   });
 }
 
@@ -2236,6 +2243,23 @@ async function savePriolistField(entryId, field, value) {
   const { error } = await sb.from('priolist_entries').update(updates).eq('id', entryId);
   if (error) { showToast('Could not save.', true); return; }
   await loadPriolistEntries();
+  renderPrioList();
+}
+
+// Used by the Status/File dropdown specifically: saves the field, then
+// keeps the menu open unless the entry now has BOTH a status and a file
+// color — only then does the dropdown close on its own.
+async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
+  const updates = {};
+  updates[field] = value;
+  const { error } = await sb.from('priolist_entries').update(updates).eq('id', entryId);
+  if (error) { showToast('Could not save.', true); return; }
+  await loadPriolistEntries();
+
+  const updatedEntry = state.priolistEntries.find(e => e.id === entryId);
+  const bothSet = updatedEntry && updatedEntry.status && updatedEntry.file_color;
+  state.priolistOpenMenuId = bothSet ? null : entryId;
+
   renderPrioList();
 }
 
