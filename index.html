@@ -2060,7 +2060,7 @@ function renderPrioList() {
       if (totalA !== totalB) return totalA - totalB; // lowest output first
       return a.entry.rank - b.entry.rank;
     });
-    unranked.sort((a, b) => a.entry.rank - b.entry.rank);
+    unranked.sort((a, b) => b.entry.rank - a.entry.rank);
 
     orderedRows = [...ranked, ...unranked];
   }
