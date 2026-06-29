@@ -363,7 +363,6 @@
     <nav class="nav">
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
       <a class="nav-item" data-view="leave-tracker"><span class="dot"></span>Leave Tracker</a>
-      <a class="nav-item" data-view="excel-tracker"><span class="dot"></span>Excel-Style Tracker</a>
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
@@ -401,22 +400,15 @@
           <span class="eyebrow">PH Team</span>
           <h1>Leave Tracker</h1>
         </div>
-        <div id="leave-tracker-actions"></div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <select id="leave-tracker-view-select" style="padding:8px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:13px; background:var(--paper-raised); color:var(--ink);">
+            <option value="calendar">Calendar</option>
+            <option value="spreadsheet">Spreadsheet</option>
+          </select>
+          <div id="leave-tracker-actions"></div>
+        </div>
       </div>
       <div id="leave-tracker-content"></div>
-    </section>
-
-    <!-- EXCEL-STYLE TRACKER VIEW -->
-    <section class="view" id="view-excel-tracker">
-      <div class="page-head">
-        <div>
-          <span class="eyebrow">PH Team</span>
-          <h1>Excel-Style Tracker</h1>
-          <p class="lede">The familiar grid layout — always live, no download needed.</p>
-        </div>
-        <div id="excel-tracker-actions"></div>
-      </div>
-      <div id="excel-tracker-content"></div>
     </section>
 
     <!-- PAYROLL CONFIRMATION VIEW -->
@@ -548,6 +540,7 @@ const state = {
   otHoursEntries: [],  // OT hours entries
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
+  leaveTrackerSubView: 'calendar', // 'calendar' or 'spreadsheet' — selected via the dropdown on the Leave Tracker page
   excelTrackerMonth: new Date().getMonth(),
   excelTrackerYear: new Date().getFullYear(),
   currentView: 'dashboard',
@@ -666,7 +659,7 @@ function initNav() {
     openChangePasswordModal();
   });
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker', 'excel-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing'];
+  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
@@ -682,7 +675,6 @@ function switchView(viewName) {
 
   if (viewName === 'dashboard') renderDashboard();
   if (viewName === 'leave-tracker') renderLeaveTracker();
-  if (viewName === 'excel-tracker') renderExcelTracker();
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
   if (viewName === 'priolist') renderPrioList();
   if (viewName === 'li-restriction') renderLiRestriction();
@@ -966,6 +958,21 @@ function dashboardStatCard(label, value, sub, accentCls) {
 // =====================================================================
 
 function renderLeaveTracker() {
+  const subViewSelect = document.getElementById('leave-tracker-view-select');
+  if (subViewSelect) {
+    subViewSelect.value = state.leaveTrackerSubView;
+    subViewSelect.onchange = () => {
+      state.leaveTrackerSubView = subViewSelect.value;
+      renderLeaveTracker();
+    };
+  }
+
+  if (state.leaveTrackerSubView === 'spreadsheet') {
+    document.getElementById('leave-tracker-actions').innerHTML = '';
+    renderExcelTracker();
+    return;
+  }
+
   const actionsEl = document.getElementById('leave-tracker-actions');
   actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
@@ -2147,10 +2154,7 @@ function shiftExcelTrackerMonth(delta) {
 }
 
 function renderExcelTracker() {
-  const actionsEl = document.getElementById('excel-tracker-actions');
-  actionsEl.innerHTML = '';
-
-  const el = document.getElementById('excel-tracker-content');
+  const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
     el.innerHTML = '<div class="loading-row">Loading…</div>';
     return;
