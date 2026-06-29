@@ -506,7 +506,7 @@ const LEAVE_TYPES = {
   HLNP:{ label: 'Half-Day No Pay',  short: 'HLNP',cls: 'el', credit: null, half: true },
 };
 
-const STATUS = { PENDING: 'pending', APPROVED: 'approved', DECLINED: 'declined' };
+const STATUS = { PENDING: 'pending', APPROVED: 'approved', DECLINED: 'declined', CANCELLATION_PENDING: 'cancellation_pending' };
 
 const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const WEEKDAY_LETTERS = ['S','M','T','W','T','F','S'];
@@ -536,7 +536,7 @@ const state = {
   calendarYear: new Date().getFullYear(),
   currentView: 'dashboard',
   creditsEditMode: false, // whether the Leave Credits section is in edit mode
-  pendingPanelShowMine: false, // admin view: toggles the Pending Requests panel to show the admin's own requests instead
+  pendingPanelTab: 'pending', // admin view: 'pending', 'mine', or 'cancellations' — which tab of the Pending Requests panel is active
 };
 
 // =====================================================================
@@ -782,7 +782,11 @@ async function loadLeaveEntries() {
 // =====================================================================
 
 function entriesForEmployee(employeeId) {
-  return state.leaveEntries.filter(e => e.employee_id === employeeId && e.status === STATUS.APPROVED);
+  // Includes cancellation_pending: that leave hasn't actually been
+  // removed yet, only requested for removal, so it should still count
+  // against the employee's balance until an admin approves the
+  // cancellation (at which point the row is deleted outright).
+  return state.leaveEntries.filter(e => e.employee_id === employeeId && (e.status === STATUS.APPROVED || e.status === STATUS.CANCELLATION_PENDING));
 }
 
 // Returns how much of a day a single leave entry counts against credits.
@@ -835,20 +839,24 @@ function renderDashboard() {
   }
 
   const today = isoDate(new Date());
+  // Leave that's still genuinely in effect today — includes
+  // cancellation_pending, since that leave hasn't actually been removed
+  // yet, only requested for removal.
+  const isStillInEffect = (e) => e.status === STATUS.APPROVED || e.status === STATUS.CANCELLATION_PENDING;
 
   // Leave Without Pay, today specifically: anyone whose approved leave
   // for today is LNP/HLNP — whether they requested it as such directly,
   // or it was auto-converted at approval time because their credit pool
   // was exhausted (see planLeaveWithoutPayConversion). The note (if any)
   // explains residual partial credit, e.g. "3h still covered."
-  const lwopToday = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'));
+  const lwopToday = state.leaveEntries.filter(e => e.leave_date === today && isStillInEffect(e) && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'));
   const lwopEmployeeIdsToday = new Set(lwopToday.map(e => e.employee_id));
 
   // Excludes anyone with any LNP/HLNP entry today, even if the same day
   // was split and part of it is genuinely paid leave — that person is
   // already fully represented under the Leave Without Pay section below,
   // so they shouldn't also show here for just the paid sliver of their day.
-  const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && e.status === STATUS.APPROVED && e.leave_type !== 'LNP' && e.leave_type !== 'HLNP' && !lwopEmployeeIdsToday.has(e.employee_id));
+  const todayEntries = state.leaveEntries.filter(e => e.leave_date === today && isStillInEffect(e) && e.leave_type !== 'LNP' && e.leave_type !== 'HLNP' && !lwopEmployeeIdsToday.has(e.employee_id));
 
   const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
@@ -1044,9 +1052,10 @@ function renderLeaveTracker() {
   if (isAdmin()) {
     attachPendingHandlers();
     attachMyRequestsHandlers(); // also needed when the admin has toggled to "My requests"
+    attachCancellationHandlers(); // also needed when the admin has toggled to "Cancellations"
     document.querySelectorAll('.pending-panel-tab').forEach(tab => {
       tab.addEventListener('click', () => {
-        state.pendingPanelShowMine = tab.dataset.tab === 'mine';
+        state.pendingPanelTab = tab.dataset.tab;
         renderLeaveTracker();
       });
     });
@@ -1126,22 +1135,131 @@ function attachMyRequestsHandlers() {
   });
 }
 
+function attachCancellationHandlers() {
+  document.querySelectorAll('.approve-cancellation-btn').forEach(b => {
+    b.addEventListener('click', () => approveCancellation(b.dataset.id));
+  });
+  document.querySelectorAll('.decline-cancellation-btn').forEach(b => {
+    b.addEventListener('click', () => declineCancellation(b.dataset.id));
+  });
+}
+
 async function cancelLeave(id, closeAfter) {
   const entry = state.leaveEntries.find(e => e.id === id);
-  const groupId = entry ? entry.request_group_id : null;
+  if (!entry) return;
+
+  // A still-pending request was never actually granted, so withdrawing
+  // it doesn't need admin approval — it's just deleted outright, same
+  // as before.
+  if (entry.status === STATUS.PENDING) {
+    const groupId = entry.request_group_id;
+    const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
+    const msg = groupCount > 1
+      ? `Withdraw this request? It covers ${groupCount} days and this cannot be undone.`
+      : 'Withdraw this request? This cannot be undone.';
+    if (!confirm(msg)) return;
+
+    const query = sb.from('leave_entries').delete();
+    const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+
+    if (error) { showToast('Could not withdraw the request.', true); return; }
+    showToast(groupCount > 1 ? `Withdrew ${groupCount} days of leave.` : 'Request withdrawn.');
+    if (closeAfter) closeModal();
+    await loadLeaveEntries();
+    renderLeaveTracker();
+    renderDashboard();
+    return;
+  }
+
+  // Already-approved leave now goes through an admin approval step
+  // before it's actually removed — opens a small modal to optionally
+  // collect a note explaining why, rather than cancelling immediately.
+  // (Any day-detail modal currently open gets naturally replaced by
+  // this one, since both share the same single modal overlay.)
+  openCancellationRequestModal(id);
+}
+
+function openCancellationRequestModal(id) {
+  const entry = state.leaveEntries.find(e => e.id === id);
+  if (!entry) return;
+  const groupId = entry.request_group_id;
   const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
 
-  const msg = groupCount > 1
-    ? `Cancel this leave? It covers ${groupCount} days and this cannot be undone.`
-    : 'Cancel this leave? This cannot be undone.';
-  if (!confirm(msg)) return;
+  const formHtml = `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">${groupCount > 1 ? `This covers ${groupCount} days.` : ''} An admin will need to approve this cancellation before the leave is removed from the record.</p>
+    <form id="cancellation-request-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="cancellation-note">Reason for cancelling <span class="faint">(optional)</span></label>
+        <textarea id="cancellation-note" rows="3" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Request cancellation</button>
+    </form>
+  `;
+
+  openModal('Request cancellation', formHtml);
+  document.getElementById('cancellation-request-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const note = document.getElementById('cancellation-note').value.trim();
+    submitCancellationRequest(id, note);
+  });
+}
+
+async function submitCancellationRequest(id, note) {
+  const entry = state.leaveEntries.find(e => e.id === id);
+  if (!entry) return;
+  const groupId = entry.request_group_id;
+  const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
+
+  const fields = { status: STATUS.CANCELLATION_PENDING, cancel_note: note || null };
+  const query = sb.from('leave_entries').update(fields);
+  const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+
+  if (error) { showToast('Could not submit the cancellation request.', true); return; }
+  showToast(groupCount > 1 ? `Cancellation requested for ${groupCount} days — waiting on admin approval.` : 'Cancellation requested — waiting on admin approval.');
+  closeModal();
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
+}
+
+// Admin action: approves a pending cancellation request, permanently
+// deleting the leave entry (or whole multi-day group) from the record.
+async function approveCancellation(id) {
+  if (!isAdmin()) { showToast('Only admins can approve cancellations.', true); return; }
+
+  const entry = state.leaveEntries.find(e => e.id === id);
+  if (!entry) return;
+  const groupId = entry.request_group_id;
+  const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
+
+  if (!confirm(groupCount > 1 ? `Approve this cancellation? ${groupCount} days of leave will be permanently removed.` : 'Approve this cancellation? This leave will be permanently removed.')) return;
 
   const query = sb.from('leave_entries').delete();
   const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
 
-  if (error) { showToast('Could not cancel the leave.', true); return; }
-  showToast(groupCount > 1 ? `Cancelled ${groupCount} days of leave.` : 'Leave cancelled.');
-  if (closeAfter) closeModal();
+  if (error) { showToast('Could not approve the cancellation.', true); return; }
+  showToast(groupCount > 1 ? `Cancellation approved — ${groupCount} days removed.` : 'Cancellation approved — leave removed.');
+  await loadLeaveEntries();
+  renderLeaveTracker();
+  renderDashboard();
+}
+
+// Admin action: declines a pending cancellation request, reverting the
+// leave back to its normal approved state and clearing the note.
+async function declineCancellation(id) {
+  if (!isAdmin()) { showToast('Only admins can decline cancellations.', true); return; }
+
+  const entry = state.leaveEntries.find(e => e.id === id);
+  if (!entry) return;
+  const groupId = entry.request_group_id;
+  const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
+
+  const fields = { status: STATUS.APPROVED, cancel_note: null };
+  const query = sb.from('leave_entries').update(fields);
+  const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+
+  if (error) { showToast('Could not decline the cancellation.', true); return; }
+  showToast(groupCount > 1 ? `Cancellation declined for ${groupCount} days — leave stays approved.` : 'Cancellation declined — leave stays approved.');
   await loadLeaveEntries();
   renderLeaveTracker();
   renderDashboard();
@@ -1194,7 +1312,7 @@ function renderCalendarCard() {
       return;
     }
     const dateIso = isoDate(new Date(year, month, d));
-    const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.APPROVED && !e.request_group_id);
+    const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && (e.status === STATUS.APPROVED || e.status === STATUS.CANCELLATION_PENDING) && !e.request_group_id);
     const pendingCount = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status === STATUS.PENDING && !e.request_group_id).length;
     const isToday = dateIso === todayIso;
     const isWeekend = [0,6].includes(new Date(year, month, d).getDay());
@@ -1368,6 +1486,13 @@ function capitalize(str) {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
+// Turns a raw status value (e.g. 'cancellation_pending') into a readable
+// label ('Cancellation pending') for display in the UI.
+function formatStatusLabel(status) {
+  if (!status) return '';
+  return capitalize(status.replace(/_/g, ' '));
+}
+
 function openDayPanel(dateIso) {
   const dayEntries = state.leaveEntries.filter(e => e.leave_date === dateIso && e.status !== STATUS.DECLINED);
   const admin = isAdmin();
@@ -1392,13 +1517,13 @@ function openDayPanel(dateIso) {
     const canEditDates = e.request_group_id && groupEnd && groupEnd >= today && (admin || isOwner);
     return `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-      <span class="stamp ${e.status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
+      <span class="stamp ${(e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
       <div style="flex:1;">
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSuffix}</div>
         ${canEditDates ? `<span class="edit-dates-link" data-id="${e.id}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px;">Edit dates</span>` : ''}
       </div>
-      <span class="faint" style="font-size:11px; text-transform:capitalize;">${e.status}</span>
+      <span class="faint" style="font-size:11px;">${formatStatusLabel(e.status)}</span>
       ${admin && e.leave_date < today ? `<span class="force-delete-btn" data-id="${e.id}" title="Delete this entry" style="cursor:pointer; color:var(--ink-faint); font-size:13px; margin-left:6px; padding:0 4px; line-height:1;">×</span>` : ''}
       ${admin && e.leave_date >= today && canCancel(e) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${e.id}" style="font-size:11px; padding:4px 10px; margin-left:8px;">Cancel</button>` : ''}
     </div>
@@ -1498,11 +1623,11 @@ async function submitEditDates(e, entry) {
 // ---- Pending panel --------------------------------------------------
 
 function renderPendingPanel() {
-  const showMine = state.pendingPanelShowMine;
+  const activeTab = state.pendingPanelTab;
 
   const tabBtn = (key, label, isActive) => `
     <button type="button" class="pending-panel-tab" data-tab="${key}"
-      style="flex:1; padding:9px 10px; font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer;
+      style="flex:1; padding:9px 8px; font-size:12px; font-weight:700; font-family:inherit; cursor:pointer;
              border:1px solid var(--line); border-bottom:none;
              border-radius:10px 10px 0 0;
              background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
@@ -1512,15 +1637,63 @@ function renderPendingPanel() {
     </button>
   `;
 
+  const cancellationCount = state.leaveEntries.filter(e => e.status === STATUS.CANCELLATION_PENDING && !e.request_group_id).length
+    + new Set(state.leaveEntries.filter(e => e.status === STATUS.CANCELLATION_PENDING && e.request_group_id).map(e => e.request_group_id)).size;
+
   const header = `
     <div style="display:flex; gap:4px; margin:0 -20px; padding:0 20px;">
-      ${tabBtn('pending', 'Pending Requests', !showMine)}
-      ${tabBtn('mine', 'My Requests', showMine)}
+      ${tabBtn('pending', 'Pending', activeTab === 'pending')}
+      ${tabBtn('mine', 'My Requests', activeTab === 'mine')}
+      ${tabBtn('cancellations', `Cancellations${cancellationCount ? ` (${cancellationCount})` : ''}`, activeTab === 'cancellations')}
     </div>
     <div style="border-bottom:1px solid var(--line); margin:0 -20px 14px; padding:0 20px;"></div>
   `;
 
-  if (showMine) {
+  if (activeTab === 'cancellations') {
+    const groups = groupLeaveEntries(state.leaveEntries.filter(e => e.status === STATUS.CANCELLATION_PENDING))
+      .sort((a, b) => a.startDate.localeCompare(b.startDate));
+
+    return `
+      <div class="card" style="padding:20px; display:flex; flex-direction:column;">
+        ${header}
+        ${groups.length ? `
+          <div class="pending-scroll">
+            ${groups.map(g => {
+              const hrs = g.days[0].hours;
+              const cancelNote = g.days[0].cancel_note;
+              return `
+              <div class="pending-card" data-id="${g.firstId}" style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
+                  <div>
+                    <div style="font-weight:600; font-size:13px;">${employeeName(g.employee_id)}</div>
+                    <div class="faint" style="font-size:11.5px; margin-top:2px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : hrs ? ` · ${hrs}h` : ''}</div>
+                  </div>
+                  <span class="stamp ${LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
+                </div>
+                ${cancelNote ? `<div class="muted" style="font-size:12px; margin-top:6px;"><span class="faint">Reason:</span> ${escapeHtml(cancelNote)}</div>` : ''}
+                <div style="display:flex; gap:6px; margin-top:10px;">
+                  <button class="btn btn-sm approve-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center; background:var(--coral); color:#F7F3E8;">Approve Cancellation</button>
+                  <button class="btn btn-ghost btn-sm decline-cancellation-btn" data-id="${g.firstId}" style="flex:1; justify-content:center;">Decline</button>
+                </div>
+              </div>
+            `;
+            }).join('')}
+          </div>
+          <style>
+            .pending-scroll{
+              display:flex; flex-direction:column; gap:10px;
+              flex: 1;
+              min-height: 0;
+              overflow-y:auto;
+              padding-right:4px;
+            }
+          </style>
+        ` : `<p class="muted" style="margin:0; font-size:13px;">No cancellation requests waiting on review.</p>`}
+      </div>
+    `;
+  }
+
+  if (activeTab === 'mine') {
     const myEntries = state.leaveEntries
       .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED);
     const groups = groupLeaveEntries(myEntries)
@@ -1545,10 +1718,10 @@ function renderPendingPanel() {
                     ${g.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(g.note)}</div>` : ''}
                     ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
                   </div>
-                  <span class="stamp ${status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
+                  <span class="stamp ${(status === STATUS.PENDING || status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px;">
-                  <div class="faint" style="font-size:11px; text-transform:capitalize;">${status}</div>
+                  <div class="faint" style="font-size:11px;">${formatStatusLabel(status)}</div>
                   ${canCancel(g.days[0]) ? `<button class="btn btn-ghost btn-sm cancel-leave-btn" data-id="${g.firstId}" style="font-size:11px; padding:4px 10px;">Cancel</button>` : ''}
                 </div>
               </div>
