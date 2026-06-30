@@ -1212,12 +1212,15 @@ function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
   actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
+    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-filter-report" style="margin-right:8px;">Filter report</button>` : ''}
     ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report" style="margin-right:8px;">Download monthly report</button>` : ''}
     <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
   `;
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
   const reportBtn = document.getElementById('btn-download-report');
   if (reportBtn) reportBtn.addEventListener('click', downloadMonthlyReport);
+  const filterReportBtn = document.getElementById('btn-filter-report');
+  if (filterReportBtn) filterReportBtn.addEventListener('click', openFilterReportModal);
 
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
@@ -1645,7 +1648,12 @@ function shiftMonth(delta) {
 
 // ---- Monthly report export -------------------------------------------
 
-function downloadMonthlyReport() {
+// Core report builder, shared by the plain "Download monthly report"
+// button (current calendar month, every leave type) and the new
+// "Filter report" flow (a custom date range and/or a specific set of
+// leave types). Leaving either parameter unset reproduces the exact
+// original default behavior.
+function buildAndOpenLeaveReport({ startDate, endDate, leaveTypes } = {}) {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
   const year = state.calendarYear;
@@ -1653,9 +1661,14 @@ function downloadMonthlyReport() {
   const monthStart = isoDate(new Date(year, month, 1));
   const monthEnd = isoDate(new Date(year, month + 1, 0));
 
+  const rangeStart = startDate || monthStart;
+  const rangeEnd = endDate || monthEnd;
+  const typeFilterActive = Array.isArray(leaveTypes) && leaveTypes.length > 0;
+
   const entries = state.leaveEntries
-    .filter(e => e.leave_date >= monthStart && e.leave_date <= monthEnd)
+    .filter(e => e.leave_date >= rangeStart && e.leave_date <= rangeEnd)
     .filter(e => e.status !== STATUS.DECLINED) // exclude declined/cancelled leave (belt-and-suspenders; these rows are normally deleted outright)
+    .filter(e => !typeFilterActive || leaveTypes.includes(e.leave_type))
     .slice()
     .sort((a, b) => {
       const dateCompare = a.leave_date.localeCompare(b.leave_date);
@@ -1663,9 +1676,16 @@ function downloadMonthlyReport() {
       return employeeName(a.employee_id).localeCompare(employeeName(b.employee_id));
     });
 
+  // Title reflects whether this is the plain default (current month,
+  // every type) or a custom filtered report, so the two are never
+  // confused when opened side by side.
+  const isDefaultRange = rangeStart === monthStart && rangeEnd === monthEnd;
+  const titleRangeLabel = isDefaultRange ? `${MONTH_NAMES[month]} ${year}` : formatDateRange(rangeStart, rangeEnd);
+  const typeLabel = typeFilterActive ? ` — ${leaveTypes.map(t => LEAVE_TYPES[t] ? LEAVE_TYPES[t].short : t).join(', ')}` : '';
+
   const csvRows = [];
 
-  csvRows.push([`Leave Report — ${MONTH_NAMES[month]} ${year}`]);
+  csvRows.push([`Leave Report — ${titleRangeLabel}${typeLabel}`]);
   csvRows.push([]);
 
   csvRows.push(['Date', 'Employee', 'Leave Type', 'Hours', 'Status', 'Note']);
@@ -1681,7 +1701,7 @@ function downloadMonthlyReport() {
       ]);
     });
   } else {
-    csvRows.push(['No leave recorded for this month.']);
+    csvRows.push(['No leave recorded for this range.']);
   }
 
   csvRows.push([]);
@@ -1694,8 +1714,70 @@ function downloadMonthlyReport() {
       csvRows.push([emp.display_name, getVLBalance(emp), getSLBalance(emp)]);
     });
 
-  const filename = `Leave Report - ${MONTH_NAMES[month]} ${year}.csv`;
+  const filenameRangeLabel = isDefaultRange ? `${MONTH_NAMES[month]} ${year}` : `${rangeStart} to ${rangeEnd}`;
+  const filename = `Leave Report - ${filenameRangeLabel}.csv`;
   openReportInNewTab(csvRows, filename);
+}
+
+function downloadMonthlyReport() {
+  buildAndOpenLeaveReport();
+}
+
+// Lets an admin generate a report scoped to a custom date range and/or
+// a specific set of leave types, instead of always defaulting to the
+// current calendar month with every type included. Leaving a field
+// blank/unchecked falls back to the same default "Download monthly
+// report" behaves with for that field.
+function openFilterReportModal() {
+  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
+
+  const year = state.calendarYear;
+  const month = state.calendarMonth;
+  const defaultStart = isoDate(new Date(year, month, 1));
+  const defaultEnd = isoDate(new Date(year, month + 1, 0));
+
+  const typeCheckboxes = Object.entries(LEAVE_TYPES).map(([key, t]) => `
+    <label style="display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:500; cursor:pointer; padding:4px 0;">
+      <input type="checkbox" class="filter-report-type-checkbox" value="${key}" style="width:15px; height:15px; margin:0;">
+      ${t.label} <span class="faint">(${t.short})</span>
+    </label>
+  `).join('');
+
+  const formHtml = `
+    <form id="filter-report-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label for="filter-report-from">From</label>
+          <input type="date" id="filter-report-from" value="${defaultStart}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div style="flex:1;">
+          <label for="filter-report-to">To</label>
+          <input type="date" id="filter-report-to" value="${defaultEnd}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      <p class="faint" style="font-size:11px; margin:-6px 0 0;">Defaults to the current calendar month, same as "Download monthly report."</p>
+      <div class="field">
+        <label>Leave types <span class="faint">(optional — leave all unchecked to include every type)</span></label>
+        <div style="border:1px solid var(--line); border-radius:8px; padding:6px 12px; margin-top:6px;">
+          ${typeCheckboxes}
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Generate report</button>
+    </form>
+  `;
+
+  openModal('Filter report', formHtml);
+  document.getElementById('filter-report-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const startDate = document.getElementById('filter-report-from').value || defaultStart;
+    const endDate = document.getElementById('filter-report-to').value || defaultEnd;
+    if (endDate < startDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
+
+    const checkedTypes = Array.from(document.querySelectorAll('.filter-report-type-checkbox:checked')).map(cb => cb.value);
+
+    closeModal();
+    buildAndOpenLeaveReport({ startDate, endDate, leaveTypes: checkedTypes.length ? checkedTypes : null });
+  });
 }
 
 function csvEscape(value) {
