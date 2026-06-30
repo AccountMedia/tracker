@@ -367,6 +367,7 @@
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
+      <a class="nav-item" data-view="employee-management" id="nav-employee-management" style="display:none;"><span class="dot"></span>Employee Management</a>
       <div class="nav-section-label">Coming soon</div>
       <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
       <a class="nav-item disabled"><span class="dot"></span>Team Funds</a>
@@ -458,6 +459,19 @@
       <div id="ot-filing-content"></div>
     </section>
 
+    <!-- EMPLOYEE MANAGEMENT VIEW -->
+    <section class="view" id="view-employee-management">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">Restricted</span>
+          <h1>Employee Management</h1>
+          <p class="lede">The master employee list — add, remove, and manage account access.</p>
+        </div>
+        <div id="employee-management-actions"></div>
+      </div>
+      <div id="employee-management-content"></div>
+    </section>
+
   </main>
 </div>
 
@@ -534,6 +548,7 @@ const state = {
   payrollPollHandle: null, // setInterval handle for auto-refresh while viewing Payroll Confirmation
   otFilingPollHandle: null, // setInterval handle for auto-refresh while viewing OT Hours Filing
   dashboardPollHandle: null, // setInterval handle for auto-refresh while viewing the Dashboard
+  appUsers: [], // every login account (username/role/employee_id) — only loaded for Employee Management, not needed elsewhere
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -604,8 +619,26 @@ async function verifyPassword(plain, hash) {
   return hex === hash;
 }
 
+// Shared with the change-password flow — produces the exact same kind
+// of hash stored in app_users.password_hash, so a new account created
+// here logs in correctly with the password it was given.
+async function hashPassword(plain) {
+  const enc = new TextEncoder().encode(plain);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 function isAdmin() {
   return !!state.profile && state.profile.role === 'admin';
+}
+
+// Employee Management is intentionally narrower than the general admin
+// role — it's restricted to two specific people by name, regardless of
+// whether someone else also happens to have the 'admin' role for
+// approvals/reports elsewhere in the app.
+const EMPLOYEE_MANAGEMENT_ALLOWED_NAMES = ['Kristina Mutia', 'Jeinna Louise Perez'];
+function canManageEmployees() {
+  return !!state.profile && EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name);
 }
 
 function enterApp() {
@@ -658,12 +691,26 @@ function initNav() {
     e.preventDefault();
     openChangePasswordModal();
   });
+
+  const employeeManagementNavItem = document.getElementById('nav-employee-management');
+  if (employeeManagementNavItem) {
+    employeeManagementNavItem.style.display = canManageEmployees() ? '' : 'none';
+  }
+
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing'];
+  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'employee-management'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
 function switchView(viewName) {
+  // Hard boundary, not just a hidden nav item: even if someone tries to
+  // jump straight to this view (a stale saved session, or manually
+  // calling switchView from the console), access is re-checked here
+  // every time, and silently redirected to the dashboard if denied.
+  if (viewName === 'employee-management' && !canManageEmployees()) {
+    viewName = 'dashboard';
+  }
+
   state.currentView = viewName;
   sessionStorage.setItem('registry_active_view', viewName);
   document.querySelectorAll('.nav-item[data-view]').forEach(item => {
@@ -679,6 +726,7 @@ function switchView(viewName) {
   if (viewName === 'priolist') renderPrioList();
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
+  if (viewName === 'employee-management') renderEmployeeManagement();
 
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
@@ -4298,6 +4346,304 @@ async function removeOtFilingDate(dateId) {
   await loadOtFilingDates();
   openOtManageDatesModal();
   renderOtFiling();
+}
+
+
+// =====================================================================
+// EMPLOYEE MANAGEMENT (restricted to Kristina and Jeinna — see
+// canManageEmployees(). This is the master roster: add/remove
+// employees and manage their login + role, separate from the general
+// 'admin' role used for approvals/reports elsewhere in the app.)
+// =====================================================================
+
+async function loadAppUsers() {
+  const { data, error } = await sb.from('app_users').select('id, username, display_name, role, employee_id');
+  if (error) { showToast('Could not load accounts.', true); return; }
+  state.appUsers = data || [];
+}
+
+function appUserForEmployee(employeeId) {
+  return state.appUsers.find(u => u.employee_id === employeeId);
+}
+
+async function renderEmployeeManagement() {
+  const actionsEl = document.getElementById('employee-management-actions');
+  actionsEl.innerHTML = `<button class="btn btn-primary" id="btn-add-employee">+ Add employee</button>`;
+  document.getElementById('btn-add-employee').addEventListener('click', openAddEmployeeModal);
+
+  const el = document.getElementById('employee-management-content');
+  el.innerHTML = '<div class="loading-row">Loading…</div>';
+
+  await loadAppUsers();
+
+  const rows = state.employees
+    .slice()
+    .sort(byKristinaFirstThenName)
+    .map(emp => {
+      const account = appUserForEmployee(emp.id);
+      const isInactive = emp.active === false;
+      return `
+        <div style="display:grid; grid-template-columns: 1.8fr 1fr 1fr 0.8fr 1.6fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isInactive ? 'opacity:0.5;' : ''}">
+          <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
+          <span class="faint">${account ? escapeHtml(account.username) : '— no login —'}</span>
+          <span class="faint" style="text-transform:capitalize;">${account ? account.role : '—'}</span>
+          <span class="faint">${isInactive ? 'Inactive' : 'Active'}</span>
+          <span style="display:flex; gap:6px; justify-content:flex-end;">
+            ${account ? `<button class="btn btn-ghost btn-sm em-edit-role-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">Edit role</button>` : ''}
+            <button class="btn btn-ghost btn-sm em-toggle-active-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">${isInactive ? 'Reactivate' : 'Deactivate'}</button>
+            <button class="btn btn-ghost btn-sm em-delete-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px; color:var(--coral);">Delete</button>
+          </span>
+        </div>
+      `;
+    }).join('');
+
+  el.innerHTML = `
+    <div class="card" style="padding:22px;">
+      <div style="display:grid; grid-template-columns: 1.8fr 1fr 1fr 0.8fr 1.6fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+        <span>Name</span>
+        <span>Username</span>
+        <span>Role</span>
+        <span>Status</span>
+        <span></span>
+      </div>
+      ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
+    </div>
+  `;
+
+  document.querySelectorAll('.em-edit-role-btn').forEach(b => {
+    b.addEventListener('click', () => openEditRoleModal(b.dataset.empId));
+  });
+  document.querySelectorAll('.em-toggle-active-btn').forEach(b => {
+    b.addEventListener('click', () => toggleEmployeeActive(b.dataset.empId));
+  });
+  document.querySelectorAll('.em-delete-btn').forEach(b => {
+    b.addEventListener('click', () => openDeleteEmployeeModal(b.dataset.empId));
+  });
+}
+
+function openAddEmployeeModal() {
+  const formHtml = `
+    <form id="add-employee-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="ae-name">Full name</label>
+        <input type="text" id="ae-name" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label for="ae-vl">Starting VL balance</label>
+          <input type="number" id="ae-vl" min="0" step="0.5" value="25" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div style="flex:1;">
+          <label for="ae-sl">Starting SL balance</label>
+          <input type="number" id="ae-sl" min="0" step="0.5" value="6" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      <div class="field">
+        <label for="ae-bank">Bank <span class="faint">(optional)</span></label>
+        <input type="text" id="ae-bank" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div style="border-top:1px solid var(--line-soft); padding-top:14px; margin-top:2px;">
+        <p class="faint" style="font-size:11px; margin:0 0 10px;">Login account</p>
+        <div class="field" style="display:flex; gap:10px;">
+          <div style="flex:1;">
+            <label for="ae-username">Username</label>
+            <input type="text" id="ae-username" required autocomplete="off" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          </div>
+          <div style="flex:1;">
+            <label for="ae-password">Password</label>
+            <input type="password" id="ae-password" required minlength="4" autocomplete="new-password" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          </div>
+        </div>
+        <div class="field" style="margin-top:14px;">
+          <label for="ae-role">Role</label>
+          <select id="ae-role" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            <option value="staff" selected>Staff</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+      </div>
+      <div class="login-error" id="ae-error"></div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Add employee</button>
+    </form>
+  `;
+
+  openModal('Add employee', formHtml);
+  document.getElementById('add-employee-form').addEventListener('submit', submitAddEmployee);
+}
+
+async function submitAddEmployee(e) {
+  e.preventDefault();
+  const errorBox = document.getElementById('ae-error');
+  errorBox.style.display = 'none';
+
+  const display_name = document.getElementById('ae-name').value.trim();
+  const vl_balance = parseFloat(document.getElementById('ae-vl').value);
+  const sl_balance = parseFloat(document.getElementById('ae-sl').value);
+  const bank = document.getElementById('ae-bank').value.trim() || null;
+  const username = document.getElementById('ae-username').value.trim().toLowerCase();
+  const password = document.getElementById('ae-password').value;
+  const role = document.getElementById('ae-role').value;
+
+  if (!display_name) { errorBox.textContent = 'Please enter a name.'; errorBox.style.display = 'block'; return; }
+  if (isNaN(vl_balance) || vl_balance < 0 || isNaN(sl_balance) || sl_balance < 0) {
+    errorBox.textContent = 'Enter valid, non-negative starting balances.'; errorBox.style.display = 'block'; return;
+  }
+  if (!username || !password) { errorBox.textContent = 'A username and password are both required.'; errorBox.style.display = 'block'; return; }
+  if (password.length < 4) { errorBox.textContent = 'Password is too short.'; errorBox.style.display = 'block'; return; }
+
+  // Check the username isn't already taken before creating anything.
+  const { data: existing } = await sb.from('app_users').select('id').ilike('username', username).maybeSingle();
+  if (existing) { errorBox.textContent = 'That username is already taken.'; errorBox.style.display = 'block'; return; }
+
+  const { data: newEmployee, error: empError } = await sb.from('employees').insert({
+    display_name,
+    vl_balance,
+    sl_balance,
+    balance_as_of_date: isoDate(new Date()),
+    bank,
+    active: true,
+  }).select().single();
+
+  if (empError || !newEmployee) {
+    errorBox.textContent = 'Could not create the employee record. Please try again.';
+    errorBox.style.display = 'block';
+    return;
+  }
+
+  const password_hash = await hashPassword(password);
+  const { error: userError } = await sb.from('app_users').insert({
+    username,
+    password_hash,
+    display_name,
+    role,
+    employee_id: newEmployee.id,
+  });
+
+  if (userError) {
+    // Roll back the employee row so we don't leave an orphaned record
+    // with no login if the account creation failed.
+    await sb.from('employees').delete().eq('id', newEmployee.id);
+    errorBox.textContent = 'Could not create the login account. The employee record was not saved.';
+    errorBox.style.display = 'block';
+    return;
+  }
+
+  closeModal();
+  showToast(`${display_name} added.`);
+  await loadEmployees();
+  renderEmployeeManagement();
+}
+
+function openEditRoleModal(employeeId) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  const account = appUserForEmployee(employeeId);
+  if (!emp || !account) return;
+
+  const formHtml = `
+    <form id="edit-role-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">Changing ${escapeHtml(emp.display_name)}'s role.</p>
+      <div class="field">
+        <label for="er-role">Role</label>
+        <select id="er-role" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <option value="staff" ${account.role === 'staff' ? 'selected' : ''}>Staff</option>
+          <option value="admin" ${account.role === 'admin' ? 'selected' : ''}>Admin</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save role</button>
+    </form>
+  `;
+
+  openModal('Edit role', formHtml);
+  document.getElementById('edit-role-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const role = document.getElementById('er-role').value;
+    const { error } = await sb.from('app_users').update({ role }).eq('id', account.id);
+    if (error) { showToast('Could not update the role.', true); return; }
+    closeModal();
+    showToast('Role updated.');
+    renderEmployeeManagement();
+  });
+}
+
+async function toggleEmployeeActive(employeeId) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  const goingInactive = emp.active !== false;
+  const msg = goingInactive
+    ? `Deactivate ${emp.display_name}? They'll be hidden from active rosters but their history stays intact.`
+    : `Reactivate ${emp.display_name}?`;
+  if (!confirm(msg)) return;
+
+  const { error } = await sb.from('employees').update({ active: !goingInactive }).eq('id', employeeId);
+  if (error) { showToast('Could not update the employee.', true); return; }
+  showToast(goingInactive ? 'Employee deactivated.' : 'Employee reactivated.');
+  await loadEmployees();
+  renderEmployeeManagement();
+}
+
+// Permanent deletion is destructive and cannot be undone, so this
+// requires typing the employee's exact name to confirm — a plain
+// confirm() dialog is too easy to click through accidentally for
+// something this irreversible.
+function openDeleteEmployeeModal(employeeId) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+
+  const formHtml = `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">This permanently deletes <strong>${escapeHtml(emp.display_name)}</strong> and every record tied to them — leave history, PrioList entries, LI restriction logs, payroll confirmations, OT hours, and their login account. This cannot be undone.</p>
+    <form id="delete-employee-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="de-confirm-name">Type "${escapeHtml(emp.display_name)}" to confirm</label>
+        <input type="text" id="de-confirm-name" autocomplete="off" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn" style="justify-content:center; background:var(--coral); color:#F7F3E8;">Permanently delete</button>
+    </form>
+  `;
+
+  openModal('Delete employee', formHtml);
+  document.getElementById('delete-employee-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const typedName = document.getElementById('de-confirm-name').value.trim();
+    if (typedName !== emp.display_name) {
+      showToast('The name you typed doesn\'t match exactly.', true);
+      return;
+    }
+    await deleteEmployeePermanently(employeeId);
+  });
+}
+
+async function deleteEmployeePermanently(employeeId) {
+  // Delete every table that references this employee, then the
+  // employee row itself, then their login account last (so if
+  // something fails partway through, they at least still have a way
+  // to log in and the admin can retry).
+  const tablesWithEmployeeId = [
+    'leave_entries', 'priolist_entries', 'li_verification_status',
+    'li_restriction_entries', 'ot_hours_entries', 'payroll_confirmations',
+  ];
+
+  for (const table of tablesWithEmployeeId) {
+    const { error } = await sb.from(table).delete().eq('employee_id', employeeId);
+    if (error) {
+      console.error(`Could not delete from ${table}:`, error);
+      showToast(`Could not fully delete this employee's records (failed at ${table}). Please try again.`, true);
+      return;
+    }
+  }
+
+  const { error: empError } = await sb.from('employees').delete().eq('id', employeeId);
+  if (empError) { showToast('Could not delete the employee record.', true); return; }
+
+  const account = appUserForEmployee(employeeId);
+  if (account) {
+    await sb.from('app_users').delete().eq('id', account.id);
+  }
+
+  closeModal();
+  showToast('Employee permanently deleted.');
+  await loadEmployees();
+  renderEmployeeManagement();
+  renderDashboard();
 }
 
 
