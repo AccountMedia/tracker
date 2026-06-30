@@ -1277,13 +1277,13 @@ function renderLeaveTracker() {
 function renderMyRequestsPanel() {
   const myEntries = state.leaveEntries
     .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED);
-  const groups = sortMyRequestGroups(groupLeaveEntries(myEntries)).slice(0, 10);
+  const groups = sortMyRequestGroups(groupLeaveEntries(myEntries));
 
   return `
-    <div class="card" style="padding:20px;">
+    <div class="card" style="padding:20px; display:flex; flex-direction:column;">
       <h3 style="margin:0 0 12px; font-family:var(--font-display); font-size:16px; color:var(--teal);">My recent requests</h3>
       ${groups.length ? `
-        <div style="display:flex; flex-direction:column; gap:10px;">
+        <div class="pending-scroll">
           ${groups.map(g => {
             const status = g.days[0].status;
             const hrs = g.days[0].hours;
