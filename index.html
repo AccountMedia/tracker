@@ -902,26 +902,82 @@ function dayFractionForEntry(entry) {
   return LEAVE_TYPES[entry.leave_type] && LEAVE_TYPES[entry.leave_type].half ? 0.5 : 1;
 }
 
-function getVLBalance(employee) {
-  // >= (not >): balance_as_of_date marks the day the stored number was
-  // last set, so leave taken ON that same day still needs to be
-  // deducted — otherwise leave requested the same day a balance is
-  // edited would silently not count against it.
-  const asOf = employee.balance_as_of_date;
-  const used = entriesForEmployee(employee.id)
-    .filter(e => e.leave_date >= asOf)
-    .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === 'vl')
-    .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
-  return round2((employee.vl_balance ?? 0) - used);
+// =====================================================================
+// FISCAL YEAR (April -> March)
+// =====================================================================
+// Every employee's VL/SL credits run on an April-March cycle, not the
+// calendar year, and each fiscal year tracks its own pool: leave dated
+// in fiscal year 2027 (Apr 2027 - Mar 2028) can never draw down fiscal
+// year 2026's balance, and a future fiscal year that hasn't started
+// yet always has its full, untouched allotment — it can't go negative
+// before it has even begun.
+
+const STANDARD_FISCAL_VL_ALLOTMENT = 25;
+const STANDARD_FISCAL_SL_ALLOTMENT = 6;
+
+// A fiscal year is identified by the calendar year it STARTS in, e.g.
+// "2026" means Apr 1, 2026 - Mar 31, 2027.
+function fiscalYearForDate(dateIso) {
+  const d = new Date(dateIso + 'T00:00:00');
+  const month = d.getMonth(); // 0-indexed: 0=Jan ... 11=Dec
+  const year = d.getFullYear();
+  return month >= 3 ? year : year - 1; // Jan-Mar (0,1,2) belong to the PREVIOUS fiscal year start
 }
 
-function getSLBalance(employee) {
-  const asOf = employee.balance_as_of_date;
+function currentFiscalYear() {
+  return fiscalYearForDate(isoDate(new Date()));
+}
+
+function fiscalYearLabel(fiscalYearStart) {
+  return `FY${fiscalYearStart}-${String((fiscalYearStart + 1) % 100).padStart(2, '0')}`;
+}
+
+// The fiscal year an employee's existing stored balance (vl_balance /
+// sl_balance / balance_as_of_date) belongs to — i.e. the fiscal year
+// that was "current" the last time that snapshot was set. Any leave
+// dated within THIS fiscal year is deducted from that stored number,
+// exactly as the app already did before fiscal-year tracking existed.
+function storedBalanceFiscalYear(employee) {
+  return fiscalYearForDate(employee.balance_as_of_date || isoDate(new Date()));
+}
+
+// Core fiscal-year-aware balance calculation, shared by VL and SL.
+// `fiscalYearStart` defaults to the CURRENT fiscal year (today's) when
+// not given, matching how every existing call site already used these
+// functions (asking "what's their balance right now").
+function fiscalPoolBalance(employee, pool, fiscalYearStart) {
+  const targetFY = fiscalYearStart != null ? fiscalYearStart : currentFiscalYear();
+  const storedFY = storedBalanceFiscalYear(employee);
+  const storedAmount = pool === 'vl' ? (employee.vl_balance ?? 0) : (employee.sl_balance ?? 0);
+  const standardAllotment = pool === 'vl' ? STANDARD_FISCAL_VL_ALLOTMENT : STANDARD_FISCAL_SL_ALLOTMENT;
+
+  // Starting allotment for the requested fiscal year: the legacy stored
+  // number if this IS the fiscal year that snapshot belongs to,
+  // otherwise the standard fixed allotment (every other fiscal year,
+  // past or future, starts fresh at 25 VL / 6 SL).
+  const startingAllotment = targetFY === storedFY ? storedAmount : standardAllotment;
+
+  // balance_as_of_date only matters for excluding leave already baked
+  // into the stored snapshot, and only within that snapshot's own
+  // fiscal year — every other fiscal year has no such snapshot, so all
+  // of that year's own leave counts from scratch.
+  const asOf = targetFY === storedFY ? (employee.balance_as_of_date || '0000-01-01') : '0000-01-01';
+
   const used = entriesForEmployee(employee.id)
+    .filter(e => fiscalYearForDate(e.leave_date) === targetFY)
     .filter(e => e.leave_date >= asOf)
-    .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === 'sl')
+    .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === pool)
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
-  return round2((employee.sl_balance ?? 0) - used);
+
+  return round2(startingAllotment - used);
+}
+
+function getVLBalance(employee, fiscalYearStart) {
+  return fiscalPoolBalance(employee, 'vl', fiscalYearStart);
+}
+
+function getSLBalance(employee, fiscalYearStart) {
+  return fiscalPoolBalance(employee, 'sl', fiscalYearStart);
 }
 
 function round2(n) {
@@ -2066,8 +2122,8 @@ function creditPoolForType(leaveType) {
 
 // Returns the employee's current balance in the given pool ('vl' or
 // 'sl'), using the same live calculation as the Leave Credits card.
-function poolBalance(employee, pool) {
-  return pool === 'vl' ? getVLBalance(employee) : getSLBalance(employee);
+function poolBalance(employee, pool, fiscalYearStart) {
+  return pool === 'vl' ? getVLBalance(employee, fiscalYearStart) : getSLBalance(employee, fiscalYearStart);
 }
 
 // The "no pay" counterpart for a given paid leave type — used when a
@@ -2093,29 +2149,42 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
   const updates = []; // { id, fields }
   const inserts = []; // new row objects (overflow portions)
 
+  // Tracking keys are "fiscalYearStart:pool" (e.g. "2026:vl") rather than
+  // just "vl"/"sl", since rows in the same group could in principle fall
+  // in different fiscal years (a request spanning March 31 into April
+  // 1) — each fiscal year's pool is completely independent and must
+  // never be checked against, or have usage borrowed from, another.
+
   // By the time this runs, groupRows have already been written to the
   // database with status 'approved' — so the live balance computed by
   // getVLBalance/getSLBalance already has THIS group's own hours
   // subtracted from it. We need the balance as it stood immediately
   // BEFORE this group, so we add this group's own (pre-conversion)
-  // hours back in per pool before doing the exhaustion check below.
-  const alreadyCountedAgainstSelf = { vl: 0, sl: 0 };
+  // hours back in per fiscal-year+pool before doing the exhaustion
+  // check below.
+  const alreadyCountedAgainstSelf = {};
   groupRows.forEach(row => {
     const pool = creditPoolForType(row.leave_type);
-    if (pool) alreadyCountedAgainstSelf[pool] = round2(alreadyCountedAgainstSelf[pool] + dayFractionForEntry(row));
+    if (!pool) return;
+    const key = `${fiscalYearForDate(row.leave_date)}:${pool}`;
+    alreadyCountedAgainstSelf[key] = round2((alreadyCountedAgainstSelf[key] || 0) + dayFractionForEntry(row));
   });
 
-  // Track how much of each pool has been "virtually" consumed by rows
-  // earlier in this same group, so a multi-day request that crosses the
-  // exhaustion point partway through is handled day-by-day correctly.
-  const virtualUsed = { vl: 0, sl: 0 };
+  // Track how much of each fiscal-year+pool has been "virtually"
+  // consumed by rows earlier in this same group, so a multi-day request
+  // that crosses the exhaustion point partway through (or crosses a
+  // fiscal year boundary) is handled correctly, day by day.
+  const virtualUsed = {};
 
   groupRows.forEach(row => {
     const pool = creditPoolForType(row.leave_type);
     if (!pool) return; // already LNP/HLNP — nothing to do
 
-    const balanceBeforeGroup = round2(poolBalance(employee, pool) + alreadyCountedAgainstSelf[pool]);
-    const balanceBefore = round2(balanceBeforeGroup - virtualUsed[pool]);
+    const fy = fiscalYearForDate(row.leave_date);
+    const key = `${fy}:${pool}`;
+
+    const balanceBeforeGroup = round2(poolBalance(employee, pool, fy) + (alreadyCountedAgainstSelf[key] || 0));
+    const balanceBefore = round2(balanceBeforeGroup - (virtualUsed[key] || 0));
     const requestedFraction = dayFractionForEntry(row); // in "days" (1 = full day)
     const requestedHours = row.hours != null && row.hours !== '' ? Number(row.hours) : requestedFraction * 8;
 
@@ -2129,7 +2198,7 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
         fields: {
           leave_type: noPayEquivalent(row.leave_type),
           hours: requestedHours,
-          note: appendAutoNote(row.note, 'Auto-marked Leave Without Pay — no remaining credit.'),
+          note: appendAutoNote(row.note, `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} credit.`),
         },
       });
       return; // virtualUsed unchanged: nothing was actually drawn from the pool
@@ -2138,7 +2207,7 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     const availableHours = round2(balanceBefore * 8);
     if (availableHours >= requestedHours) {
       // Fully covered — leave it exactly as requested, just track usage.
-      virtualUsed[pool] = round2(virtualUsed[pool] + requestedHours / 8);
+      virtualUsed[key] = round2((virtualUsed[key] || 0) + requestedHours / 8);
       return;
     }
 
@@ -2147,8 +2216,8 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     // credit was still applied.
     const overflowHours = round2(requestedHours - availableHours);
     const coveredNote = availableHours > 0
-      ? `Auto-split: ${availableHours}h still covered by remaining credit; ${overflowHours}h marked Leave Without Pay.`
-      : 'Auto-marked Leave Without Pay — no remaining credit.';
+      ? `Auto-split: ${availableHours}h still covered by remaining ${fiscalYearLabel(fy)} credit; ${overflowHours}h marked Leave Without Pay.`
+      : `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} credit.`;
 
     if (availableHours > 0) {
       updates.push({
@@ -2178,7 +2247,7 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
       });
     }
 
-    virtualUsed[pool] = round2(virtualUsed[pool] + availableHours / 8);
+    virtualUsed[key] = round2((virtualUsed[key] || 0) + availableHours / 8);
   });
 
   return { updates, inserts };
