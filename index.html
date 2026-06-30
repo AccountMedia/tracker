@@ -1309,6 +1309,15 @@ function renderMyRequestsPanel() {
         </div>
       ` : `<p class="muted" style="margin:0; font-size:13px;">You haven't requested any leave yet.</p>`}
     </div>
+    <style>
+      .pending-scroll{
+        display:flex; flex-direction:column; gap:10px;
+        flex: 1;
+        min-height: 0;
+        overflow-y:auto;
+        padding-right:4px;
+      }
+    </style>
   `;
 }
 
