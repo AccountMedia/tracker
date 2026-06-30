@@ -1477,20 +1477,8 @@ function downloadMonthlyReport() {
       csvRows.push([emp.display_name, getVLBalance(emp), getSLBalance(emp)]);
     });
 
-  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
-  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-
   const filename = `Leave Report - ${MONTH_NAMES[month]} ${year}.csv`;
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-
-  showToast('Report downloaded.');
+  openReportInNewTab(csvRows, filename);
 }
 
 function csvEscape(value) {
@@ -1499,6 +1487,99 @@ function csvEscape(value) {
     return '"' + str.replace(/"/g, '""') + '"';
   }
   return str;
+}
+
+// Renders a report (the same row-array shape every report already
+// builds for CSV export) as a clean, readable HTML page in a brand new
+// browser tab — so it can actually be viewed inline, which a raw .csv
+// file can't be in any browser (they force-download it instead). The
+// page includes its own "Download as CSV" button, built from the exact
+// same row data, for anyone who still wants the file.
+//
+// Row shape conventions (matching what each report already produces):
+//   - A row with exactly one cell is treated as a title/section heading.
+//   - A genuinely empty row ([]) becomes a blank spacer row.
+//   - Any other row is rendered as a normal table row of cells.
+// The very first such single-cell row in the whole report is treated as
+// the page's main title (larger, at the very top); every other
+// single-cell row afterward is a section sub-heading.
+function openReportInNewTab(rows, filename) {
+  const win = window.open('', '_blank');
+  if (!win) {
+    showToast('Could not open a new tab — your browser may have blocked the pop-up.', true);
+    return;
+  }
+
+  let sawMainTitle = false;
+  const bodyHtml = rows.map(row => {
+    if (row.length === 0) {
+      return `<tr class="dl-spacer-row"><td></td></tr>`;
+    }
+    if (row.length === 1) {
+      if (!sawMainTitle) {
+        sawMainTitle = true;
+        return `<tr><td class="dl-main-title">${escapeHtml(String(row[0]))}</td></tr>`;
+      }
+      return `<tr><td class="dl-section-title">${escapeHtml(String(row[0]))}</td></tr>`;
+    }
+    return `<tr>${row.map(cell => `<td>${escapeHtml(String(cell ?? ''))}</td>`).join('')}</tr>`;
+  }).join('');
+
+  // The CSV data itself travels with the page as a JSON string, so the
+  // in-page Download button can build the exact same file the old
+  // direct-download flow produced, without needing a round trip back to
+  // the original tab that opened this one.
+  const csvRowsJson = JSON.stringify(rows).replace(/</g, '\\u003c');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>${escapeHtml(filename)}</title>
+      <style>
+        body{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif; background:#FAF7F1; color:#3A3A38; margin:0; padding:32px 40px 60px; }
+        .dl-toolbar{ display:flex; justify-content:flex-end; margin-bottom:20px; }
+        .dl-toolbar button{ font-family:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:999px; border:1px solid #1F3D3A; background:#1F3D3A; color:#F7F3E8; cursor:pointer; }
+        .dl-toolbar button:hover{ background:#2A4F4B; }
+        table{ border-collapse:collapse; width:100%; background:#FFFFFF; border:1px solid #E4DECF; border-radius:10px; overflow:hidden; }
+        td{ padding:8px 14px; font-size:13px; border-bottom:1px solid #EDE8DA; vertical-align:top; }
+        tr:last-child td{ border-bottom:none; }
+        .dl-main-title{ font-size:20px; font-weight:700; padding:16px 14px 10px; border-bottom:none; color:#1F3D3A; }
+        .dl-section-title{ font-size:14px; font-weight:700; padding:16px 14px 8px; border-bottom:none; color:#1F3D3A; }
+        .dl-spacer-row td{ padding:4px; border-bottom:none; }
+        tr:first-child td, tr:nth-child(2) td{ background:transparent; }
+      </style>
+    </head>
+    <body>
+      <div class="dl-toolbar">
+        <button id="dl-download-btn">Download as CSV</button>
+      </div>
+      <table>${bodyHtml}</table>
+      <script>
+        const ROWS = ${csvRowsJson};
+        function csvEscapeCell(value) {
+          const str = String(value ?? '');
+          if (/[",\\r\\n]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+          return str;
+        }
+        document.getElementById('dl-download-btn').addEventListener('click', () => {
+          const csvContent = ROWS.map(row => row.map(csvEscapeCell).join(',')).join('\\r\\n');
+          const blob = new Blob(['\\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = ${JSON.stringify(filename)};
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        });
+      <\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
 }
 
 function capitalize(str) {
@@ -2412,20 +2493,8 @@ function downloadPayrollReport() {
     ]);
   });
 
-  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
-  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-
   const filename = `Payroll Confirmation - ${monthLabel}.csv`;
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-
-  showToast('Report downloaded.');
+  openReportInNewTab(csvRows, filename);
 }
 
 function formatDateTime(isoString) {
@@ -3107,20 +3176,8 @@ function downloadLiRestrictionReport() {
     csvRows.push(['No restrictions logged for this month.']);
   }
 
-  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
-  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-
   const filename = `LI Restriction Report - ${monthLabel}.csv`;
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-
-  showToast('Report downloaded.');
+  openReportInNewTab(csvRows, filename);
 }
 
 function shiftLiRestrictionDate(deltaDays) {
@@ -3637,20 +3694,8 @@ function downloadOtFilingReport() {
     csvRows.push([formatPrettyDate(d), heads, leads, total != null ? total : '', pending]);
   });
 
-  const csvContent = csvRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
-  const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-
   const filename = `OT Hours Filing Report - ${isoDate(new Date())}.csv`;
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-
-  showToast('Report downloaded.');
+  openReportInNewTab(csvRows, filename);
 }
 
 // Writes a date's total_leads_available without relying on
