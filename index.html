@@ -1186,7 +1186,7 @@ async function cancelLeave(id, closeAfter) {
     showToast(groupCount > 1 ? `Withdrew ${groupCount} days of leave.` : 'Request withdrawn.');
     if (closeAfter) closeModal();
     await loadLeaveEntries();
-    renderLeaveTracker();
+    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
     renderDashboard();
     return;
   }
@@ -1238,7 +1238,7 @@ async function submitCancellationRequest(id, note) {
   showToast(groupCount > 1 ? `Cancellation requested for ${groupCount} days — waiting on admin approval.` : 'Cancellation requested — waiting on admin approval.');
   closeModal();
   await loadLeaveEntries();
-  renderLeaveTracker();
+  renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
 }
 
@@ -1260,7 +1260,7 @@ async function approveCancellation(id) {
   if (error) { showToast('Could not approve the cancellation.', true); return; }
   showToast(groupCount > 1 ? `Cancellation approved — ${groupCount} days removed.` : 'Cancellation approved — leave removed.');
   await loadLeaveEntries();
-  renderLeaveTracker();
+  renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
 }
 
@@ -1281,7 +1281,7 @@ async function declineCancellation(id) {
   if (error) { showToast('Could not decline the cancellation.', true); return; }
   showToast(groupCount > 1 ? `Cancellation declined for ${groupCount} days — leave stays approved.` : 'Cancellation declined — leave stays approved.');
   await loadLeaveEntries();
-  renderLeaveTracker();
+  renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
 }
 
@@ -1307,7 +1307,7 @@ async function forceDeleteLeave(id) {
   showToast(groupCount > 1 ? `Deleted ${groupCount} days of leave.` : 'Entry deleted.');
   closeModal();
   await loadLeaveEntries();
-  renderLeaveTracker();
+  renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
 }
 
@@ -1717,7 +1717,7 @@ async function submitEditDates(e, entry) {
   closeModal();
   showToast('Leave dates updated — sent back for approval.');
   await loadLeaveEntries();
-  renderLeaveTracker();
+  renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
 }
 
@@ -2167,7 +2167,7 @@ async function decideRequest(id, decision) {
     requestsBeingDecided.delete(guardKey);
   }
   await loadLeaveEntries();
-  renderLeaveTracker();
+  renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
 }
 
@@ -2247,7 +2247,7 @@ function attachCreditEditHandlers() {
   if (toggle) {
     toggle.addEventListener('click', () => {
       state.creditsEditMode = !state.creditsEditMode;
-      renderLeaveTracker();
+      renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
     });
   }
   document.querySelectorAll('.save-credit-btn').forEach(btn => {
@@ -2298,7 +2298,7 @@ async function saveCreditEdit(empId) {
 
   showToast('Credit balance updated.');
   await loadEmployees();
-  renderLeaveTracker();
+  renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
 }
 
 // =====================================================================
