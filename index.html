@@ -4707,10 +4707,11 @@ function openDeleteEmployeeModal(employeeId) {
 }
 
 async function deleteEmployeePermanently(employeeId) {
-  // Delete every table that references this employee, then the
-  // employee row itself, then their login account last (so if
-  // something fails partway through, they at least still have a way
-  // to log in and the admin can retry).
+  // Delete order matters here: app_users.employee_id is a foreign key
+  // referencing employees.id, so the login account must be removed
+  // BEFORE the employee row itself, or Postgres rejects the employee
+  // delete with a foreign key violation. Every other table referencing
+  // employee_id is cleared first too, for the same underlying reason.
   const tablesWithEmployeeId = [
     'leave_entries', 'priolist_entries', 'li_verification_status',
     'li_restriction_entries', 'ot_hours_entries', 'payroll_confirmations',
@@ -4720,7 +4721,17 @@ async function deleteEmployeePermanently(employeeId) {
     const { error } = await sb.from(table).delete().eq('employee_id', employeeId);
     if (error) {
       console.error(`Could not delete from ${table}:`, error);
-      showToast(`Could not fully delete this employee's records (failed at ${table}). Please try again.`, true);
+      showToast(`Could not fully delete this employee's records (failed at ${table}): ${error.message || error.code || 'unknown error'}`, true);
+      return;
+    }
+  }
+
+  const account = appUserForEmployee(employeeId);
+  if (account) {
+    const { error: accountError } = await sb.from('app_users').delete().eq('id', account.id);
+    if (accountError) {
+      console.error('Could not delete the login account:', accountError);
+      showToast(`Could not delete the login account: ${accountError.message || accountError.code || 'unknown error'}`, true);
       return;
     }
   }
@@ -4730,11 +4741,6 @@ async function deleteEmployeePermanently(employeeId) {
     console.error('Could not delete the employee record:', empError);
     showToast(`Could not delete the employee record: ${empError.message || empError.code || 'unknown error'}`, true);
     return;
-  }
-
-  const account = appUserForEmployee(employeeId);
-  if (account) {
-    await sb.from('app_users').delete().eq('id', account.id);
   }
 
   closeModal();
