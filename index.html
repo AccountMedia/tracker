@@ -549,6 +549,7 @@ const state = {
   otFilingPollHandle: null, // setInterval handle for auto-refresh while viewing OT Hours Filing
   dashboardPollHandle: null, // setInterval handle for auto-refresh while viewing the Dashboard
   appUsers: [], // every login account (username/role/employee_id) — only loaded for Employee Management, not needed elsewhere
+  employeeManagementOpenMenuId: null, // employee id whose row-actions dropdown is currently open
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -4375,7 +4376,14 @@ async function renderEmployeeManagement() {
   el.innerHTML = '<div class="loading-row">Loading…</div>';
 
   await loadAppUsers();
+  renderEmployeeManagementTable();
+}
 
+// Pure, synchronous re-render of just the employee table — used for
+// menu toggles and after an action completes, so those don't trigger a
+// fresh network fetch or flash the loading state every time.
+function renderEmployeeManagementTable() {
+  const el = document.getElementById('employee-management-content');
   const rows = state.employees
     .slice()
     .sort(byKristinaFirstThenName)
@@ -4386,6 +4394,7 @@ async function renderEmployeeManagement() {
         emp.contact_number ? escapeHtml(emp.contact_number) : null,
         emp.birthday ? formatBirthday(emp.birthday) : null,
       ].filter(Boolean);
+      const menuIsOpen = state.employeeManagementOpenMenuId === emp.id;
       return `
         <div style="display:grid; grid-template-columns: 1.8fr 1fr 1fr 0.8fr 1.6fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isInactive ? 'opacity:0.5;' : ''}">
           <span>
@@ -4395,11 +4404,15 @@ async function renderEmployeeManagement() {
           <span class="faint">${account ? escapeHtml(account.username) : '— no login —'}</span>
           <span class="faint" style="text-transform:capitalize;">${account ? account.role : '—'}</span>
           <span class="faint">${isInactive ? 'Inactive' : 'Active'}</span>
-          <span style="display:flex; gap:6px; justify-content:flex-end;">
-            ${account ? `<button class="btn btn-ghost btn-sm em-edit-role-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">Edit role</button>` : ''}
-            <button class="btn btn-ghost btn-sm em-edit-info-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">Edit info</button>
-            <button class="btn btn-ghost btn-sm em-toggle-active-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">${isInactive ? 'Reactivate' : 'Deactivate'}</button>
-            <button class="btn btn-ghost btn-sm em-delete-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px; color:var(--coral);">Delete</button>
+          <span style="display:flex; justify-content:flex-end; position:relative;">
+            <button type="button" class="btn btn-ghost btn-sm em-menu-trigger" data-emp-id="${emp.id}" style="font-size:14px; padding:4px 12px; letter-spacing:1px;">⋯</button>
+            <div class="em-action-menu" data-emp-id="${emp.id}"
+              style="display:${menuIsOpen ? 'block' : 'none'}; position:absolute; top:100%; right:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:150px;">
+              ${account ? `<div class="em-action-item em-edit-role-btn" data-emp-id="${emp.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Edit role</div>` : ''}
+              <div class="em-action-item em-edit-info-btn" data-emp-id="${emp.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Edit info</div>
+              <div class="em-action-item em-toggle-active-btn" data-emp-id="${emp.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">${isInactive ? 'Reactivate' : 'Deactivate'}</div>
+              <div class="em-action-item em-delete-btn" data-emp-id="${emp.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; color:var(--coral);">Delete</div>
+            </div>
           </span>
         </div>
       `;
@@ -4418,17 +4431,44 @@ async function renderEmployeeManagement() {
     </div>
   `;
 
+  document.querySelectorAll('.em-menu-trigger').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.employeeManagementOpenMenuId = state.employeeManagementOpenMenuId === btn.dataset.empId ? null : btn.dataset.empId;
+      renderEmployeeManagementTable();
+    });
+  });
+  document.querySelectorAll('.em-action-item').forEach(item => {
+    item.addEventListener('mouseenter', () => { item.style.background = 'var(--line-soft)'; });
+    item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
+  });
   document.querySelectorAll('.em-edit-role-btn').forEach(b => {
-    b.addEventListener('click', () => openEditRoleModal(b.dataset.empId));
+    b.addEventListener('click', () => { state.employeeManagementOpenMenuId = null; openEditRoleModal(b.dataset.empId); });
   });
   document.querySelectorAll('.em-edit-info-btn').forEach(b => {
-    b.addEventListener('click', () => openEditInfoModal(b.dataset.empId));
+    b.addEventListener('click', () => { state.employeeManagementOpenMenuId = null; openEditInfoModal(b.dataset.empId); });
   });
   document.querySelectorAll('.em-toggle-active-btn').forEach(b => {
-    b.addEventListener('click', () => toggleEmployeeActive(b.dataset.empId));
+    b.addEventListener('click', () => { state.employeeManagementOpenMenuId = null; toggleEmployeeActive(b.dataset.empId); });
   });
   document.querySelectorAll('.em-delete-btn').forEach(b => {
-    b.addEventListener('click', () => openDeleteEmployeeModal(b.dataset.empId));
+    b.addEventListener('click', () => { state.employeeManagementOpenMenuId = null; openDeleteEmployeeModal(b.dataset.empId); });
+  });
+  closeEmployeeManagementMenuOnOutsideClick();
+}
+
+// Registered once per app lifetime (guarded so re-renders don't stack
+// up duplicate listeners) — closes any open row-actions dropdown on any
+// click outside of it, the same pattern PrioList's Status/File menu
+// already uses.
+function closeEmployeeManagementMenuOnOutsideClick() {
+  if (window._employeeManagementOutsideClickBound) return;
+  window._employeeManagementOutsideClickBound = true;
+  document.addEventListener('click', () => {
+    if (state.employeeManagementOpenMenuId !== null && state.currentView === 'employee-management') {
+      state.employeeManagementOpenMenuId = null;
+      renderEmployeeManagementTable();
+    }
   });
 }
 
@@ -4686,7 +4726,11 @@ async function deleteEmployeePermanently(employeeId) {
   }
 
   const { error: empError } = await sb.from('employees').delete().eq('id', employeeId);
-  if (empError) { showToast('Could not delete the employee record.', true); return; }
+  if (empError) {
+    console.error('Could not delete the employee record:', empError);
+    showToast(`Could not delete the employee record: ${empError.message || empError.code || 'unknown error'}`, true);
+    return;
+  }
 
   const account = appUserForEmployee(employeeId);
   if (account) {
