@@ -2213,11 +2213,25 @@ function openEditDatesModal(entryId) {
   `;
 
   openModal('Edit leave dates', formHtml);
-  document.getElementById('edit-dates-form').addEventListener('submit', (e) => submitEditDates(e, entry));
+  document.getElementById('edit-dates-form').addEventListener('submit', (e) => {
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    submitEditDates(e, entry);
+  });
 }
+
+// Tracks request_group_ids currently mid-resubmission, so a fast
+// double-click on "Save new dates" can't run this twice against the
+// same group — the same guard pattern used for approve/decline.
+const editDatesBeingSubmitted = new Set();
 
 async function submitEditDates(e, entry) {
   e.preventDefault();
+  const guardKey = entry.request_group_id || entry.id;
+  if (editDatesBeingSubmitted.has(guardKey)) return; // already in progress — ignore the repeat click
+  editDatesBeingSubmitted.add(guardKey);
+
+  try {
   const fromDate = document.getElementById('edit-date-from').value;
   const toDate = document.getElementById('edit-date-to').value;
 
@@ -2251,6 +2265,9 @@ async function submitEditDates(e, entry) {
 
   closeModal();
   showToast('Leave dates updated — sent back for approval.');
+  } finally {
+    editDatesBeingSubmitted.delete(guardKey);
+  }
   await loadLeaveEntries();
   renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
