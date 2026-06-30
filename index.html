@@ -704,12 +704,93 @@ function switchView(viewName) {
 
 async function loadAllData() {
   await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
+  await ensureYearEndHolidayBlocks();
   renderDashboard();
   renderLeaveTracker();
   renderPayrollConfirmation();
   renderPrioList();
   renderLiRestriction();
   renderOtFiling();
+}
+
+// Marker used in `requested_by` to identify auto-generated company-wide
+// holiday leave (as opposed to anything a real person submitted), so it
+// can be recognized for display and excluded from the normal
+// cancellation flow.
+const SYSTEM_HOLIDAY_MARKER = 'system:year-end-holiday';
+
+// Ensures every active employee has an approved VL entry for the
+// company-wide year-end shutdown (Dec 25 - Jan 1, weekends skipped) for
+// this year and a comfortable few years ahead, starting with the 2026
+// occurrence (Dec 25, 2026 - Jan 1, 2027). Since both Dec 25-31 and
+// Jan 1 always fall in the same April-March fiscal year, this is always
+// a single fiscal year's worth of VL credit being deducted, never split
+// across two.
+//
+// Runs every time the app loads. It's safe to run repeatedly: it only
+// inserts rows for employee/date combinations that don't already have
+// one, so it never duplicates an existing holiday entry and will
+// automatically backfill anyone added after a given year's block was
+// first generated.
+async function ensureYearEndHolidayBlocks() {
+  const FIRST_YEAR = 2026; // the first December this rule applies to, per instructions
+  const YEARS_AHEAD = 5; // how many future occurrences to keep generated at any time
+
+  const currentYear = new Date().getFullYear();
+  const lastYearToGenerate = Math.max(currentYear, FIRST_YEAR) + YEARS_AHEAD;
+
+  const activeEmployees = state.employees.filter(emp => emp.active !== false);
+  if (!activeEmployees.length) return;
+
+  const existingSystemHolidayDates = new Set(
+    state.leaveEntries
+      .filter(e => e.requested_by === SYSTEM_HOLIDAY_MARKER)
+      .map(e => `${e.employee_id}|${e.leave_date}`)
+  );
+
+  const rowsToInsert = [];
+
+  for (let startYear = FIRST_YEAR; startYear <= lastYearToGenerate; startYear++) {
+    const rangeStart = `${startYear}-12-25`;
+    const rangeEnd = `${startYear + 1}-01-01`;
+    const workdays = datesInRange(rangeStart, rangeEnd, { skipWeekends: true });
+
+    activeEmployees.forEach(emp => {
+      // Each employee's own holiday block gets its own group id (NOT
+      // shared across employees) — request_group_id is meant to tie
+      // together one person's own multi-day stretch, and grouping
+      // unrelated people's leave together would make group-based
+      // actions like cancellation incorrectly affect everyone at once.
+      const groupId = workdays.length > 1 ? (crypto.randomUUID ? crypto.randomUUID() : null) : null;
+      workdays.forEach(d => {
+        const key = `${emp.id}|${d}`;
+        if (existingSystemHolidayDates.has(key)) return; // already generated for this employee/date
+        rowsToInsert.push({
+          employee_id: emp.id,
+          leave_type: 'VL',
+          leave_date: d,
+          note: `Company-wide year-end holiday (${startYear})`,
+          status: STATUS.APPROVED,
+          requested_by: SYSTEM_HOLIDAY_MARKER,
+          request_group_id: groupId,
+          hours: null,
+        });
+      });
+    });
+  }
+
+  if (!rowsToInsert.length) return;
+
+  const { error } = await sb.from('leave_entries').insert(rowsToInsert);
+  if (error) {
+    console.error('Could not generate year-end holiday leave:', error);
+    return;
+  }
+
+  // Reflect the new rows immediately rather than waiting for the next
+  // full reload, since loadAllData already finished loading entries
+  // before this ran.
+  await loadLeaveEntries();
 }
 
 async function loadOtFilingDates() {
@@ -1128,6 +1209,11 @@ function renderMyRequestsPanel() {
 }
 
 function canCancel(entry) {
+  // The company-wide year-end holiday block is fixed company policy,
+  // not a personal request — it isn't cancellable through the normal
+  // staff-facing flow.
+  if (entry.requested_by === SYSTEM_HOLIDAY_MARKER) return false;
+
   if (entry.status === STATUS.PENDING) return true; // a pending request was never taken, so it can always be withdrawn
   if (entry.status !== STATUS.APPROVED) return false;
 
