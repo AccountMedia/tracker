@@ -1653,7 +1653,7 @@ function shiftMonth(delta) {
 // "Filter report" flow (a custom date range and/or a specific set of
 // leave types). Leaving either parameter unset reproduces the exact
 // original default behavior.
-function buildAndOpenLeaveReport({ startDate, endDate, leaveTypes } = {}) {
+function buildAndOpenLeaveReport({ startDate, endDate, typeFilters } = {}) {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
   const year = state.calendarYear;
@@ -1663,12 +1663,30 @@ function buildAndOpenLeaveReport({ startDate, endDate, leaveTypes } = {}) {
 
   const rangeStart = startDate || monthStart;
   const rangeEnd = endDate || monthEnd;
-  const typeFilterActive = Array.isArray(leaveTypes) && leaveTypes.length > 0;
+  const typeFilterActive = Array.isArray(typeFilters) && typeFilters.length > 0;
+
+  // Each selected filter value is one of:
+  //   - a plain type code (e.g. "VL")   -> matches that type, NOT filed hourly
+  //   - a half-day type code (e.g. "VLH") -> matches that half-day type exactly
+  //   - "<base>:hourly" (e.g. "VL:hourly") -> matches that base type, filed
+  //     for a specific number of hours (hourly requests are stored under
+  //     the base type code with the half-day "H" suffix dropped, plus a
+  //     real `hours` value)
+  // A plain full-day code intentionally excludes its own hourly variant,
+  // since the three options are meant to be precise and non-overlapping.
+  function entryMatchesFilter(entry, filterValue) {
+    const isHourly = entry.hours != null && entry.hours !== '';
+    if (filterValue.endsWith(':hourly')) {
+      const base = filterValue.slice(0, -':hourly'.length);
+      return entry.leave_type === base && isHourly;
+    }
+    return entry.leave_type === filterValue && !isHourly;
+  }
 
   const entries = state.leaveEntries
     .filter(e => e.leave_date >= rangeStart && e.leave_date <= rangeEnd)
     .filter(e => e.status !== STATUS.DECLINED) // exclude declined/cancelled leave (belt-and-suspenders; these rows are normally deleted outright)
-    .filter(e => !typeFilterActive || leaveTypes.includes(e.leave_type))
+    .filter(e => !typeFilterActive || typeFilters.some(f => entryMatchesFilter(e, f)))
     .slice()
     .sort((a, b) => {
       const dateCompare = a.leave_date.localeCompare(b.leave_date);
@@ -1681,7 +1699,9 @@ function buildAndOpenLeaveReport({ startDate, endDate, leaveTypes } = {}) {
   // confused when opened side by side.
   const isDefaultRange = rangeStart === monthStart && rangeEnd === monthEnd;
   const titleRangeLabel = isDefaultRange ? `${MONTH_NAMES[month]} ${year}` : formatDateRange(rangeStart, rangeEnd);
-  const typeLabel = typeFilterActive ? ` — ${leaveTypes.map(t => LEAVE_TYPES[t] ? LEAVE_TYPES[t].short : t).join(', ')}` : '';
+  const typeLabel = typeFilterActive
+    ? ` — ${typeFilters.map(f => f.endsWith(':hourly') ? `${f.slice(0, -':hourly'.length)} (Hourly)` : f).join(', ')}`
+    : '';
 
   const csvRows = [];
 
@@ -1736,11 +1756,33 @@ function openFilterReportModal() {
   const defaultStart = isoDate(new Date(year, month, 1));
   const defaultEnd = isoDate(new Date(year, month + 1, 0));
 
-  const typeCheckboxes = Object.entries(LEAVE_TYPES).map(([key, t]) => `
+  // Each base leave type group offers three precise, mutually exclusive
+  // options: the plain full-day type, its half-day variant, and the
+  // hourly variant (same base type, but filed for a specific number of
+  // hours rather than a full or half day — hourly requests are stored
+  // with the base type code and a real `hours` value, with the "H"
+  // half-day suffix dropped, per how the request form submits them).
+  const FILTER_GROUPS = [
+    { base: 'VL', label: 'Vacation Leave', half: 'VLH' },
+    { base: 'SL', label: 'Sick Leave', half: 'SLH' },
+    { base: 'EL', label: 'Emergency Leave', half: 'ELH' },
+    { base: 'LNP', label: 'Leave No Pay', half: 'HLNP' },
+  ];
+
+  const checkboxRow = (value, label) => `
     <label style="display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:500; cursor:pointer; padding:4px 0;">
-      <input type="checkbox" class="filter-report-type-checkbox" value="${key}" style="width:15px; height:15px; margin:0;">
-      ${t.label} <span class="faint">(${t.short})</span>
+      <input type="checkbox" class="filter-report-type-checkbox" value="${value}" style="width:15px; height:15px; margin:0;">
+      ${label}
     </label>
+  `;
+
+  const groupBlocks = FILTER_GROUPS.map(g => `
+    <div style="margin-bottom:10px;">
+      <div class="faint" style="font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px;">${g.label}</div>
+      ${checkboxRow(g.base, `${g.base}`)}
+      ${checkboxRow(g.half, `${g.half}`)}
+      ${checkboxRow(`${g.base}:hourly`, `${g.base} (Hourly)`)}
+    </div>
   `).join('');
 
   const formHtml = `
@@ -1758,8 +1800,12 @@ function openFilterReportModal() {
       <p class="faint" style="font-size:11px; margin:-6px 0 0;">Defaults to the current calendar month, same as "Download monthly report."</p>
       <div class="field">
         <label>Leave types <span class="faint">(optional — leave all unchecked to include every type)</span></label>
-        <div style="border:1px solid var(--line); border-radius:8px; padding:6px 12px; margin-top:6px;">
-          ${typeCheckboxes}
+        <div style="border:1px solid var(--line); border-radius:8px; padding:10px 12px 0; margin-top:6px; max-height:320px; overflow-y:auto;">
+          <label style="display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:700; cursor:pointer; padding:4px 0 10px; border-bottom:1px solid var(--line-soft); margin-bottom:8px;">
+            <input type="checkbox" id="filter-report-select-all" style="width:15px; height:15px; margin:0;">
+            Select all
+          </label>
+          ${groupBlocks}
         </div>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Generate report</button>
@@ -1767,16 +1813,33 @@ function openFilterReportModal() {
   `;
 
   openModal('Filter report', formHtml);
+
+  const selectAllCheckbox = document.getElementById('filter-report-select-all');
+  const typeCheckboxes = Array.from(document.querySelectorAll('.filter-report-type-checkbox'));
+
+  // Checking/unchecking "Select all" sets every individual box to match.
+  selectAllCheckbox.addEventListener('change', () => {
+    typeCheckboxes.forEach(cb => { cb.checked = selectAllCheckbox.checked; });
+  });
+
+  // Checking/unchecking any individual box keeps "Select all" in sync:
+  // checked only when every box is checked, unchecked otherwise.
+  typeCheckboxes.forEach(cb => {
+    cb.addEventListener('change', () => {
+      selectAllCheckbox.checked = typeCheckboxes.every(c => c.checked);
+    });
+  });
+
   document.getElementById('filter-report-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const startDate = document.getElementById('filter-report-from').value || defaultStart;
     const endDate = document.getElementById('filter-report-to').value || defaultEnd;
     if (endDate < startDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
 
-    const checkedTypes = Array.from(document.querySelectorAll('.filter-report-type-checkbox:checked')).map(cb => cb.value);
+    const checkedValues = Array.from(document.querySelectorAll('.filter-report-type-checkbox:checked')).map(cb => cb.value);
 
     closeModal();
-    buildAndOpenLeaveReport({ startDate, endDate, leaveTypes: checkedTypes.length ? checkedTypes : null });
+    buildAndOpenLeaveReport({ startDate, endDate, typeFilters: checkedValues.length ? checkedValues : null });
   });
 }
 
