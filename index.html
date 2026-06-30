@@ -1277,9 +1277,7 @@ function renderLeaveTracker() {
 function renderMyRequestsPanel() {
   const myEntries = state.leaveEntries
     .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED);
-  const groups = groupLeaveEntries(myEntries)
-    .sort((a, b) => b.startDate.localeCompare(a.startDate))
-    .slice(0, 10);
+  const groups = sortMyRequestGroups(groupLeaveEntries(myEntries)).slice(0, 10);
 
   return `
     <div class="card" style="padding:20px;">
@@ -1949,9 +1947,7 @@ function renderPendingPanel() {
   if (showMine) {
     const myEntries = state.leaveEntries
       .filter(e => e.employee_id === state.profile.employee_id && e.status !== STATUS.DECLINED);
-    const groups = groupLeaveEntries(myEntries)
-      .sort((a, b) => b.startDate.localeCompare(a.startDate))
-      .slice(0, 10);
+    const groups = sortMyRequestGroups(groupLeaveEntries(myEntries)).slice(0, 10);
 
     return `
       <div class="card" style="padding:20px; display:flex; flex-direction:column;">
@@ -2054,6 +2050,19 @@ function renderPendingPanel() {
 // request_group_id) into a single summary object. Ungrouped entries become
 // their own single-day group. Used so a week-long request shows as one
 // card instead of five separate ones.
+// Sorts grouped leave requests for "My Requests" style lists: upcoming
+// (today or later) requests first, soonest first — then past requests
+// after, most recently passed first. So as a request's date arrives
+// and passes, it naturally drops out of the upcoming section and
+// reappears at the top of the past section below it, rather than
+// jumping to an arbitrary spot.
+function sortMyRequestGroups(groups) {
+  const today = isoDate(new Date());
+  const upcoming = groups.filter(g => g.startDate >= today).sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const past = groups.filter(g => g.startDate < today).sort((a, b) => b.startDate.localeCompare(a.startDate));
+  return [...upcoming, ...past];
+}
+
 function groupLeaveEntries(entries) {
   const byGroup = new Map();
   const singles = [];
