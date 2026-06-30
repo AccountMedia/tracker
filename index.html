@@ -4382,14 +4382,22 @@ async function renderEmployeeManagement() {
     .map(emp => {
       const account = appUserForEmployee(emp.id);
       const isInactive = emp.active === false;
+      const infoBits = [
+        emp.contact_number ? escapeHtml(emp.contact_number) : null,
+        emp.birthday ? formatBirthday(emp.birthday) : null,
+      ].filter(Boolean);
       return `
         <div style="display:grid; grid-template-columns: 1.8fr 1fr 1fr 0.8fr 1.6fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isInactive ? 'opacity:0.5;' : ''}">
-          <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
+          <span>
+            <span style="font-weight:600; display:block;">${escapeHtml(emp.display_name)}</span>
+            ${infoBits.length ? `<span class="faint" style="font-size:10.5px;">${infoBits.join(' · ')}</span>` : ''}
+          </span>
           <span class="faint">${account ? escapeHtml(account.username) : '— no login —'}</span>
           <span class="faint" style="text-transform:capitalize;">${account ? account.role : '—'}</span>
           <span class="faint">${isInactive ? 'Inactive' : 'Active'}</span>
           <span style="display:flex; gap:6px; justify-content:flex-end;">
             ${account ? `<button class="btn btn-ghost btn-sm em-edit-role-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">Edit role</button>` : ''}
+            <button class="btn btn-ghost btn-sm em-edit-info-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">Edit info</button>
             <button class="btn btn-ghost btn-sm em-toggle-active-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px;">${isInactive ? 'Reactivate' : 'Deactivate'}</button>
             <button class="btn btn-ghost btn-sm em-delete-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 10px; color:var(--coral);">Delete</button>
           </span>
@@ -4412,6 +4420,9 @@ async function renderEmployeeManagement() {
 
   document.querySelectorAll('.em-edit-role-btn').forEach(b => {
     b.addEventListener('click', () => openEditRoleModal(b.dataset.empId));
+  });
+  document.querySelectorAll('.em-edit-info-btn').forEach(b => {
+    b.addEventListener('click', () => openEditInfoModal(b.dataset.empId));
   });
   document.querySelectorAll('.em-toggle-active-btn').forEach(b => {
     b.addEventListener('click', () => toggleEmployeeActive(b.dataset.empId));
@@ -4561,6 +4572,49 @@ function openEditRoleModal(employeeId) {
     if (error) { showToast('Could not update the role.', true); return; }
     closeModal();
     showToast('Role updated.');
+    renderEmployeeManagement();
+  });
+}
+
+// Edits an employee's personal info (contact number, address,
+// birthday) — kept out of the main list to keep that view scannable,
+// surfaced here instead since these fields are looked at far less often
+// than name/role/status.
+function openEditInfoModal(employeeId) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+
+  const formHtml = `
+    <form id="edit-info-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">Editing ${escapeHtml(emp.display_name)}'s personal info.</p>
+      <div class="field">
+        <label for="ei-contact">Contact number</label>
+        <input type="text" id="ei-contact" value="${escapeHtml(emp.contact_number || '')}" placeholder="e.g. 0917 123 4567" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="ei-address">Address</label>
+        <textarea id="ei-address" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(emp.address || '')}</textarea>
+      </div>
+      <div class="field">
+        <label for="ei-birthday">Birthday</label>
+        <input type="date" id="ei-birthday" value="${emp.birthday || ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save info</button>
+    </form>
+  `;
+
+  openModal('Edit info', formHtml);
+  document.getElementById('edit-info-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const contact_number = document.getElementById('ei-contact').value.trim() || null;
+    const address = document.getElementById('ei-address').value.trim() || null;
+    const birthday = document.getElementById('ei-birthday').value || null;
+
+    const { error } = await sb.from('employees').update({ contact_number, address, birthday }).eq('id', employeeId);
+    if (error) { showToast('Could not save this info.', true); return; }
+    closeModal();
+    showToast('Info updated.');
+    await loadEmployees();
     renderEmployeeManagement();
   });
 }
@@ -5084,6 +5138,14 @@ function formatPhDateTime(isoStr) {
 function formatPrettyDate(iso) {
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Birthdays are shown as just "Jan 5" — no weekday (irrelevant for a
+// birthday) and no year (the stored year is just whatever was entered
+// in the date picker, not necessarily meaningful to display).
+function formatBirthday(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function escapeHtml(str) {
