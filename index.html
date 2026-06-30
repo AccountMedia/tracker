@@ -761,6 +761,15 @@ async function loadAllData() {
   renderPrioList();
   renderLiRestriction();
   renderOtFiling();
+  // Employee Management loads its own data (loadAppUsers) separately and
+  // isn't part of the Promise.all above, but if it happens to be the
+  // view active at load time (e.g. a hard refresh while sitting on this
+  // tab), the initial switchView() call already ran against an empty
+  // state.employees before this finished — re-render it now that real
+  // data exists, or it's stuck showing "No employees yet" indefinitely.
+  if (state.currentView === 'employee-management' && canManageEmployees()) {
+    renderEmployeeManagement();
+  }
 }
 
 // Marker used in `requested_by` to identify auto-generated company-wide
@@ -2871,21 +2880,34 @@ function renderPayrollConfirmation() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div style="display:flex; justify-content:flex-start; align-items:center; margin-bottom:18px; gap:12px;">
-        <button class="btn btn-ghost btn-sm" id="payroll-prev">←</button>
-        <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
-        <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
-      </div>
-      <div class="payroll-table">
-        <div style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+      <div class="payroll-sticky-top">
+        <div style="display:flex; justify-content:flex-start; align-items:center; margin-bottom:18px; gap:12px;">
+          <button class="btn btn-ghost btn-sm" id="payroll-prev">←</button>
+          <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
+          <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
+        </div>
+        <div class="payroll-header-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
           <span>Agent</span>
           <span>Bank</span>
           <span>1st Half</span>
           <span>2nd Half</span>
         </div>
+      </div>
+      <div class="payroll-table">
         ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
       </div>
     </div>
+    <style>
+      .payroll-sticky-top{
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--paper-raised);
+        margin: 0 -22px;
+        padding: 22px 22px 0;
+        border-radius: 16px 16px 0 0;
+      }
+    </style>
   `;
 
   document.getElementById('payroll-prev').addEventListener('click', () => shiftPayrollPeriod(-1));
@@ -4074,7 +4096,7 @@ function renderOtFiling() {
           ${dates.map(() => '<col style="width:140px;">').join('')}
         </colgroup>
         <thead>
-          <tr style="border-bottom:2px solid var(--line);">
+          <tr style="border-bottom:2px solid var(--line);" class="ot-filing-header-row">
             <th style="padding:10px; text-align:left; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">Agent</th>
             ${headerCells}
           </tr>
@@ -4111,6 +4133,14 @@ function renderOtFiling() {
         </tfoot>
       </table>
     </div>
+    <style>
+      .ot-filing-header-row th{
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--paper-raised);
+      }
+    </style>
   `;
 
   document.querySelectorAll('.ot-total-leads-input').forEach(input => {
@@ -4452,23 +4482,20 @@ async function renderEmployeeManagement() {
 // fresh network fetch or flash the loading state every time.
 function renderEmployeeManagementTable() {
   const el = document.getElementById('employee-management-content');
+  const GRID_COLUMNS = '1.5fr 1.2fr 0.9fr 1.8fr 0.9fr 0.8fr 0.7fr 1fr';
   const rows = state.employees
     .slice()
     .sort(byKristinaFirstThenName)
     .map(emp => {
       const account = appUserForEmployee(emp.id);
       const isInactive = emp.active === false;
-      const infoBits = [
-        emp.contact_number ? escapeHtml(emp.contact_number) : null,
-        emp.birthday ? formatBirthday(emp.birthday) : null,
-      ].filter(Boolean);
       const menuIsOpen = state.employeeManagementOpenMenuId === emp.id;
       return `
-        <div style="display:grid; grid-template-columns: 1.8fr 1fr 1fr 0.8fr 1.6fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isInactive ? 'opacity:0.5;' : ''}">
-          <span>
-            <span style="font-weight:600; display:block;">${escapeHtml(emp.display_name)}</span>
-            ${infoBits.length ? `<span class="faint" style="font-size:10.5px;">${infoBits.join(' · ')}</span>` : ''}
-          </span>
+        <div style="display:grid; grid-template-columns: ${GRID_COLUMNS}; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isInactive ? 'opacity:0.5;' : ''}">
+          <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
+          <span class="faint">${emp.contact_number ? escapeHtml(emp.contact_number) : '—'}</span>
+          <span class="faint">${emp.birthday ? formatBirthday(emp.birthday) : '—'}</span>
+          <span class="faint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${emp.address ? escapeHtml(emp.address) : ''}">${emp.address ? escapeHtml(emp.address) : '—'}</span>
           <span class="faint">${account ? escapeHtml(account.username) : '— no login —'}</span>
           <span class="faint" style="text-transform:capitalize;">${account ? account.role : '—'}</span>
           <span class="faint">${isInactive ? 'Inactive' : 'Active'}</span>
@@ -4487,16 +4514,34 @@ function renderEmployeeManagementTable() {
     }).join('');
 
   el.innerHTML = `
-    <div class="card" style="padding:22px;">
-      <div style="display:grid; grid-template-columns: 1.8fr 1fr 1fr 0.8fr 1.6fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+    <div class="card" style="padding:22px; overflow-x:auto;">
+      <div class="em-header-row" style="display:grid; grid-template-columns: ${GRID_COLUMNS}; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint); min-width:880px;">
         <span>Name</span>
+        <span>Contact Number</span>
+        <span>Birthday</span>
+        <span>Address</span>
         <span>Username</span>
         <span>Role</span>
         <span>Status</span>
         <span></span>
       </div>
-      ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
+      <div style="min-width:760px;">
+        ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
+      </div>
     </div>
+    <style>
+      .em-header-row{
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--paper-raised);
+        margin: 0 -22px;
+        padding-left: 22px;
+        padding-right: 22px;
+        padding-top: 22px;
+        border-radius: 16px 16px 0 0;
+      }
+    </style>
   `;
 
   document.querySelectorAll('.em-menu-trigger').forEach(btn => {
