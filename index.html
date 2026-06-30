@@ -1175,8 +1175,9 @@ function renderDashboard() {
   const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed).length;
 
   el.innerHTML = `
-    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:18px; margin-bottom:28px;">
+    <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
       ${dashboardStatCard('Out today', todayEntries.length, todayEntries.map(e => employeeName(e.employee_id)).join(', ') || 'No one is out today.', 'vl')}
+      ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl')}
       ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl')}
       ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
     </div>
