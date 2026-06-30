@@ -2944,7 +2944,7 @@ function renderPrioList() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+      <div class="priolist-header-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
         <span>Rank</span>
         <span>Name</span>
         <span>MD Output</span>
@@ -2955,6 +2955,19 @@ function renderPrioList() {
       </div>
       ${tableRows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
     </div>
+    <style>
+      .priolist-header-row{
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--paper-raised);
+        margin: 0 -22px;
+        padding-left: 22px;
+        padding-right: 22px;
+        padding-top: 22px;
+        border-radius: 16px 16px 0 0;
+      }
+    </style>
   `;
 
   attachPriolistHandlers();
