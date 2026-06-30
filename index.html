@@ -642,12 +642,16 @@ function canManageEmployees() {
   return !!state.profile && EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name);
 }
 
-// Team Funds (not built yet) will be restricted to the 'treasurer'
-// role, EXCEPT Kristina and Jeinna always have full access regardless
-// of their actual role — the same named-exception pattern as Employee
-// Management above. Defined now so the permission model is ready and
-// consistent once the feature itself is implemented.
-function canAccessTeamFunds() {
+// Team Funds (not built yet) will be visible to every logged-in
+// employee — viewing isn't restricted. EDITING is restricted to the
+// 'treasurer' role, except Kristina and Jeinna always have edit access
+// regardless of their actual role, same named-exception pattern as
+// Employee Management above. Defined now so the permission model is
+// ready and consistent once the feature itself is implemented.
+function canViewTeamFunds() {
+  return !!state.profile;
+}
+function canEditTeamFunds() {
   if (!state.profile) return false;
   if (EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name)) return true;
   return state.profile.role === 'treasurer';
