@@ -1261,15 +1261,12 @@ function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
   actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
-    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-filter-report" style="margin-right:8px;">Filter report</button>` : ''}
     ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report" style="margin-right:8px;">Download monthly report</button>` : ''}
     <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
   `;
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
   const reportBtn = document.getElementById('btn-download-report');
-  if (reportBtn) reportBtn.addEventListener('click', downloadMonthlyReport);
-  const filterReportBtn = document.getElementById('btn-filter-report');
-  if (filterReportBtn) filterReportBtn.addEventListener('click', openFilterReportModal);
+  if (reportBtn) reportBtn.addEventListener('click', () => buildAndOpenLeaveReport());
 
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
@@ -1702,7 +1699,7 @@ function shiftMonth(delta) {
 // "Filter report" flow (a custom date range and/or a specific set of
 // leave types). Leaving either parameter unset reproduces the exact
 // original default behavior.
-function buildAndOpenLeaveReport({ startDate, endDate, typeFilters } = {}) {
+function buildAndOpenLeaveReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
   const year = state.calendarYear;
@@ -1710,32 +1707,9 @@ function buildAndOpenLeaveReport({ startDate, endDate, typeFilters } = {}) {
   const monthStart = isoDate(new Date(year, month, 1));
   const monthEnd = isoDate(new Date(year, month + 1, 0));
 
-  const rangeStart = startDate || monthStart;
-  const rangeEnd = endDate || monthEnd;
-  const typeFilterActive = Array.isArray(typeFilters) && typeFilters.length > 0;
-
-  // Each selected filter value is one of:
-  //   - a plain type code (e.g. "VL")   -> matches that type, NOT filed hourly
-  //   - a half-day type code (e.g. "VLH") -> matches that half-day type exactly
-  //   - "<base>:hourly" (e.g. "VL:hourly") -> matches that base type, filed
-  //     for a specific number of hours (hourly requests are stored under
-  //     the base type code with the half-day "H" suffix dropped, plus a
-  //     real `hours` value)
-  // A plain full-day code intentionally excludes its own hourly variant,
-  // since the three options are meant to be precise and non-overlapping.
-  function entryMatchesFilter(entry, filterValue) {
-    const isHourly = entry.hours != null && entry.hours !== '';
-    if (filterValue.endsWith(':hourly')) {
-      const base = filterValue.slice(0, -':hourly'.length);
-      return entry.leave_type === base && isHourly;
-    }
-    return entry.leave_type === filterValue && !isHourly;
-  }
-
   const entries = state.leaveEntries
-    .filter(e => e.leave_date >= rangeStart && e.leave_date <= rangeEnd)
+    .filter(e => e.leave_date >= monthStart && e.leave_date <= monthEnd)
     .filter(e => e.status !== STATUS.DECLINED) // exclude declined/cancelled leave (belt-and-suspenders; these rows are normally deleted outright)
-    .filter(e => !typeFilterActive || typeFilters.some(f => entryMatchesFilter(e, f)))
     .slice()
     .sort((a, b) => {
       const dateCompare = a.leave_date.localeCompare(b.leave_date);
@@ -1743,154 +1717,30 @@ function buildAndOpenLeaveReport({ startDate, endDate, typeFilters } = {}) {
       return employeeName(a.employee_id).localeCompare(employeeName(b.employee_id));
     });
 
-  // Title reflects whether this is the plain default (current month,
-  // every type) or a custom filtered report, so the two are never
-  // confused when opened side by side.
-  const isDefaultRange = rangeStart === monthStart && rangeEnd === monthEnd;
-  const titleRangeLabel = isDefaultRange ? `${MONTH_NAMES[month]} ${year}` : formatDateRange(rangeStart, rangeEnd);
-  const typeLabel = typeFilterActive
-    ? ` — ${typeFilters.map(f => f.endsWith(':hourly') ? `${f.slice(0, -':hourly'.length)} (Hourly)` : f).join(', ')}`
-    : '';
+  // Each row carries both a raw value (used for filtering/sorting in
+  // the opened tab) and a display value (what's actually shown), since
+  // some columns differ between the two (e.g. Date is sortable/filterable
+  // as the raw ISO string but displayed as "Mon, Jun 30, 2026").
+  const tableRows = entries.map(e => ({
+    date: e.leave_date,
+    dateDisplay: formatPrettyDate(e.leave_date),
+    employee: employeeName(e.employee_id),
+    leaveType: LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type,
+    hours: e.hours || '',
+    status: capitalize(e.status),
+    note: e.note || '',
+  }));
 
-  const csvRows = [];
-
-  csvRows.push([`Leave Report — ${titleRangeLabel}${typeLabel}`]);
-  csvRows.push([]);
-
-  csvRows.push(['Date', 'Employee', 'Leave Type', 'Hours', 'Status', 'Note']);
-  if (entries.length) {
-    entries.forEach(e => {
-      csvRows.push([
-        formatPrettyDate(e.leave_date),
-        employeeName(e.employee_id),
-        LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type,
-        e.hours || '',
-        capitalize(e.status),
-        e.note || '',
-      ]);
-    });
-  } else {
-    csvRows.push(['No leave recorded for this range.']);
-  }
-
-  csvRows.push([]);
-  csvRows.push([`Remaining Leave Credits (as of ${formatPrettyDate(isoDate(new Date()))})`]);
-  csvRows.push(['Employee', 'VL Remaining', 'SL Remaining']);
-  state.employees
+  const creditRows = state.employees
     .filter(emp => emp.active !== false)
     .sort(byKristinaFirstThenName)
-    .forEach(emp => {
-      csvRows.push([emp.display_name, getVLBalance(emp), getSLBalance(emp)]);
-    });
+    .map(emp => ({ employee: emp.display_name, vl: getVLBalance(emp), sl: getSLBalance(emp) }));
 
-  const filenameRangeLabel = isDefaultRange ? `${MONTH_NAMES[month]} ${year}` : `${rangeStart} to ${rangeEnd}`;
-  const filename = `Leave Report - ${filenameRangeLabel}.csv`;
-  openReportInNewTab(csvRows, filename);
+  const titleLabel = `${MONTH_NAMES[month]} ${year}`;
+  const filename = `Leave Report - ${titleLabel}.csv`;
+  openFilterableLeaveReportTab({ titleLabel, tableRows, creditRows, asOfDate: formatPrettyDate(isoDate(new Date())), filename });
 }
 
-function downloadMonthlyReport() {
-  buildAndOpenLeaveReport();
-}
-
-// Lets an admin generate a report scoped to a custom date range and/or
-// a specific set of leave types, instead of always defaulting to the
-// current calendar month with every type included. Leaving a field
-// blank/unchecked falls back to the same default "Download monthly
-// report" behaves with for that field.
-function openFilterReportModal() {
-  if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
-
-  const year = state.calendarYear;
-  const month = state.calendarMonth;
-  const defaultStart = isoDate(new Date(year, month, 1));
-  const defaultEnd = isoDate(new Date(year, month + 1, 0));
-
-  // Each base leave type group offers three precise, mutually exclusive
-  // options: the plain full-day type, its half-day variant, and the
-  // hourly variant (same base type, but filed for a specific number of
-  // hours rather than a full or half day — hourly requests are stored
-  // with the base type code and a real `hours` value, with the "H"
-  // half-day suffix dropped, per how the request form submits them).
-  const FILTER_GROUPS = [
-    { base: 'VL', label: 'Vacation Leave', half: 'VLH' },
-    { base: 'SL', label: 'Sick Leave', half: 'SLH' },
-    { base: 'EL', label: 'Emergency Leave', half: 'ELH' },
-    { base: 'LNP', label: 'Leave No Pay', half: 'HLNP' },
-  ];
-
-  const checkboxRow = (value, label) => `
-    <label style="display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:500; cursor:pointer; padding:4px 0;">
-      <input type="checkbox" class="filter-report-type-checkbox" value="${value}" style="width:15px; height:15px; margin:0;">
-      ${label}
-    </label>
-  `;
-
-  const groupBlocks = FILTER_GROUPS.map(g => `
-    <div style="margin-bottom:10px;">
-      <div class="faint" style="font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px;">${g.label}</div>
-      ${checkboxRow(g.base, `${g.base}`)}
-      ${checkboxRow(g.half, `${g.half}`)}
-      ${checkboxRow(`${g.base}:hourly`, `${g.base} (Hourly)`)}
-    </div>
-  `).join('');
-
-  const formHtml = `
-    <form id="filter-report-form" style="display:flex; flex-direction:column; gap:14px;">
-      <div class="field" style="display:flex; gap:10px;">
-        <div style="flex:1;">
-          <label for="filter-report-from">From</label>
-          <input type="date" id="filter-report-from" value="${defaultStart}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-        <div style="flex:1;">
-          <label for="filter-report-to">To</label>
-          <input type="date" id="filter-report-to" value="${defaultEnd}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-      </div>
-      <p class="faint" style="font-size:11px; margin:-6px 0 0;">Defaults to the current calendar month, same as "Download monthly report."</p>
-      <div class="field">
-        <label>Leave types <span class="faint">(optional — leave all unchecked to include every type)</span></label>
-        <div style="border:1px solid var(--line); border-radius:8px; padding:10px 12px 0; margin-top:6px; max-height:320px; overflow-y:auto;">
-          <label style="display:flex; align-items:center; gap:7px; font-size:12.5px; font-weight:700; cursor:pointer; padding:4px 0 10px; border-bottom:1px solid var(--line-soft); margin-bottom:8px;">
-            <input type="checkbox" id="filter-report-select-all" style="width:15px; height:15px; margin:0;">
-            Select all
-          </label>
-          ${groupBlocks}
-        </div>
-      </div>
-      <button type="submit" class="btn btn-primary" style="justify-content:center; margin-top:4px;">Generate report</button>
-    </form>
-  `;
-
-  openModal('Filter report', formHtml);
-
-  const selectAllCheckbox = document.getElementById('filter-report-select-all');
-  const typeCheckboxes = Array.from(document.querySelectorAll('.filter-report-type-checkbox'));
-
-  // Checking/unchecking "Select all" sets every individual box to match.
-  selectAllCheckbox.addEventListener('change', () => {
-    typeCheckboxes.forEach(cb => { cb.checked = selectAllCheckbox.checked; });
-  });
-
-  // Checking/unchecking any individual box keeps "Select all" in sync:
-  // checked only when every box is checked, unchecked otherwise.
-  typeCheckboxes.forEach(cb => {
-    cb.addEventListener('change', () => {
-      selectAllCheckbox.checked = typeCheckboxes.every(c => c.checked);
-    });
-  });
-
-  document.getElementById('filter-report-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const startDate = document.getElementById('filter-report-from').value || defaultStart;
-    const endDate = document.getElementById('filter-report-to').value || defaultEnd;
-    if (endDate < startDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
-
-    const checkedValues = Array.from(document.querySelectorAll('.filter-report-type-checkbox:checked')).map(cb => cb.value);
-
-    closeModal();
-    buildAndOpenLeaveReport({ startDate, endDate, typeFilters: checkedValues.length ? checkedValues : null });
-  });
-}
 
 function csvEscape(value) {
   const str = String(value ?? '');
@@ -1986,6 +1836,224 @@ function openReportInNewTab(rows, filename) {
           document.body.removeChild(link);
           URL.revokeObjectURL(url);
         });
+      <\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
+// Opens the Leave Tracker monthly report with REAL interactive filter
+// controls built into the page itself — dropdown filters on Employee,
+// Leave Type, and Status, and a date-range picker for the Date column.
+// All filtering happens client-side in the opened tab via plain JS;
+// nothing calls back into the main app. The "Download as CSV" button
+// always exports exactly what's currently visible after filtering.
+function openFilterableLeaveReportTab({ titleLabel, tableRows, creditRows, asOfDate, filename }) {
+  const win = window.open('', '_blank');
+  if (!win) {
+    showToast('Could not open a new tab — your browser may have blocked the pop-up.', true);
+    return;
+  }
+
+  const employeeOptions = Array.from(new Set(tableRows.map(r => r.employee))).sort();
+  const leaveTypeOptions = Array.from(new Set(tableRows.map(r => r.leaveType))).sort();
+  const statusOptions = Array.from(new Set(tableRows.map(r => r.status))).sort();
+
+  const optionTags = (values) => values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+
+  const dataRowsHtml = tableRows.map((r, i) => `
+    <tr data-row-index="${i}" data-date="${r.date}" data-employee="${escapeHtml(r.employee)}" data-leave-type="${escapeHtml(r.leaveType)}" data-status="${escapeHtml(r.status)}">
+      <td>${escapeHtml(r.dateDisplay)}</td>
+      <td>${escapeHtml(r.employee)}</td>
+      <td>${escapeHtml(r.leaveType)}</td>
+      <td>${escapeHtml(String(r.hours))}</td>
+      <td>${escapeHtml(r.status)}</td>
+      <td>${escapeHtml(r.note)}</td>
+    </tr>
+  `).join('');
+
+  const creditRowsHtml = creditRows.map(r => `
+    <tr><td>${escapeHtml(r.employee)}</td><td>${r.vl}</td><td>${r.sl}</td></tr>
+  `).join('');
+
+  const tableRowsJson = JSON.stringify(tableRows).replace(/</g, '\\u003c');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>${escapeHtml(filename)}</title>
+      <style>
+        body{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, Helvetica, Arial, sans-serif; background:#FAF7F1; color:#3A3A38; margin:0; padding:32px 40px 60px; }
+        h1{ font-size:20px; font-weight:700; color:#1F3D3A; margin:0 0 4px; }
+        h2{ font-size:14px; font-weight:700; color:#1F3D3A; margin:28px 0 8px; }
+        .toolbar{ display:flex; justify-content:flex-end; margin-bottom:16px; }
+        .toolbar button{ font-family:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:999px; border:1px solid #1F3D3A; background:#1F3D3A; color:#F7F3E8; cursor:pointer; }
+        .toolbar button:hover{ background:#2A4F4B; }
+        .filter-bar{ display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; background:#FFFFFF; border:1px solid #E4DECF; border-radius:10px; padding:14px; margin-bottom:16px; }
+        .filter-field{ display:flex; flex-direction:column; gap:4px; }
+        .filter-field label{ font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:#A8A39A; }
+        .filter-field select, .filter-field input{ font-family:inherit; font-size:12.5px; padding:7px 9px; border-radius:6px; border:1px solid #E4DECF; background:#FAF7F1; min-width:140px; }
+        #clear-filters-btn{ font-family:inherit; font-size:12.5px; font-weight:600; padding:8px 14px; border-radius:6px; border:1px solid #E4DECF; background:transparent; color:#6B6862; cursor:pointer; }
+        #clear-filters-btn:hover{ background:#EDE8DA; }
+        #result-count{ font-size:11.5px; color:#A8A39A; margin-bottom:8px; }
+        table{ border-collapse:collapse; width:100%; background:#FFFFFF; border:1px solid #E4DECF; border-radius:10px; overflow:hidden; }
+        th{ text-align:left; padding:8px 14px; font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:#A8A39A; border-bottom:2px solid #E4DECF; }
+        td{ padding:8px 14px; font-size:13px; border-bottom:1px solid #EDE8DA; vertical-align:top; }
+        tr:last-child td{ border-bottom:none; }
+        tr.row-hidden{ display:none; }
+        .credits-table td{ font-size:12.5px; }
+      </style>
+    </head>
+    <body>
+      <h1>Leave Report — ${escapeHtml(titleLabel)}</h1>
+
+      <div class="toolbar">
+        <button id="dl-download-btn">Download as CSV</button>
+      </div>
+
+      <div class="filter-bar">
+        <div class="filter-field">
+          <label>From</label>
+          <input type="date" id="filter-date-from">
+        </div>
+        <div class="filter-field">
+          <label>To</label>
+          <input type="date" id="filter-date-to">
+        </div>
+        <div class="filter-field">
+          <label>Employee</label>
+          <select id="filter-employee">
+            <option value="">All employees</option>
+            ${optionTags(employeeOptions)}
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Leave Type</label>
+          <select id="filter-leave-type">
+            <option value="">All types</option>
+            ${optionTags(leaveTypeOptions)}
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Status</label>
+          <select id="filter-status">
+            <option value="">All statuses</option>
+            ${optionTags(statusOptions)}
+          </select>
+        </div>
+        <button id="clear-filters-btn" type="button">Clear filters</button>
+      </div>
+
+      <div id="result-count"></div>
+
+      <table id="report-table">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Employee</th>
+            <th>Leave Type</th>
+            <th>Hours</th>
+            <th>Status</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody id="report-tbody">
+          ${dataRowsHtml || `<tr><td colspan="6">No leave recorded for this range.</td></tr>`}
+        </tbody>
+      </table>
+
+      <h2>Remaining Leave Credits (as of ${escapeHtml(asOfDate)})</h2>
+      <table class="credits-table">
+        <thead><tr><th>Employee</th><th>VL Remaining</th><th>SL Remaining</th></tr></thead>
+        <tbody>${creditRowsHtml}</tbody>
+      </table>
+
+      <script>
+        const ALL_ROWS = ${tableRowsJson};
+        const totalRowCount = ALL_ROWS.length;
+
+        function csvEscapeCell(value) {
+          const str = String(value ?? '');
+          if (/[",\\r\\n]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+          return str;
+        }
+
+        function currentFilters() {
+          return {
+            dateFrom: document.getElementById('filter-date-from').value,
+            dateTo: document.getElementById('filter-date-to').value,
+            employee: document.getElementById('filter-employee').value,
+            leaveType: document.getElementById('filter-leave-type').value,
+            status: document.getElementById('filter-status').value,
+          };
+        }
+
+        function rowMatches(tr, f) {
+          if (f.dateFrom && tr.dataset.date < f.dateFrom) return false;
+          if (f.dateTo && tr.dataset.date > f.dateTo) return false;
+          if (f.employee && tr.dataset.employee !== f.employee) return false;
+          if (f.leaveType && tr.dataset.leaveType !== f.leaveType) return false;
+          if (f.status && tr.dataset.status !== f.status) return false;
+          return true;
+        }
+
+        function applyFilters() {
+          const f = currentFilters();
+          const rows = Array.from(document.querySelectorAll('#report-tbody tr[data-row-index]'));
+          let visibleCount = 0;
+          rows.forEach(tr => {
+            const matches = rowMatches(tr, f);
+            tr.classList.toggle('row-hidden', !matches);
+            if (matches) visibleCount++;
+          });
+          const countLabel = document.getElementById('result-count');
+          const anyFilterActive = f.dateFrom || f.dateTo || f.employee || f.leaveType || f.status;
+          countLabel.textContent = anyFilterActive
+            ? \`Showing \${visibleCount} of \${totalRowCount} entries\`
+            : \`Showing all \${totalRowCount} entries\`;
+        }
+
+        ['filter-date-from', 'filter-date-to', 'filter-employee', 'filter-leave-type', 'filter-status'].forEach(id => {
+          document.getElementById(id).addEventListener('change', applyFilters);
+        });
+
+        document.getElementById('clear-filters-btn').addEventListener('click', () => {
+          document.getElementById('filter-date-from').value = '';
+          document.getElementById('filter-date-to').value = '';
+          document.getElementById('filter-employee').value = '';
+          document.getElementById('filter-leave-type').value = '';
+          document.getElementById('filter-status').value = '';
+          applyFilters();
+        });
+
+        document.getElementById('dl-download-btn').addEventListener('click', () => {
+          const f = currentFilters();
+          const visibleRows = ALL_ROWS.filter((row, i) => {
+            const tr = document.querySelector('#report-tbody tr[data-row-index="' + i + '"]');
+            return tr && !tr.classList.contains('row-hidden');
+          });
+          const csvRows = [
+            [${JSON.stringify(`Leave Report — ${titleLabel}`)}],
+            [],
+            ['Date', 'Employee', 'Leave Type', 'Hours', 'Status', 'Note'],
+            ...visibleRows.map(r => [r.dateDisplay, r.employee, r.leaveType, r.hours, r.status, r.note]),
+          ];
+          const csvContent = csvRows.map(row => row.map(csvEscapeCell).join(',')).join('\\r\\n');
+          const blob = new Blob(['\\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = ${JSON.stringify(filename)};
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+        });
+
+        applyFilters();
       <\/script>
     </body>
     </html>
