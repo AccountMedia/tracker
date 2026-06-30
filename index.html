@@ -1288,7 +1288,7 @@ function renderMyRequestsPanel() {
             const status = g.days[0].status;
             const hrs = g.days[0].hours;
             const today = isoDate(new Date());
-            const canEditDates = g.days.length > 1 && g.endDate >= today;
+            const canEditDates = canEditDatesForGroup(g, today);
             return `
             <div style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
@@ -1310,6 +1310,15 @@ function renderMyRequestsPanel() {
       ` : `<p class="muted" style="margin:0; font-size:13px;">You haven't requested any leave yet.</p>`}
     </div>
   `;
+}
+
+// Whether a multi-day group's dates can be edited at all. The
+// company-wide year-end holiday is fixed company policy with dates set
+// by the system, not a personal request — its dates can never be
+// edited, regardless of who's looking at it or when.
+function canEditDatesForGroup(group, today) {
+  if (group.days[0].requested_by === SYSTEM_HOLIDAY_MARKER) return false;
+  return group.days.length > 1 && group.endDate >= today;
 }
 
 function canCancel(entry) {
@@ -1813,7 +1822,7 @@ function openDayPanel(dateIso) {
       groupSuffix = ` · ${e.hours}h`;
     }
     const isOwner = e.employee_id === state.profile.employee_id;
-    const canEditDates = e.request_group_id && groupEnd && groupEnd >= today && (admin || isOwner);
+    const canEditDates = e.requested_by !== SYSTEM_HOLIDAY_MARKER && e.request_group_id && groupEnd && groupEnd >= today && (admin || isOwner);
     return `
     <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
       <span class="stamp ${(e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}</span>
@@ -1958,7 +1967,7 @@ function renderPendingPanel() {
               const status = g.days[0].status;
               const hrs = g.days[0].hours;
               const today = isoDate(new Date());
-              const canEditDates = g.days.length > 1 && g.endDate >= today;
+              const canEditDates = canEditDatesForGroup(g, today);
               return `
               <div style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
@@ -2056,10 +2065,24 @@ function renderPendingPanel() {
 // and passes, it naturally drops out of the upcoming section and
 // reappears at the top of the past section below it, rather than
 // jumping to an arbitrary spot.
+// The auto-generated company-wide holiday is created several fiscal
+// years ahead of time (so the credit math always has something to
+// check against early), but it shouldn't be VISIBLE to staff that far
+// in advance — a future year's holiday only becomes visible once that
+// fiscal year has actually started. Used to filter staff-facing lists
+// like "My Recent Requests"; the underlying data and credit deductions
+// are unaffected either way.
+function isHolidayBlockCurrentlyVisible(group) {
+  if (group.days[0].requested_by !== SYSTEM_HOLIDAY_MARKER) return true; // not a holiday block — always visible
+  const holidayFiscalYear = fiscalYearForDate(group.startDate);
+  return holidayFiscalYear <= currentFiscalYear();
+}
+
 function sortMyRequestGroups(groups) {
+  const visible = groups.filter(isHolidayBlockCurrentlyVisible);
   const today = isoDate(new Date());
-  const upcoming = groups.filter(g => g.startDate >= today).sort((a, b) => a.startDate.localeCompare(b.startDate));
-  const past = groups.filter(g => g.startDate < today).sort((a, b) => b.startDate.localeCompare(a.startDate));
+  const upcoming = visible.filter(g => g.startDate >= today).sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const past = visible.filter(g => g.startDate < today).sort((a, b) => b.startDate.localeCompare(a.startDate));
   return [...upcoming, ...past];
 }
 
