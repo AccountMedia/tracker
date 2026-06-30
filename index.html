@@ -1126,6 +1126,19 @@ function renderDashboard() {
 
   const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING);
 
+  // Birthdays today: pulled straight from the same employees data that
+  // powers Employee Management — compares month and day only, since the
+  // stored birthday's year is just whatever was originally entered, not
+  // meaningful for "is today their birthday."
+  const todayDate = new Date();
+  const todayMonth = todayDate.getMonth();
+  const todayDay = todayDate.getDate();
+  const birthdaysToday = state.employees.filter(emp => {
+    if (!emp.birthday || emp.active === false) return false;
+    const bday = new Date(emp.birthday + 'T00:00:00');
+    return bday.getMonth() === todayMonth && bday.getDate() === todayDay;
+  });
+
   const now = new Date();
   const payrollYear = now.getFullYear();
   const payrollMonth = now.getMonth() + 1;
@@ -1241,6 +1254,22 @@ function renderDashboard() {
               <span class="stamp el">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
               <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
               <span class="faint" style="margin-left:auto; font-size:12px; text-align:right; max-width:60%;">${escapeHtml(e.note || '')}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    ` : ''}
+
+    ${birthdaysToday.length ? `
+      <div class="card" style="padding:22px; margin-top:18px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">🎂 Birthdays today</h3>
+          <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:10px;">
+          ${birthdaysToday.map(emp => `
+            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+              <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
             </div>
           `).join('')}
         </div>
@@ -3469,7 +3498,7 @@ function startOtFilingPolling() {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return;
     await Promise.all([loadOtFilingDates(), loadOtHoursEntries()]);
-    renderPreservingScroll(['.ot-filing-scroll'], renderOtFiling);
+    renderOtFiling();
   }, 4000);
 }
 
@@ -4088,7 +4117,7 @@ function renderOtFiling() {
   }).join('');
 
   el.innerHTML = `
-    <div class="card ot-filing-scroll" style="padding:22px; overflow-x:auto;">
+    <div class="card" style="padding:22px;">
       <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm" to confirm the number is accurate or correct it to your actual hours.</p>
       <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
@@ -4098,42 +4127,49 @@ function renderOtFiling() {
         <thead>
           <tr style="border-bottom:2px solid var(--line);" class="ot-filing-header-row">
             <th style="padding:10px; text-align:left; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">Agent</th>
-            ${headerCells}
-          </tr>
-        </thead>
-        <tbody>
-          ${bodyRows}
-        </tbody>
-        <tfoot>
-          <tr style="background:var(--amber-wash); border-top:2px solid var(--line);">
-            <td style="padding:8px 10px; font-weight:700; font-size:12px;"># of Heads working</td>
-            ${headsRow}
-          </tr>
-          <tr style="background:var(--amber-wash);">
-            <td style="padding:8px 10px; font-weight:700; font-size:12px;">
-              # of Leads to Validate
-              <span class="faint" style="font-weight:500; font-size:11px;">(total: ${totalLeadsToValidate})</span>
-            </td>
-            ${leadsRow}
-          </tr>
-          <tr style="border-top:2px solid var(--line);">
-            <td style="padding:8px 10px;">
-              <div style="font-weight:700; font-size:12px;">Total Leads Available</div>
-              <div class="faint" style="font-size:10.5px; margin-top:2px;">Set the starting total for each date.</div>
-            </td>
-            ${totalLeadsRow}
-          </tr>
-          <tr>
-            <td style="padding:8px 10px; font-weight:700; font-size:12px;">
-              Pending Leads Available to Work On
-              <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Each date's own total minus its leads to validate</div>
-            </td>
-            ${pendingRow}
-          </tr>
-        </tfoot>
+              ${headerCells}
+            </tr>
+          </thead>
+          <tbody>
+            ${bodyRows}
+          </tbody>
+          <tfoot>
+            <tr style="background:var(--amber-wash); border-top:2px solid var(--line);">
+              <td style="padding:8px 10px; font-weight:700; font-size:12px;"># of Heads working</td>
+              ${headsRow}
+            </tr>
+            <tr style="background:var(--amber-wash);">
+              <td style="padding:8px 10px; font-weight:700; font-size:12px;">
+                # of Leads to Validate
+                <span class="faint" style="font-weight:500; font-size:11px;">(total: ${totalLeadsToValidate})</span>
+              </td>
+              ${leadsRow}
+            </tr>
+            <tr style="border-top:2px solid var(--line);">
+              <td style="padding:8px 10px;">
+                <div style="font-weight:700; font-size:12px;">Total Leads Available</div>
+                <div class="faint" style="font-size:10.5px; margin-top:2px;">Set the starting total for each date.</div>
+              </td>
+              ${totalLeadsRow}
+            </tr>
+            <tr>
+              <td style="padding:8px 10px; font-weight:700; font-size:12px;">
+                Pending Leads Available to Work On
+                <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Each date's own total minus its leads to validate</div>
+              </td>
+              ${pendingRow}
+            </tr>
+          </tfoot>
       </table>
     </div>
     <style>
+      /* The card itself has no overflow set, so the page stays the
+         thing genuinely scrolling — sticky positioning needs that to
+         work; any ancestor with its own overflow (even just
+         overflow-x) would silently break it by becoming its own
+         non-scrolling-but-still-clipping context instead. Visually
+         matches Employee Management's card, same underlying reason
+         its header sticks correctly too. */
       .ot-filing-header-row th{
         position: sticky;
         top: 0;
@@ -4514,8 +4550,8 @@ function renderEmployeeManagementTable() {
     }).join('');
 
   el.innerHTML = `
-    <div class="card" style="padding:22px; overflow-x:auto;">
-      <div class="em-header-row" style="display:grid; grid-template-columns: ${GRID_COLUMNS}; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint); min-width:880px;">
+    <div class="card" style="padding:22px;">
+      <div class="em-header-row" style="display:grid; grid-template-columns: ${GRID_COLUMNS}; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
         <span>Name</span>
         <span>Contact Number</span>
         <span>Birthday</span>
@@ -4525,11 +4561,17 @@ function renderEmployeeManagementTable() {
         <span>Status</span>
         <span></span>
       </div>
-      <div style="min-width:760px;">
-        ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
-      </div>
+      ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
     </div>
     <style>
+      /* No horizontal-scroll wrapper here on purpose: any ancestor with
+         its own overflow (even just overflow-x) silently becomes a new
+         clipping/scroll context for BOTH axes, which breaks
+         "position: sticky; top: 0" against the page — exactly what
+         happened the first two times this was attempted. Columns are
+         narrow enough to fit without needing horizontal scroll, so the
+         card stays a plain, page-flowing element, same as PrioList's
+         already-working header. */
       .em-header-row{
         position: sticky;
         top: 0;
