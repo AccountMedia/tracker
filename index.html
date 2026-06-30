@@ -642,6 +642,17 @@ function canManageEmployees() {
   return !!state.profile && EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name);
 }
 
+// Team Funds (not built yet) will be restricted to the 'treasurer'
+// role, EXCEPT Kristina and Jeinna always have full access regardless
+// of their actual role — the same named-exception pattern as Employee
+// Management above. Defined now so the permission model is ready and
+// consistent once the feature itself is implemented.
+function canAccessTeamFunds() {
+  if (!state.profile) return false;
+  if (EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name)) return true;
+  return state.profile.role === 'treasurer';
+}
+
 function enterApp() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
@@ -1384,6 +1395,7 @@ function renderMyRequestsPanel() {
                 <div>
                   <div class="faint" style="font-size:11.5px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : hrs ? ` · ${hrs}h` : ''}</div>
                   ${g.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(g.note)}</div>` : ''}
+                  ${g.days[0].approved_by ? `<div class="faint" style="font-size:11px; margin-top:2px;">Approved by ${escapeHtml(g.days[0].approved_by)}</div>` : ''}
                   ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
                 </div>
                 <span class="stamp ${status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
@@ -2140,6 +2152,7 @@ function openDayPanel(dateIso) {
       <div style="flex:1;">
         <div style="font-weight:600;">${employeeName(e.employee_id)}</div>
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSuffix}</div>
+        ${e.approved_by ? `<div class="faint" style="font-size:11px; margin-top:2px;">Approved by ${escapeHtml(e.approved_by)}</div>` : ''}
         ${canEditDates ? `<span class="edit-dates-link" data-id="${e.id}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px;">Edit dates</span>` : ''}
       </div>
       <span class="faint" style="font-size:11px;">${formatStatusLabel(e.status)}</span>
@@ -2285,6 +2298,7 @@ function renderPendingPanel() {
                   <div>
                     <div class="faint" style="font-size:11.5px;">${formatDateRange(g.startDate, g.endDate)}${g.days.length > 1 ? ` · ${g.days.length} days` : hrs ? ` · ${hrs}h` : ''}</div>
                     ${g.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(g.note)}</div>` : ''}
+                    ${g.days[0].approved_by ? `<div class="faint" style="font-size:11px; margin-top:2px;">Approved by ${escapeHtml(g.days[0].approved_by)}</div>` : ''}
                     ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
                   </div>
                   <span class="stamp ${(status === STATUS.PENDING || status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
@@ -2686,7 +2700,7 @@ async function decideRequest(id, decision) {
     if (error) { showToast('Could not update the request.', true); return; }
     showToast(`${label} declined.`);
   } else {
-    const query = sb.from('leave_entries').update({ status: decision });
+    const query = sb.from('leave_entries').update({ status: decision, approved_by: state.profile.display_name });
     const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
     if (error) { showToast('Could not update the request.', true); return; }
 
@@ -4666,6 +4680,7 @@ function openAddEmployeeModal() {
           <select id="ae-role" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
             <option value="staff" selected>Staff</option>
             <option value="admin">Admin</option>
+            <option value="treasurer">Treasurer</option>
           </select>
         </div>
       </div>
@@ -4754,6 +4769,7 @@ function openEditRoleModal(employeeId) {
         <select id="er-role" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
           <option value="staff" ${account.role === 'staff' ? 'selected' : ''}>Staff</option>
           <option value="admin" ${account.role === 'admin' ? 'selected' : ''}>Admin</option>
+          <option value="treasurer" ${account.role === 'treasurer' ? 'selected' : ''}>Treasurer</option>
         </select>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Save role</button>
