@@ -4734,8 +4734,20 @@ function appUserForEmployee(employeeId) {
 
 async function renderEmployeeManagement() {
   const actionsEl = document.getElementById('employee-management-actions');
-  actionsEl.innerHTML = `<button class="btn btn-primary" id="btn-add-employee">+ Add employee</button>`;
+  actionsEl.innerHTML = `
+    <div style="display:flex; align-items:center; gap:10px; width:100%;">
+      <div style="position:relative; flex:1; max-width:280px;">
+        <input type="text" id="em-search" placeholder="Search employees…" autocomplete="off"
+          style="width:100%; padding:9px 12px 9px 34px; border-radius:999px; border:1px solid var(--line); background:var(--paper); font-family:inherit; font-size:13px; box-sizing:border-box;">
+        <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--ink-faint); font-size:13px; pointer-events:none;">⌕</span>
+      </div>
+      <button class="btn btn-primary" id="btn-add-employee">+ Add employee</button>
+    </div>
+  `;
   document.getElementById('btn-add-employee').addEventListener('click', openAddEmployeeModal);
+  document.getElementById('em-search').addEventListener('input', () => {
+    renderEmployeeManagementTable();
+  });
 
   const el = document.getElementById('employee-management-content');
   el.innerHTML = '<div class="loading-row">Loading…</div>';
@@ -4750,9 +4762,14 @@ async function renderEmployeeManagement() {
 function renderEmployeeManagementTable() {
   const el = document.getElementById('employee-management-content');
   const GRID_COLUMNS = '1.5fr 1.2fr 0.9fr 1.8fr 0.9fr 0.8fr 0.7fr 1fr';
+
+  const searchInput = document.getElementById('em-search');
+  const searchTerm = searchInput ? searchInput.value.trim().toLowerCase() : '';
+
   const rows = state.employees
     .slice()
     .sort(byKristinaFirstThenName)
+    .filter(emp => !searchTerm || emp.display_name.toLowerCase().includes(searchTerm))
     .map(emp => {
       const account = appUserForEmployee(emp.id);
       const isInactive = emp.active === false;
@@ -4850,11 +4867,16 @@ function renderEmployeeManagementTable() {
 function closeEmployeeManagementMenuOnOutsideClick() {
   if (window._employeeManagementOutsideClickBound) return;
   window._employeeManagementOutsideClickBound = true;
-  document.addEventListener('click', () => {
-    if (state.employeeManagementOpenMenuId !== null && state.currentView === 'employee-management') {
-      state.employeeManagementOpenMenuId = null;
-      renderEmployeeManagementTable();
-    }
+  document.addEventListener('click', (e) => {
+    if (state.employeeManagementOpenMenuId === null) return;
+    if (state.currentView !== 'employee-management') return;
+    // Close only if the click was outside any open menu and its trigger
+    const openMenu = document.querySelector(`.em-action-menu[data-emp-id="${state.employeeManagementOpenMenuId}"]`);
+    const trigger = document.querySelector(`.em-menu-trigger[data-emp-id="${state.employeeManagementOpenMenuId}"]`);
+    if (openMenu && openMenu.contains(e.target)) return; // click was inside the menu
+    if (trigger && trigger.contains(e.target)) return; // click was on the trigger (handled by its own listener)
+    state.employeeManagementOpenMenuId = null;
+    renderEmployeeManagementTable();
   });
 }
 
