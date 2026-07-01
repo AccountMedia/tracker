@@ -1896,8 +1896,22 @@ async function openTodaysApprovalsReport() {
 
   const hasRows = allRows.length > 0;
 
-  const tableRowsHtml = allRows.map(r => `
-    <tr>
+  // Distinct values for filter dropdowns — derived from actual data
+  const employeeOptions  = [...new Set(allRows.map(r => r.employee).filter(Boolean))].sort();
+  const leaveTypeOptions = [...new Set(allRows.map(r => r.leaveType).filter(Boolean))].sort();
+  const actionOptions    = [...new Set(allRows.map(r => r.type === 'cancellation' ? 'Cancellation approved' : 'Approved'))].sort();
+  const approvedByOptions = [...new Set(allRows.map(r => r.approvedBy).filter(Boolean))].sort();
+
+  const optTags = (values) => values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+
+  // Each row carries data-* attributes for every filterable dimension so
+  // the in-page JS can filter without re-parsing the cell text
+  const tableRowsHtml = allRows.map((r, i) => `
+    <tr data-row-index="${i}"
+        data-employee="${escapeHtml(r.employee)}"
+        data-leave-type="${escapeHtml(r.leaveType)}"
+        data-action="${r.type === 'cancellation' ? 'Cancellation approved' : 'Approved'}"
+        data-approved-by="${escapeHtml(r.approvedBy)}">
       <td>${escapeHtml(r.decidedAt)}</td>
       <td>${escapeHtml(r.employee)}</td>
       <td>${escapeHtml(r.dateRange)}${r.days > 1 ? ` <span style="color:#A8A39A;font-size:11px;">(${r.days} days)</span>` : ''}</td>
@@ -1910,16 +1924,7 @@ async function openTodaysApprovalsReport() {
     </tr>
   `).join('');
 
-  // CSV data for the download button
-  const csvRowsJson = JSON.stringify([
-    [`Today's Approvals — ${todayLabel}`],
-    [],
-    ['Time', 'Employee', 'Date Range', 'Leave Type', 'Action', 'Approved By', 'Note'],
-    ...allRows.map(r => [r.decidedAt, r.employee, r.dateRange, r.leaveType,
-      r.type === 'cancellation' ? 'Cancellation approved' : 'Approved',
-      r.approvedBy, r.note]),
-  ]).replace(/</g, '\\u003c');
-
+  const allRowsJson = JSON.stringify(allRows).replace(/</g, '\\u003c');
   const filename = `Todays Approvals - ${today}.csv`;
 
   win.document.write(`
@@ -1935,19 +1940,63 @@ async function openTodaysApprovalsReport() {
         .toolbar{ display:flex; justify-content:flex-end; margin-bottom:16px; }
         .toolbar button{ font-family:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:999px; border:1px solid #1F3D3A; background:#1F3D3A; color:#F7F3E8; cursor:pointer; }
         .toolbar button:hover{ background:#2A4F4B; }
+        .filter-bar{ display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; background:#FFFFFF; border:1px solid #E4DECF; border-radius:10px; padding:14px; margin-bottom:16px; }
+        .filter-field{ display:flex; flex-direction:column; gap:4px; }
+        .filter-field label{ font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:#A8A39A; }
+        .filter-field select{ font-family:inherit; font-size:12.5px; padding:7px 9px; border-radius:6px; border:1px solid #E4DECF; background:#FAF7F1; min-width:160px; }
+        #clear-filters-btn{ font-family:inherit; font-size:12.5px; font-weight:600; padding:8px 14px; border-radius:6px; border:1px solid #E4DECF; background:transparent; color:#6B6862; cursor:pointer; }
+        #clear-filters-btn:hover{ background:#EDE8DA; }
+        #result-count{ font-size:11.5px; color:#A8A39A; margin-bottom:8px; }
         table{ border-collapse:collapse; width:100%; background:#fff; border:1px solid #E4DECF; border-radius:10px; overflow:hidden; }
         th{ text-align:left; padding:8px 14px; font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:#A8A39A; border-bottom:2px solid #E4DECF; }
         td{ padding:8px 14px; font-size:13px; border-bottom:1px solid #EDE8DA; vertical-align:top; }
         tr:last-child td{ border-bottom:none; }
+        .row-hidden{ display:none; }
         .empty{ text-align:center; color:#A8A39A; padding:40px; font-size:14px; }
       </style>
     </head>
     <body>
       <h1>Today's Approvals</h1>
       <p class="sub">${escapeHtml(todayLabel)}</p>
+
       <div class="toolbar">
         <button id="dl-btn">Download as CSV</button>
       </div>
+
+      <div class="filter-bar">
+        <div class="filter-field">
+          <label>Employee</label>
+          <select id="filter-employee">
+            <option value="">All employees</option>
+            ${optTags(employeeOptions)}
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Leave Type</label>
+          <select id="filter-leave-type">
+            <option value="">All types</option>
+            ${optTags(leaveTypeOptions)}
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Action</label>
+          <select id="filter-action">
+            <option value="">All actions</option>
+            ${optTags(actionOptions)}
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Approved By</label>
+          <select id="filter-approved-by">
+            <option value="">All</option>
+            ${optTags(approvedByOptions)}
+          </select>
+        </div>
+        <button id="clear-filters-btn">Clear filters</button>
+      </div>
+
+      <div id="result-count"></div>
+
       <table>
         <thead>
           <tr>
@@ -1960,22 +2009,91 @@ async function openTodaysApprovalsReport() {
             <th>Note</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody id="report-tbody">
           ${hasRows ? tableRowsHtml : '<tr><td colspan="7" class="empty">No approvals recorded today.</td></tr>'}
         </tbody>
       </table>
+
       <script>
-        const ROWS = ${csvRowsJson};
-        function esc(v){ const s=String(v??''); return /[",\\r\\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
-        document.getElementById('dl-btn').addEventListener('click',()=>{
-          const csv=ROWS.map(r=>r.map(esc).join(',')).join('\\r\\n');
-          const blob=new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
-          const url=URL.createObjectURL(blob);
-          const a=document.createElement('a');
-          a.href=url; a.download=${JSON.stringify(filename)};
+        const ALL_ROWS = ${allRowsJson};
+        const totalCount = ALL_ROWS.length;
+
+        function currentFilters() {
+          return {
+            employee:   document.getElementById('filter-employee').value,
+            leaveType:  document.getElementById('filter-leave-type').value,
+            action:     document.getElementById('filter-action').value,
+            approvedBy: document.getElementById('filter-approved-by').value,
+          };
+        }
+
+        function rowMatches(tr, f) {
+          if (f.employee   && tr.dataset.employee   !== f.employee)   return false;
+          if (f.leaveType  && tr.dataset.leaveType  !== f.leaveType)  return false;
+          if (f.action     && tr.dataset.action     !== f.action)     return false;
+          if (f.approvedBy && tr.dataset.approvedBy !== f.approvedBy) return false;
+          return true;
+        }
+
+        function applyFilters() {
+          const f = currentFilters();
+          const rows = Array.from(document.querySelectorAll('#report-tbody tr[data-row-index]'));
+          let visibleCount = 0;
+          rows.forEach(tr => {
+            const matches = rowMatches(tr, f);
+            tr.classList.toggle('row-hidden', !matches);
+            if (matches) visibleCount++;
+          });
+          const anyActive = f.employee || f.leaveType || f.action || f.approvedBy;
+          document.getElementById('result-count').textContent = anyActive
+            ? \`Showing \${visibleCount} of \${totalCount} entries\`
+            : \`Showing all \${totalCount} entries\`;
+        }
+
+        ['filter-employee','filter-leave-type','filter-action','filter-approved-by'].forEach(id => {
+          document.getElementById(id).addEventListener('change', applyFilters);
+        });
+
+        document.getElementById('clear-filters-btn').addEventListener('click', () => {
+          ['filter-employee','filter-leave-type','filter-action','filter-approved-by'].forEach(id => {
+            document.getElementById(id).value = '';
+          });
+          applyFilters();
+        });
+
+        function esc(v) {
+          const s = String(v ?? '');
+          if (/[",\\r\\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+          return s;
+        }
+
+        document.getElementById('dl-btn').addEventListener('click', () => {
+          const f = currentFilters();
+          const visibleRows = ALL_ROWS.filter((_, i) => {
+            const tr = document.querySelector('#report-tbody tr[data-row-index="' + i + '"]');
+            return tr && !tr.classList.contains('row-hidden');
+          });
+          const csvRows = [
+            ["Today's Approvals \u2014 ${escapeHtml(todayLabel)}"],
+            [],
+            ['Time', 'Employee', 'Date Range', 'Leave Type', 'Action', 'Approved By', 'Note'],
+            ...visibleRows.map(r => [
+              r.decidedAt, r.employee, r.dateRange, r.leaveType,
+              r.type === 'cancellation' ? 'Cancellation approved' : 'Approved',
+              r.approvedBy, r.note,
+            ]),
+          ];
+          const csv = csvRows.map(row => row.map(esc).join(',')).join('\\r\\n');
+          const blob = new Blob(['\\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = "Todays Approvals - ${today}.csv";
           document.body.appendChild(a); a.click();
           document.body.removeChild(a); URL.revokeObjectURL(url);
         });
+
+        // Run filters on page load to set the initial count label
+        applyFilters();
       <\/script>
     </body>
     </html>
