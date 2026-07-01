@@ -7227,6 +7227,28 @@ function renderTaskManagerView() {
   const doneCount = completionsForDay.filter(c => c.completed).length;
   const totalCount = completionsForDay.length;
 
+  // Sort completions: urgent first (regardless of deadline), then by
+  // deadline ascending (no deadline sorts last), then by created_at.
+  function sortCompletions(completions) {
+    return completions.slice().sort((a, b) => {
+      const ta = tmState.tasks.find(t => t.id === a.task_id) || {};
+      const tb = tmState.tasks.find(t => t.id === b.task_id) || {};
+      // 1. Completed tasks always sink to the bottom
+      if (a.completed !== b.completed) return a.completed ? 1 : -1;
+      // 2. Urgent tasks float to the top (within completed / pending groups)
+      if (!!ta.is_urgent !== !!tb.is_urgent) return ta.is_urgent ? -1 : 1;
+      // 3. Sort by deadline ascending; no deadline = treat as far future
+      const da = ta.deadline || '9999-12-31';
+      const db = tb.deadline || '9999-12-31';
+      if (da !== db) return da < db ? -1 : 1;
+      // 4. Fall back to creation order
+      return (ta.created_at || '') < (tb.created_at || '') ? -1 : 1;
+    });
+  }
+
+  const sortedCompletions = sortCompletions(completionsForDay);
+  const sortedPrevPending = sortCompletions(pendingPrev);
+
   // Progress bar
   const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
   const progressHtml = totalCount > 0 ? `
@@ -7243,25 +7265,43 @@ function renderTaskManagerView() {
 
   function taskRowHtml(completion, task, isCarryOver = false) {
     const done = completion.completed;
+    const isUrgent = !!task.is_urgent && !done;
+    const today2 = isoDate(new Date());
+    const isOverdue = task.deadline && task.deadline < today2 && !done;
+    const isDueToday = task.deadline && task.deadline === today2 && !done;
+    const isDueSoon = task.deadline && task.deadline > today2 && task.deadline <= isoDate(new Date(Date.now() + 2 * 86400000)) && !done;
+
+    let deadlineBadge = '';
+    if (task.deadline && !done) {
+      const label = isOverdue ? `Overdue · ${formatPrettyDate(task.deadline)}`
+                  : isDueToday ? `Due today`
+                  : `Due ${formatPrettyDate(task.deadline)}`;
+      const color = isOverdue ? 'var(--coral)' : isDueToday ? '#C0392B' : isDueSoon ? 'var(--amber-dark,#9E6B00)' : 'var(--ink-faint)';
+      const bg    = isOverdue ? 'var(--coral-wash)' : isDueToday ? '#FDECEA' : isDueSoon ? 'var(--amber-wash,#FEF3C7)' : 'var(--line-soft)';
+      deadlineBadge = `<span style="font-size:10px; font-weight:600; padding:1px 7px; border-radius:4px; margin-left:6px; vertical-align:middle; background:${bg}; color:${color};">📅 ${label}</span>`;
+    }
+
     return `
       <div class="tm-task-row" data-completion-id="${completion.id}" style="
         display:flex; align-items:flex-start; gap:12px; padding:14px 16px;
-        background:${done ? 'var(--line-soft)' : 'var(--paper-raised)'};
+        background:${done ? 'var(--line-soft)' : isUrgent ? '#FFF5F5' : 'var(--paper-raised)'};
         border-radius:10px; margin-bottom:8px;
-        border:1px solid ${done ? 'transparent' : isCarryOver ? 'var(--amber-wash,#FEF3C7)' : 'var(--line-soft)'};
-        opacity:${done ? '0.65' : '1'}; transition:opacity 0.2s;">
+        border:2px solid ${done ? 'transparent' : isUrgent ? 'var(--coral)' : isCarryOver ? 'var(--amber-wash,#FEF3C7)' : 'var(--line-soft)'};
+        opacity:${done ? '0.6' : '1'}; transition:opacity 0.2s;">
         <button class="tm-toggle-btn btn-reset" data-id="${completion.id}" data-done="${done}" style="
           width:22px; height:22px; min-width:22px; border-radius:50%;
-          border:2px solid ${done ? 'var(--teal)' : 'var(--line)'};
+          border:2px solid ${done ? 'var(--teal)' : isUrgent ? 'var(--coral)' : 'var(--line)'};
           background:${done ? 'var(--teal)' : 'transparent'};
           cursor:pointer; display:flex; align-items:center; justify-content:center;
-          margin-top:1px; transition:all 0.15s;">
+          margin-top:2px; transition:all 0.15s;">
           ${done ? '<span style="color:#fff; font-size:12px; line-height:1;">✓</span>' : ''}
         </button>
         <div style="flex:1; min-width:0;">
           <div style="font-weight:600; font-size:13.5px; ${done ? 'text-decoration:line-through; color:var(--ink-faint);' : ''}">
+            ${isUrgent ? '<span style="font-size:10px; font-weight:700; color:var(--coral); background:#FFF0F0; padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; letter-spacing:0.04em;">URGENT</span>' : ''}
             ${escapeHtml(task.title)}
             ${isCarryOver ? '<span style="font-size:10px; font-weight:700; color:var(--amber-dark,#9E6B00); background:var(--amber-wash,#FEF3C7); padding:1px 6px; border-radius:4px; margin-left:6px; vertical-align:middle;">carried over</span>' : ''}
+            ${deadlineBadge}
           </div>
           ${task.description ? `<div class="faint" style="font-size:12px; margin-top:2px;">${escapeHtml(task.description)}</div>` : ''}
           ${completion.note ? `
@@ -7271,33 +7311,34 @@ function renderTaskManagerView() {
           ` : ''}
           ${completion.completed_at ? `<div class="faint" style="font-size:11px; margin-top:6px;">Completed ${new Date(completion.completed_at).toLocaleTimeString('en-PH', { hour:'2-digit', minute:'2-digit' })}</div>` : ''}
         </div>
-        <div style="display:flex; gap:6px; align-items:center;">
+        <div style="display:flex; gap:6px; align-items:center; flex-shrink:0;">
           <button class="tm-note-btn btn btn-ghost btn-sm" data-id="${completion.id}" data-note="${escapeHtml(completion.note || '')}" style="font-size:11px; padding:3px 8px; white-space:nowrap;">
             ${completion.note ? 'Edit note' : '+ Note'}
           </button>
+          <button class="tm-edit-task-btn btn btn-ghost btn-sm" data-task-id="${task.id}" style="font-size:11px; padding:3px 8px;">Edit</button>
         </div>
       </div>
     `;
   }
 
-  const carryOverHtml = pendingPrev.length ? `
+  const carryOverHtml = sortedPrevPending.length ? `
     <div style="margin-bottom:24px;">
       <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--amber-dark,#9E6B00); margin-bottom:10px;">
         ⚠ Carried over from previous days
       </div>
-      ${pendingPrev.map(c => {
+      ${sortedPrevPending.map(c => {
         const task = tmState.tasks.find(t => t.id === c.task_id);
         return task ? taskRowHtml(c, task, true) : '';
       }).join('')}
     </div>
   ` : '';
 
-  const todayTasksHtml = completionsForDay.length ? `
+  const todayTasksHtml = sortedCompletions.length ? `
     <div>
       <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-faint); margin-bottom:10px;">
         ${isToday ? "Today's tasks" : isPast ? 'Tasks for this day' : 'Upcoming tasks'}
       </div>
-      ${completionsForDay.map(c => {
+      ${sortedCompletions.map(c => {
         const task = tmState.tasks.find(t => t.id === c.task_id);
         return task ? taskRowHtml(c, task) : '';
       }).join('')}
@@ -7370,6 +7411,12 @@ function renderTaskManagerView() {
   el.querySelectorAll('.tm-note-btn').forEach(btn => {
     btn.addEventListener('click', () => openTmNoteModal(btn.dataset.id, btn.dataset.note));
   });
+
+  // Edit task buttons
+  el.querySelectorAll('.tm-edit-task-btn').forEach(btn => {
+    const task = tmState.tasks.find(t => t.id === btn.dataset.taskId);
+    if (task) btn.addEventListener('click', () => openTmEditTaskModal(task));
+  });
 }
 
 function openTmAddTaskModal() {
@@ -7394,6 +7441,19 @@ function openTmAddTaskModal() {
           <option value="both">Both</option>
         </select>
       </div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="field" style="flex:1; min-width:160px;">
+          <label for="tm-task-deadline">Deadline <span class="faint">(optional)</span></label>
+          <input type="date" id="tm-task-deadline"
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div class="field" style="flex:0; display:flex; flex-direction:column; justify-content:flex-end; padding-bottom:1px;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; white-space:nowrap;">
+            <input type="checkbox" id="tm-task-urgent" style="width:15px; height:15px; accent-color:var(--coral);">
+            <span style="color:var(--coral); font-weight:600;">Mark as urgent</span>
+          </label>
+        </div>
+      </div>
       <div class="field">
         <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px;">
           <input type="checkbox" id="tm-task-recurring" checked style="width:15px; height:15px;">
@@ -7405,13 +7465,15 @@ function openTmAddTaskModal() {
   `);
   document.getElementById('tm-add-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const title = document.getElementById('tm-task-title').value.trim();
+    const title       = document.getElementById('tm-task-title').value.trim();
     const description = document.getElementById('tm-task-desc').value.trim() || null;
-    const owner = document.getElementById('tm-task-owner').value;
+    const owner       = document.getElementById('tm-task-owner').value;
     const is_recurring = document.getElementById('tm-task-recurring').checked;
+    const is_urgent   = document.getElementById('tm-task-urgent').checked;
+    const deadline    = document.getElementById('tm-task-deadline').value || null;
     if (!title) { showToast('Please enter a task title.', true); return; }
     const { data, error } = await sb.from('tasks').insert({
-      title, description, owner, is_recurring,
+      title, description, owner, is_recurring, is_urgent, deadline,
       created_by: state.profile.display_name,
     }).select().single();
     if (error) { showToast('Could not add the task.', true); return; }
@@ -7424,6 +7486,67 @@ function openTmAddTaskModal() {
     if (cd) tmState.completions.push(...cd);
     closeModal();
     showToast('Task added.');
+    renderTaskManagerView();
+  });
+}
+
+function openTmEditTaskModal(task) {
+  openModal('Edit task', `
+    <form id="tm-edit-task-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tm-edit-title">Task title</label>
+        <input type="text" id="tm-edit-title" required value="${escapeHtml(task.title)}"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tm-edit-desc">Description <span class="faint">(optional)</span></label>
+        <textarea id="tm-edit-desc" rows="2"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(task.description || '')}</textarea>
+      </div>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="field" style="flex:1; min-width:160px;">
+          <label for="tm-edit-deadline">Deadline <span class="faint">(optional)</span></label>
+          <input type="date" id="tm-edit-deadline" value="${task.deadline || ''}"
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div class="field" style="flex:0; display:flex; flex-direction:column; justify-content:flex-end; padding-bottom:1px;">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; white-space:nowrap;">
+            <input type="checkbox" id="tm-edit-urgent" ${task.is_urgent ? 'checked' : ''} style="width:15px; height:15px; accent-color:var(--coral);">
+            <span style="color:var(--coral); font-weight:600;">Mark as urgent</span>
+          </label>
+        </div>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button type="button" id="tm-archive-task-btn" class="btn btn-ghost" style="color:var(--coral);">Archive task</button>
+        <button type="submit" class="btn btn-primary" style="flex:1; justify-content:center;">Save changes</button>
+      </div>
+    </form>
+  `);
+
+  document.getElementById('tm-edit-task-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title       = document.getElementById('tm-edit-title').value.trim();
+    const description = document.getElementById('tm-edit-desc').value.trim() || null;
+    const is_urgent   = document.getElementById('tm-edit-urgent').checked;
+    const deadline    = document.getElementById('tm-edit-deadline').value || null;
+    if (!title) { showToast('Please enter a task title.', true); return; }
+    const { error } = await sb.from('tasks').update({ title, description, is_urgent, deadline }).eq('id', task.id);
+    if (error) { showToast('Could not save changes.', true); return; }
+    // Update local state immediately
+    const t = tmState.tasks.find(x => x.id === task.id);
+    if (t) Object.assign(t, { title, description, is_urgent, deadline });
+    closeModal();
+    showToast('Task updated.');
+    renderTaskManagerView();
+  });
+
+  document.getElementById('tm-archive-task-btn').addEventListener('click', async () => {
+    if (!confirm(`Archive "${task.title}"? It will no longer appear in the task list.`)) return;
+    const { error } = await sb.from('tasks').update({ archived: true }).eq('id', task.id);
+    if (error) { showToast('Could not archive the task.', true); return; }
+    tmState.tasks = tmState.tasks.filter(x => x.id !== task.id);
+    closeModal();
+    showToast('Task archived.');
     renderTaskManagerView();
   });
 }
