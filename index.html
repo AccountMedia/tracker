@@ -1315,12 +1315,15 @@ function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
   actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
+    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals" style="margin-right:8px;">Today's approvals</button>` : ''}
     ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report" style="margin-right:8px;">Download monthly report</button>` : ''}
     <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
   `;
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
   const reportBtn = document.getElementById('btn-download-report');
   if (reportBtn) reportBtn.addEventListener('click', () => buildAndOpenLeaveReport());
+  const todaysApprovalsBtn = document.getElementById('btn-todays-approvals');
+  if (todaysApprovalsBtn) todaysApprovalsBtn.addEventListener('click', openTodaysApprovalsReport);
 
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
@@ -1567,6 +1570,32 @@ async function approveCancellation(id) {
 
   if (!confirm(groupCount > 1 ? `Approve this cancellation? ${groupCount} days of leave will be permanently removed.` : 'Approve this cancellation? This leave will be permanently removed.')) return;
 
+  // Write the audit log BEFORE deleting — once the rows are gone,
+  // this information is unrecoverable, and Today's Approvals needs it.
+  const groupRows = groupId
+    ? state.leaveEntries.filter(e => e.request_group_id === groupId)
+    : [entry];
+  const leaveDates = groupRows.map(e => e.leave_date).sort().join(',');
+  const { error: logError } = await sb.from('leave_cancellation_log').insert({
+    employee_id: entry.employee_id,
+    leave_type: entry.leave_type,
+    leave_dates: leaveDates,
+    note: entry.note || null,
+    cancel_note: entry.cancel_note || null,
+    approved_by: state.profile.display_name,
+    decided_at: new Date().toISOString(),
+  });
+
+  if (logError) {
+    // The log write failed — most likely the table doesn't exist yet.
+    // Warn the admin and abort rather than silently deleting the record
+    // with no trace of it, since that's exactly what this feature is
+    // designed to prevent.
+    console.error('Could not write cancellation log:', logError);
+    showToast('Could not record this cancellation — please run add_todays_approvals_support.sql in Supabase first, then try again.', true);
+    return;
+  }
+
   const query = sb.from('leave_entries').delete();
   const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
 
@@ -1754,6 +1783,172 @@ function shiftMonth(delta) {
 // "Filter report" flow (a custom date range and/or a specific set of
 // leave types). Leaving either parameter unset reproduces the exact
 // original default behavior.
+async function openTodaysApprovalsReport() {
+  if (!isAdmin()) { showToast('Only admins can view approval reports.', true); return; }
+
+  const today = isoDate(new Date());
+  // Use local midnight boundaries so the query correctly captures the
+  // admin's local "today" regardless of their timezone offset from UTC.
+  const todayLocalStart = new Date(today + 'T00:00:00');
+  const todayLocalEnd = new Date(today + 'T23:59:59.999');
+  const todayStart = todayLocalStart.toISOString();
+  const todayEnd = todayLocalEnd.toISOString();
+
+  // Fetch today's approved leave entries using decided_at
+  const { data: approvedEntries, error: e1 } = await sb
+    .from('leave_entries')
+    .select('*')
+    .gte('decided_at', todayStart)
+    .lte('decided_at', todayEnd)
+    .eq('status', STATUS.APPROVED)
+    .order('decided_at', { ascending: true });
+
+  // Fetch today's cancellation log entries
+  const { data: cancellations, error: e2 } = await sb
+    .from('leave_cancellation_log')
+    .select('*')
+    .gte('decided_at', todayStart)
+    .lte('decided_at', todayEnd)
+    .order('decided_at', { ascending: true });
+
+  if (e1 || e2) { showToast('Could not load today\'s approvals.', true); return; }
+
+  const win = window.open('', '_blank');
+  if (!win) { showToast('Could not open a new tab — your browser may have blocked the pop-up.', true); return; }
+
+  const todayLabel = formatPrettyDate(today);
+
+  // Build approved leave rows
+  // Group entries by request_group_id so multi-day blocks appear as one row
+  const groupedApproved = [];
+  const seenGroups = new Set();
+  (approvedEntries || []).forEach(e => {
+    const key = e.request_group_id || e.id;
+    if (seenGroups.has(key)) return;
+    seenGroups.add(key);
+    const groupRows = e.request_group_id
+      ? (approvedEntries || []).filter(r => r.request_group_id === e.request_group_id)
+      : [e];
+    const dates = groupRows.map(r => r.leave_date).sort();
+    groupedApproved.push({
+      employee: employeeName(e.employee_id),
+      leaveType: LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type,
+      dateRange: dates.length > 1 ? formatDateRange(dates[0], dates[dates.length - 1]) : formatPrettyDate(dates[0]),
+      days: dates.length,
+      note: e.note || '',
+      approvedBy: e.approved_by || '',
+      decidedAt: e.decided_at ? new Date(e.decided_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '',
+      type: 'approval',
+    });
+  });
+
+  // Build cancellation log rows
+  const cancellationRows = (cancellations || []).map(c => ({
+    employee: employeeName(c.employee_id),
+    leaveType: LEAVE_TYPES[c.leave_type] ? LEAVE_TYPES[c.leave_type].label : (c.leave_type || ''),
+    dateRange: c.leave_dates ? (() => {
+      const dates = c.leave_dates.split(',').sort();
+      return dates.length > 1 ? formatDateRange(dates[0], dates[dates.length - 1]) : formatPrettyDate(dates[0]);
+    })() : '',
+    days: c.leave_dates ? c.leave_dates.split(',').length : 1,
+    note: c.cancel_note || c.note || '',
+    approvedBy: c.approved_by || '',
+    decidedAt: c.decided_at ? new Date(c.decided_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '',
+    type: 'cancellation',
+  }));
+
+  const allRows = [...groupedApproved, ...cancellationRows]
+    .sort((a, b) => a.decidedAt.localeCompare(b.decidedAt));
+
+  const hasRows = allRows.length > 0;
+
+  const tableRowsHtml = allRows.map(r => `
+    <tr>
+      <td>${escapeHtml(r.decidedAt)}</td>
+      <td>${escapeHtml(r.employee)}</td>
+      <td>${escapeHtml(r.dateRange)}${r.days > 1 ? ` <span style="color:#A8A39A;font-size:11px;">(${r.days} days)</span>` : ''}</td>
+      <td>${escapeHtml(r.leaveType)}</td>
+      <td>${r.type === 'cancellation'
+        ? `<span style="color:#C0392B;font-weight:600;">Cancellation approved</span>`
+        : `<span style="color:#1F6B4F;font-weight:600;">Approved</span>`}</td>
+      <td>${escapeHtml(r.approvedBy)}</td>
+      <td>${escapeHtml(r.note)}</td>
+    </tr>
+  `).join('');
+
+  // CSV data for the download button
+  const csvRowsJson = JSON.stringify([
+    [`Today's Approvals — ${todayLabel}`],
+    [],
+    ['Time', 'Employee', 'Date Range', 'Leave Type', 'Action', 'Approved By', 'Note'],
+    ...allRows.map(r => [r.decidedAt, r.employee, r.dateRange, r.leaveType,
+      r.type === 'cancellation' ? 'Cancellation approved' : 'Approved',
+      r.approvedBy, r.note]),
+  ]).replace(/</g, '\\u003c');
+
+  const filename = `Todays Approvals - ${today}.csv`;
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Today's Approvals — ${escapeHtml(todayLabel)}</title>
+      <style>
+        body{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif; background:#FAF7F1; color:#3A3A38; margin:0; padding:32px 40px 60px; }
+        h1{ font-size:20px; font-weight:700; color:#1F3D3A; margin:0 0 4px; }
+        .sub{ font-size:13px; color:#A8A39A; margin:0 0 20px; }
+        .toolbar{ display:flex; justify-content:flex-end; margin-bottom:16px; }
+        .toolbar button{ font-family:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:999px; border:1px solid #1F3D3A; background:#1F3D3A; color:#F7F3E8; cursor:pointer; }
+        .toolbar button:hover{ background:#2A4F4B; }
+        table{ border-collapse:collapse; width:100%; background:#fff; border:1px solid #E4DECF; border-radius:10px; overflow:hidden; }
+        th{ text-align:left; padding:8px 14px; font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:#A8A39A; border-bottom:2px solid #E4DECF; }
+        td{ padding:8px 14px; font-size:13px; border-bottom:1px solid #EDE8DA; vertical-align:top; }
+        tr:last-child td{ border-bottom:none; }
+        .empty{ text-align:center; color:#A8A39A; padding:40px; font-size:14px; }
+      </style>
+    </head>
+    <body>
+      <h1>Today's Approvals</h1>
+      <p class="sub">${escapeHtml(todayLabel)}</p>
+      <div class="toolbar">
+        <button id="dl-btn">Download as CSV</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Employee</th>
+            <th>Date Range</th>
+            <th>Leave Type</th>
+            <th>Action</th>
+            <th>Approved By</th>
+            <th>Note</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${hasRows ? tableRowsHtml : '<tr><td colspan="7" class="empty">No approvals recorded today.</td></tr>'}
+        </tbody>
+      </table>
+      <script>
+        const ROWS = ${csvRowsJson};
+        function esc(v){ const s=String(v??''); return /[",\\r\\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+        document.getElementById('dl-btn').addEventListener('click',()=>{
+          const csv=ROWS.map(r=>r.map(esc).join(',')).join('\\r\\n');
+          const blob=new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
+          const url=URL.createObjectURL(blob);
+          const a=document.createElement('a');
+          a.href=url; a.download=${JSON.stringify(filename)};
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a); URL.revokeObjectURL(url);
+        });
+      <\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
 function buildAndOpenLeaveReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
@@ -2721,7 +2916,7 @@ async function decideRequest(id, decision) {
     if (error) { showToast('Could not update the request.', true); return; }
     showToast(`${label} declined.`);
   } else {
-    const query = sb.from('leave_entries').update({ status: decision, approved_by: state.profile.display_name });
+    const query = sb.from('leave_entries').update({ status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString() });
     const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
     if (error) { showToast('Could not update the request.', true); return; }
 
