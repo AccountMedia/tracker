@@ -395,22 +395,17 @@
     </section>
 
     <!-- LEAVE TRACKER VIEW -->
-    <!-- ACCOUNT HUB — combined Leave Tracker + Task Manager + Employee Management -->
+    <!-- ACCOUNT HUB — combined Leave Tracker + Employee Management -->
     <section class="view" id="view-account-hub">
-      <div class="page-head">
-        <div style="display:flex; align-items:center; gap:12px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:nowrap; margin-bottom:28px;">
+        <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
           <div>
             <span class="eyebrow">PH Team</span>
-            <h1>Leave Tracker</h1>
+            <h1 style="font-family:var(--font-display); font-size:30px; font-weight:600; margin:0; color:var(--ink);">Leave Tracker</h1>
           </div>
           <div id="leave-tracker-bell"></div>
         </div>
-        <div id="account-hub-actions"></div>
-      </div>
-      <!-- Tab bar + action buttons on same row, separated by a flex spacer -->
-      <div id="account-hub-tab-row" style="display:flex; align-items:flex-end; justify-content:space-between; border-bottom:1px solid var(--line); margin-bottom:0;">
-        <div id="account-hub-tabs" style="display:flex; gap:4px;"></div>
-        <div id="account-hub-tab-btns" style="display:flex; align-items:center; gap:8px; padding-bottom:8px;"></div>
+        <div id="account-hub-actions" style="display:flex; align-items:center; gap:8px;"></div>
       </div>
       <div id="account-hub-content"></div>
     </section>
@@ -774,7 +769,7 @@ function initNav() {
   const savedView = sessionStorage.getItem('registry_active_view');
   const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds'];
   // Redirect any saved view that has moved into Account Hub
-  const hubViews = ['leave-tracker', 'task-manager', 'employee-management'];
+  const hubViews = ['leave-tracker', 'employee-management'];
   const startView = hubViews.includes(savedView) ? 'account-hub'
     : validViews.includes(savedView) ? savedView : 'dashboard';
   if (hubViews.includes(savedView)) state.accountHubTab = savedView;
@@ -1382,77 +1377,65 @@ function dashboardStatCard(label, value, sub, accentCls) {
 // =====================================================================
 
 function renderAccountHub() {
-  const hubContent  = document.getElementById('account-hub-content');
-  const hubTabsEl   = document.getElementById('account-hub-tabs');
-  const hubTabBtns  = document.getElementById('account-hub-tab-btns');
-  const hubActions  = document.getElementById('account-hub-actions');
+  const hubContent = document.getElementById('account-hub-content');
+  const hubActions = document.getElementById('account-hub-actions');
   if (!hubContent) return;
 
-  // Tab order: Leave Tracker → Employees → Task Manager
-  const tabs = [
-    { id: 'leave-tracker',      label: 'Leave Tracker' },
-    ...(canManageEmployees()    ? [{ id: 'employee-management', label: 'Employees' }] : []),
-    ...(canAccessTaskManager()  ? [{ id: 'task-manager',        label: 'Task Manager' }] : []),
-  ];
-
-  // Validate active tab
-  if (!tabs.find(t => t.id === state.accountHubTab)) state.accountHubTab = tabs[0].id;
+  const showEmployees = canManageEmployees();
+  if (!showEmployees && state.accountHubTab === 'employee-management') {
+    state.accountHubTab = 'leave-tracker';
+  }
   const activeId = state.accountHubTab;
 
-  // ── Tab buttons (left side of the row) ──────────────────────────
-  hubTabsEl.innerHTML = tabs.map(t => {
-    const isActive = t.id === activeId;
-    return `
-      <button type="button" class="account-hub-tab" data-tab="${t.id}" style="
-        padding:9px 18px; font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer;
-        border:1px solid var(--line); border-bottom:none; border-radius:10px 10px 0 0;
-        background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
-        color:${isActive ? '#F7F3E8' : 'var(--ink-soft)'};
-        position:relative; ${isActive ? 'z-index:2;' : 'z-index:1; margin-top:3px;'}">
-        ${t.label}
-      </button>
-    `;
-  }).join('');
+  // ── Actions bar ──────────────────────────────────────────────────
+  const ltOn = activeId === 'leave-tracker';
+  const emOn = activeId === 'employee-management';
 
-  // ── Action buttons (right side of the row) ───────────────────────
+  // Context buttons rendered conditionally — no hidden elements eating space.
+  // The toggle is always first; the right-side buttons swap cleanly.
+  const contextBtns = ltOn ? `
+    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
+    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download monthly report</button>` : ''}
+    <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
+  ` : emOn ? `
+    <div style="position:relative;">
+      <input type="text" id="em-search" placeholder="Search employees…" autocomplete="off"
+        style="padding:9px 12px 9px 34px; border-radius:999px; border:1px solid var(--line);
+               background:var(--paper); font-family:inherit; font-size:13px; width:200px;">
+      <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%);
+                   color:var(--ink-faint); font-size:13px; pointer-events:none;">⌕</span>
+    </div>
+    <button class="btn btn-primary" id="btn-add-employee">+ Add employee</button>
+  ` : '';
+
+  hubActions.innerHTML = showEmployees ? `
+    <div style="display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; flex-shrink:0;">
+      <button type="button" class="account-hub-tab" data-tab="leave-tracker" style="
+        padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit;
+        border:none; cursor:pointer; line-height:1; white-space:nowrap;
+        background:${ltOn ? 'var(--teal)' : 'transparent'};
+        color:${ltOn ? '#F7F3E8' : 'var(--ink-soft)'};
+        transition:background 0.15s, color 0.15s;">Leave Tracker</button>
+      <span style="width:1px; background:var(--line); align-self:stretch;"></span>
+      <button type="button" class="account-hub-tab" data-tab="employee-management" style="
+        padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit;
+        border:none; cursor:pointer; line-height:1; white-space:nowrap;
+        background:${emOn ? 'var(--teal)' : 'transparent'};
+        color:${emOn ? '#F7F3E8' : 'var(--ink-soft)'};
+        transition:background 0.15s, color 0.15s;">Employees</button>
+    </div>
+    ${contextBtns}
+  ` : contextBtns;
+
+  document.getElementById('btn-new-request')?.addEventListener('click', openRequestModal);
+  document.getElementById('btn-download-report')?.addEventListener('click', () => buildAndOpenLeaveReport());
+  document.getElementById('btn-todays-approvals')?.addEventListener('click', openTodaysApprovalsReport);
+  document.getElementById('btn-add-employee')?.addEventListener('click', openAddEmployeeModal);
+  document.getElementById('em-search')?.addEventListener('input', renderEmployeeManagementTable);
+
+  // ── Content ───────────────────────────────────────────────────────
   if (activeId === 'leave-tracker') {
-    hubTabBtns.innerHTML = `
-      ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="btn-todays-approvals">Today's approvals</button>` : ''}
-      ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="btn-download-report">Download monthly report</button>` : ''}
-      <button class="btn btn-primary btn-sm" id="btn-new-request">+ Request leave</button>
-    `;
-    document.getElementById('btn-new-request')?.addEventListener('click', openRequestModal);
-    document.getElementById('btn-download-report')?.addEventListener('click', () => buildAndOpenLeaveReport());
-    document.getElementById('btn-todays-approvals')?.addEventListener('click', openTodaysApprovalsReport);
-  } else if (activeId === 'employee-management') {
-    // Employee search + add button live in the tab row
-    hubTabBtns.innerHTML = `
-      <div style="display:flex; align-items:center; gap:8px;">
-        <div style="position:relative;">
-          <input type="text" id="em-search" placeholder="Search employees…" autocomplete="off"
-            style="padding:7px 12px 7px 32px; border-radius:999px; border:1px solid var(--line);
-                   background:var(--paper); font-family:inherit; font-size:12.5px; width:200px;">
-          <span style="position:absolute; left:11px; top:50%; transform:translateY(-50%);
-                       color:var(--ink-faint); font-size:13px; pointer-events:none;">⌕</span>
-        </div>
-        <button class="btn btn-primary btn-sm" id="btn-add-employee">+ Add employee</button>
-      </div>
-    `;
-    document.getElementById('btn-add-employee')?.addEventListener('click', openAddEmployeeModal);
-    document.getElementById('em-search')?.addEventListener('input', renderEmployeeManagementTable);
-  } else if (activeId === 'task-manager') {
-    hubTabBtns.innerHTML = `<button class="btn btn-primary btn-sm" id="tm-add-task-btn">+ Add task</button>`;
-    document.getElementById('tm-add-task-btn')?.addEventListener('click', openTmAddTaskModal);
-  } else {
-    hubTabBtns.innerHTML = '';
-  }
-
-  hubActions.innerHTML = '';
-
-  // ── Content area ─────────────────────────────────────────────────
-  hubContent.style.paddingTop = '20px';
-
-  if (activeId === 'leave-tracker') {
+    // Bell icon
     const bellSlot = document.getElementById('leave-tracker-bell');
     if (bellSlot && isAdmin()) {
       const unread = state.leaveNotifications.filter(n => !n.read).length;
@@ -1460,7 +1443,7 @@ function renderAccountHub() {
         <button id="btn-leave-notif" title="Leave approval notifications" style="
           position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
           color:var(--ink-faint); display:flex; align-items:center; border-radius:8px;
-          transition:color 0.12s, background 0.12s; margin-top:6px;"
+          transition:color 0.12s, background 0.12s; margin-top:4px;"
           onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
           onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -1484,30 +1467,15 @@ function renderAccountHub() {
   } else if (activeId === 'employee-management') {
     const bellSlot = document.getElementById('leave-tracker-bell');
     if (bellSlot) bellSlot.innerHTML = '';
-    // Scaffold ONLY the content div — actions are in the tab row now
-    // but renderEmployeeManagement still looks for #employee-management-actions
-    // so we provide a hidden one it can write to (values ignored since we
-    // already built the real controls above)
     hubContent.innerHTML = `
       <div id="employee-management-actions" style="display:none;"></div>
       <div id="employee-management-content"></div>
     `;
     stopLeaveTrackerPolling();
     renderEmployeeManagement();
-
-  } else if (activeId === 'task-manager') {
-    const bellSlot = document.getElementById('leave-tracker-bell');
-    if (bellSlot) bellSlot.innerHTML = '';
-    // Scaffold BOTH elements renderTaskManager expects
-    hubContent.innerHTML = `
-      <div id="task-manager-actions" style="display:none;"></div>
-      <div id="task-manager-content"></div>
-    `;
-    stopLeaveTrackerPolling();
-    renderTaskManager();
   }
 
-  // Tab click handlers
+  // Toggle click handlers
   document.querySelectorAll('.account-hub-tab').forEach(btn => {
     btn.addEventListener('click', () => {
       state.accountHubTab = btn.dataset.tab;
@@ -5388,7 +5356,7 @@ function closeEmployeeManagementMenuOnOutsideClick() {
   window._employeeManagementOutsideClickBound = true;
   document.addEventListener('click', (e) => {
     if (state.employeeManagementOpenMenuId === null) return;
-    if (state.currentView !== 'employee-management') return;
+    if (state.currentView !== 'employee-management' && state.currentView !== 'account-hub') return;
     // Close only if the click was outside any open menu and its trigger
     const openMenu = document.querySelector(`.em-action-menu[data-emp-id="${state.employeeManagementOpenMenuId}"]`);
     const trigger = document.querySelector(`.em-menu-trigger[data-emp-id="${state.employeeManagementOpenMenuId}"]`);
