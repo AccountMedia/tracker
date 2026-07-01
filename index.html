@@ -562,6 +562,7 @@ const state = {
   dashboardPollHandle: null, // setInterval handle for auto-refresh while viewing the Dashboard
   appUsers: [], // every login account (username/role/employee_id) — only loaded for Employee Management, not needed elsewhere
   employeeManagementOpenMenuId: null, // employee id whose row-actions dropdown is currently open
+  teamFundsTab: 'transactions', // active tab in Team Funds: 'transactions' | 'loans' | 'accounts'
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -5717,181 +5718,219 @@ async function renderTeamFunds() {
     </div>
   ` : `<div class="faint" style="font-size:12.5px; margin-bottom:20px;">Opening balance: <strong>${TF_FMT(openingBalance)}</strong></div>`;
 
-  // ── Transaction history ─────────────────────────────────────────
-  const txHtml = `
-    <div class="card" style="padding:22px; margin-bottom:24px;">
-      <h3 style="margin:0 0 14px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Transaction History</h3>
+
+  // ── Tab content builders ────────────────────────────────────────
+
+  // Tab 1: Transaction History with separate debit/credit columns
+  const txTabHtml = `
+    <div style="overflow-x:auto;">
       ${transactions.length ? `
-        <div style="overflow-x:auto;">
-          <table style="width:100%; border-collapse:collapse; min-width:700px;">
-            <thead>
-              <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
-                <th style="padding:8px 12px; text-align:left;">Date</th>
-                <th style="padding:8px 12px; text-align:left;">Note</th>
-                <th style="padding:8px 12px; text-align:left;">Type</th>
-                <th style="padding:8px 12px; text-align:right;">Amount</th>
-                <th style="padding:8px 12px; text-align:left;">Recorded By</th>
-                ${canEdit ? `<th style="padding:8px 12px;"></th>` : ''}
-              </tr>
-            </thead>
-            <tbody>
-              ${transactions.map(t => {
-                const isCredit = t.type === 'credit';
-                const dateStr = t.transaction_date ? formatPrettyDate(t.transaction_date) : '—';
-                return `
-                  <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
-                    <td style="padding:10px 12px; white-space:nowrap;">${dateStr}</td>
-                    <td style="padding:10px 12px;">${escapeHtml(t.note)}</td>
-                    <td style="padding:10px 12px;">
-                      <span style="display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600;
-                        background:${isCredit ? '#E8F5E9' : 'var(--coral-wash)'};
-                        color:${isCredit ? '#2E7D32' : 'var(--coral)'};">
-                        ${isCredit ? 'Inflow' : 'Outflow'}
-                      </span>
+        <table style="width:100%; border-collapse:collapse; min-width:780px;">
+          <thead>
+            <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+              <th style="padding:8px 12px; text-align:left;">Date</th>
+              <th style="padding:8px 12px; text-align:left;">Note</th>
+              <th style="padding:8px 12px; text-align:right; color:#2E7D32;">Credit (In)</th>
+              <th style="padding:8px 12px; text-align:right; color:var(--coral);">Debit (Out)</th>
+              <th style="padding:8px 12px; text-align:left;">Recorded By</th>
+              ${canEdit ? `<th style="padding:8px 12px;"></th>` : ""}
+            </tr>
+          </thead>
+          <tbody>
+            ${transactions.map(t => {
+              const isCredit = t.type === "credit";
+              const dateStr = t.transaction_date ? formatPrettyDate(t.transaction_date) : "—";
+              return `
+                <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+                  <td style="padding:10px 12px; white-space:nowrap;">${dateStr}</td>
+                  <td style="padding:10px 12px;">${escapeHtml(t.note)}</td>
+                  <td style="padding:10px 12px; text-align:right; font-weight:600; color:#2E7D32;">${isCredit ? TF_FMT(t.amount) : ""}</td>
+                  <td style="padding:10px 12px; text-align:right; font-weight:600; color:var(--coral);">${!isCredit ? TF_FMT(t.amount) : ""}</td>
+                  <td style="padding:10px 12px;" class="faint">${escapeHtml(t.recorded_by)}</td>
+                  ${canEdit ? `
+                    <td style="padding:10px 12px; white-space:nowrap;">
+                      <button class="btn btn-ghost btn-sm tf-edit-tx-btn" data-id="${t.id}" style="font-size:11px; padding:3px 8px;">Edit</button>
+                      <button class="btn btn-ghost btn-sm tf-delete-tx-btn" data-id="${t.id}" style="font-size:11px; padding:3px 6px; color:var(--coral); margin-left:4px;" title="Delete">✕</button>
                     </td>
-                    <td style="padding:10px 12px; text-align:right; font-weight:600; color:${isCredit ? '#2E7D32' : 'var(--coral)'};">
-                      ${isCredit ? '+' : '−'}${TF_FMT(t.amount)}
-                    </td>
-                    <td style="padding:10px 12px;" class="faint">${escapeHtml(t.recorded_by)}</td>
-                    ${canEdit ? `
-                      <td style="padding:10px 12px; white-space:nowrap;">
-                        <button class="btn btn-ghost btn-sm tf-edit-tx-btn" data-id="${t.id}" style="font-size:11px; padding:3px 8px;">Edit</button>
-                        <button class="btn btn-ghost btn-sm tf-delete-tx-btn" data-id="${t.id}" style="font-size:11px; padding:3px 6px; color:var(--coral); margin-left:4px;" title="Delete this transaction">✕</button>
-                      </td>
-                    ` : ''}
-                  </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
+                  ` : ""}
+                </tr>
+              `;
+            }).join("")}
+            <tr style="border-top:2px solid var(--line); font-size:12.5px; font-weight:700;">
+              <td style="padding:10px 12px;" colspan="2">Totals</td>
+              <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(totalCredits)}</td>
+              <td style="padding:10px 12px; text-align:right; color:var(--coral);">${TF_FMT(totalDebits)}</td>
+              <td ${canEdit ? 'colspan="2"' : ""} style="padding:10px 12px;" class="faint">
+                Net: <strong style="color:${totalCredits - totalDebits >= 0 ? "#2E7D32" : "var(--coral)"};">${TF_FMT(totalCredits - totalDebits)}</strong>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       ` : `<p class="muted" style="margin:0;">No transactions recorded yet.</p>`}
     </div>
   `;
 
-  // ── Employee Loans ──────────────────────────────────────────────
-  const loansHtml = `
-    <div class="card" style="padding:22px; margin-bottom:24px;">
-      <h3 style="margin:0 0 6px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Employee Loans</h3>
-      <p class="muted" style="font-size:12px; margin:0 0 16px;">Loan amounts reduce the available balance until repaid. Repayments restore it automatically.</p>
-      ${loans.length ? `
-        <div style="overflow-x:auto;">
-          <table style="width:100%; border-collapse:collapse; min-width:800px;">
-            <thead>
-              <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
-                <th style="padding:8px 12px; text-align:left;">Employee</th>
-                <th style="padding:8px 12px; text-align:left;">Date</th>
-                <th style="padding:8px 12px; text-align:right;">Amount</th>
-                <th style="padding:8px 12px; text-align:right;">Repaid</th>
-                <th style="padding:8px 12px; text-align:right;">Outstanding</th>
-                <th style="padding:8px 12px; text-align:left;">Status</th>
-                <th style="padding:8px 12px; text-align:left;">Note</th>
-                ${canEdit ? `<th style="padding:8px 12px;"></th>` : ''}
-              </tr>
-            </thead>
-            <tbody>
-              ${loans.map(loan => {
-                const loanRepaid = repayments.filter(r => r.loan_id === loan.id).reduce((s, r) => s + Number(r.amount), 0);
-                const outstanding = Number(loan.amount) - loanRepaid;
-                const isPaid = loan.status === 'paid' || outstanding <= 0;
-                return `
-                  <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
-                    <td style="padding:10px 12px; font-weight:600;">${escapeHtml(loan.employee_name)}</td>
-                    <td style="padding:10px 12px; white-space:nowrap;">${formatPrettyDate(loan.loan_date)}</td>
-                    <td style="padding:10px 12px; text-align:right;">${TF_FMT(loan.amount)}</td>
-                    <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(loanRepaid)}</td>
-                    <td style="padding:10px 12px; text-align:right; font-weight:600; color:${outstanding > 0 ? 'var(--coral)' : '#2E7D32'};">${TF_FMT(Math.max(0, outstanding))}</td>
-                    <td style="padding:10px 12px;">
-                      <span style="display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600;
-                        background:${isPaid ? '#E8F5E9' : 'var(--amber-wash)'};
-                        color:${isPaid ? '#2E7D32' : 'var(--amber-dark, #9E6B00)'};">
-                        ${isPaid ? '✓ Paid' : loan.paid_date ? 'Partial' : 'Active'}
-                      </span>
+  // Tab 2: Employee Loans
+  const loansTabHtml = `
+    <p class="muted" style="font-size:12px; margin:0 0 16px;">Loan amounts reduce the available balance until repaid. Repayments restore it automatically.</p>
+    ${loans.length ? `
+      <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; min-width:800px;">
+          <thead>
+            <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+              <th style="padding:8px 12px; text-align:left;">Employee</th>
+              <th style="padding:8px 12px; text-align:left;">Date</th>
+              <th style="padding:8px 12px; text-align:right;">Loaned</th>
+              <th style="padding:8px 12px; text-align:right; color:#2E7D32;">Repaid</th>
+              <th style="padding:8px 12px; text-align:right; color:var(--coral);">Outstanding</th>
+              <th style="padding:8px 12px; text-align:left;">Status</th>
+              <th style="padding:8px 12px; text-align:left;">Note</th>
+              ${canEdit ? `<th style="padding:8px 12px;"></th>` : ""}
+            </tr>
+          </thead>
+          <tbody>
+            ${loans.map(loan => {
+              const loanRepaid = repayments.filter(r => r.loan_id === loan.id).reduce((s,r) => s + Number(r.amount), 0);
+              const outstanding = Math.max(0, Number(loan.amount) - loanRepaid);
+              const isPaid = loan.status === "paid" || outstanding <= 0;
+              return `
+                <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+                  <td style="padding:10px 12px; font-weight:600;">${escapeHtml(loan.employee_name)}</td>
+                  <td style="padding:10px 12px; white-space:nowrap;">${formatPrettyDate(loan.loan_date)}</td>
+                  <td style="padding:10px 12px; text-align:right;">${TF_FMT(loan.amount)}</td>
+                  <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(loanRepaid)}</td>
+                  <td style="padding:10px 12px; text-align:right; font-weight:600; color:${outstanding > 0 ? "var(--coral)" : "#2E7D32"};">${TF_FMT(outstanding)}</td>
+                  <td style="padding:10px 12px;">
+                    <span style="display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600;
+                      background:${isPaid ? "#E8F5E9" : "var(--amber-wash)"};
+                      color:${isPaid ? "#2E7D32" : "var(--amber-dark,#9E6B00)"};">
+                      ${isPaid ? "✓ Paid" : "Active"}
+                    </span>
+                  </td>
+                  <td style="padding:10px 12px; font-size:12px;" class="faint">${escapeHtml(loan.note)}</td>
+                  ${canEdit ? `
+                    <td style="padding:10px 12px; white-space:nowrap;">
+                      ${!isPaid ? `<button class="btn btn-ghost btn-sm tf-add-repayment-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 8px;">+ Repayment</button>` : ""}
+                      <button class="btn btn-ghost btn-sm tf-view-repayments-btn" data-loan-id="${loan.id}" style="font-size:11px; padding:3px 8px;">History</button>
+                      <button class="btn btn-ghost btn-sm tf-edit-loan-btn" data-loan-id="${loan.id}" style="font-size:11px; padding:3px 8px;">Edit</button>
+                      <button class="btn btn-ghost btn-sm tf-delete-loan-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 6px; color:var(--coral);" title="Delete">✕</button>
                     </td>
-                    <td style="padding:10px 12px; font-size:12px;" class="faint">${escapeHtml(loan.note)}</td>
-                    ${canEdit ? `
-                      <td style="padding:10px 12px;">
-                        <div style="display:flex; gap:6px;">
-                          ${!isPaid ? `<button class="btn btn-ghost btn-sm tf-add-repayment-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 8px; white-space:nowrap;">+ Repayment</button>` : ''}
-                          <button class="btn btn-ghost btn-sm tf-view-repayments-btn" data-loan-id="${loan.id}" style="font-size:11px; padding:3px 8px;">History</button>
-                          <button class="btn btn-ghost btn-sm tf-edit-loan-btn" data-loan-id="${loan.id}" style="font-size:11px; padding:3px 8px;">Edit</button>
-                          <button class="btn btn-ghost btn-sm tf-delete-loan-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 6px; color:var(--coral);" title="Delete this loan">✕</button>
-                        </div>
-                      </td>
-                    ` : ''}
-                  </tr>
-                `;
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
-      ` : `<p class="muted" style="margin:0;">No loans recorded yet.</p>`}
-    </div>
+                  ` : ""}
+                </tr>
+              `;
+            }).join("")}
+            <tr style="border-top:2px solid var(--line); font-size:12.5px; font-weight:700;">
+              <td style="padding:10px 12px;" colspan="2">Totals</td>
+              <td style="padding:10px 12px; text-align:right;">${TF_FMT(totalLoaned)}</td>
+              <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(totalRepaid)}</td>
+              <td style="padding:10px 12px; text-align:right; color:var(--coral);">${TF_FMT(loanOutstanding)}</td>
+              <td ${canEdit ? 'colspan="3"' : 'colspan="2"'} style="padding:10px 12px;"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    ` : `<p class="muted" style="margin:0;">No loans recorded yet.</p>`}
   `;
 
-  // ── Treasurer accounts ──────────────────────────────────────────
-  const accountsHtml = `
+  // Tab 3: Treasurer Accounts
+  const accountsTabHtml = `
+    <p class="muted" style="font-size:12px; margin:0 0 16px;">Use these details when remitting funds to the team treasurer.</p>
+    ${canEdit ? `<button class="btn btn-ghost btn-sm" id="tf-add-account-btn" style="margin-bottom:16px;">+ Add account</button>` : ""}
+    ${accounts.length ? `
+      <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr)); gap:16px;">
+        ${accounts.map(acc => `
+          <div style="border:1px solid var(--line-soft); border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:8px;">
+            <div style="font-weight:700; font-size:14px;">${escapeHtml(acc.display_name)}</div>
+            ${acc.bank_name ? `<div class="faint" style="font-size:12px;">${escapeHtml(acc.bank_name)}</div>` : ""}
+            ${acc.account_number ? `<div style="font-family:monospace; font-size:14px; font-weight:600; background:var(--line-soft); padding:6px 10px; border-radius:6px;">${escapeHtml(acc.account_number)}</div>` : ""}
+            ${acc.qr_code_data ? `<img src="${acc.qr_code_data}" alt="QR code" style="width:140px; height:140px; object-fit:contain; border:1px solid var(--line-soft); border-radius:8px; margin-top:4px;">` : ""}
+            ${canEdit ? `
+              <div style="display:flex; gap:6px; margin-top:4px;">
+                <button class="btn btn-ghost btn-sm tf-edit-account-btn" data-id="${acc.id}" style="font-size:11px;">Edit</button>
+                <button class="btn btn-ghost btn-sm tf-delete-account-btn" data-id="${acc.id}" data-name="${escapeHtml(acc.display_name)}" style="font-size:11px; color:var(--coral);">✕</button>
+              </div>
+            ` : ""}
+          </div>
+        `).join("")}
+      </div>
+    ` : `<p class="muted" style="margin:0;">No treasurer accounts added yet.</p>`}
+  `;
+
+  // ── Tab switcher ────────────────────────────────────────────────
+  const activeTab = state.teamFundsTab;
+  const tabs = [
+    { id: "transactions", label: "Transaction History" },
+    { id: "loans",        label: "Employee Loans" },
+    { id: "accounts",     label: "Treasurer Accounts" },
+  ];
+
+  const tabbedCard = `
     <div class="card" style="padding:22px;">
-      <h3 style="margin:0 0 6px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Treasurer Account Details</h3>
-      <p class="muted" style="font-size:12px; margin:0 0 16px;">Use these details when remitting funds to the team treasurer.</p>
-      ${canEdit ? `<button class="btn btn-ghost btn-sm" id="tf-add-account-btn" style="margin-bottom:16px;">+ Add account</button>` : ''}
-      ${accounts.length ? `
-        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr)); gap:16px;">
-          ${accounts.map(acc => `
-            <div style="border:1px solid var(--line-soft); border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:8px;">
-              <div style="font-weight:700; font-size:14px;">${escapeHtml(acc.display_name)}</div>
-              ${acc.bank_name ? `<div class="faint" style="font-size:12px;">${escapeHtml(acc.bank_name)}</div>` : ''}
-              ${acc.account_number ? `
-                <div style="font-family:monospace; font-size:14px; font-weight:600; letter-spacing:0.05em; background:var(--line-soft); padding:6px 10px; border-radius:6px;">
-                  ${escapeHtml(acc.account_number)}
-                </div>
-              ` : ''}
-              ${acc.qr_code_data ? `
-                <img src="${acc.qr_code_data}" alt="QR code"
-                  style="width:140px; height:140px; object-fit:contain; border:1px solid var(--line-soft); border-radius:8px; margin-top:4px;">
-              ` : ''}
-              ${canEdit ? `<button class="btn btn-ghost btn-sm tf-edit-account-btn" data-id="${acc.id}" style="font-size:11px; margin-top:4px; align-self:flex-start;">Edit</button>` : ''}
-            </div>
-          `).join('')}
-        </div>
-      ` : `<p class="muted" style="font-size:12.5px; margin:0;">No treasurer accounts added yet.</p>`}
+      <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin-bottom:20px;">
+        ${tabs.map(tab => `
+          <button class="tf-tab-btn" data-tab="${tab.id}" style="
+            padding:10px 20px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer;
+            border-bottom:${activeTab === tab.id ? "3px solid var(--teal)" : "3px solid transparent"};
+            color:${activeTab === tab.id ? "var(--teal)" : "var(--ink-faint)"};
+            margin-bottom:-2px; font-family:inherit;">
+            ${tab.label}
+          </button>
+        `).join("")}
+      </div>
+      ${activeTab === "transactions" ? txTabHtml : activeTab === "loans" ? loansTabHtml : accountsTabHtml}
     </div>
   `;
 
-  el.innerHTML = summaryHtml + openingBalanceHtml + txHtml + loansHtml + accountsHtml;
+  el.innerHTML = summaryHtml + openingBalanceHtml + tabbedCard;
+
+  // Tab click — no re-fetch, just flip state and re-render
+  document.querySelectorAll(".tf-tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      state.teamFundsTab = btn.dataset.tab;
+      renderTeamFunds();
+    });
+  });
 
   if (canEdit) {
-    document.getElementById('tf-add-credit-btn')?.addEventListener('click', () => openTfTransactionModal('credit'));
-    document.getElementById('tf-add-debit-btn')?.addEventListener('click', () => openTfTransactionModal('debit'));
-    document.getElementById('tf-add-loan-btn')?.addEventListener('click', openTfLoanModal);
-    document.getElementById('tf-set-opening-btn')?.addEventListener('click', openTfOpeningBalanceModal);
-    document.getElementById('tf-add-account-btn')?.addEventListener('click', () => openTfAccountModal(null));
-    document.querySelectorAll('.tf-edit-account-btn').forEach(btn => {
+    document.getElementById("tf-add-credit-btn")?.addEventListener("click", () => openTfTransactionModal("credit"));
+    document.getElementById("tf-add-debit-btn")?.addEventListener("click", () => openTfTransactionModal("debit"));
+    document.getElementById("tf-add-loan-btn")?.addEventListener("click", openTfLoanModal);
+    document.getElementById("tf-set-opening-btn")?.addEventListener("click", openTfOpeningBalanceModal);
+    document.getElementById("tf-add-account-btn")?.addEventListener("click", () => openTfAccountModal(null));
+    document.querySelectorAll(".tf-edit-account-btn").forEach(btn => {
       const acc = accounts.find(a => a.id === btn.dataset.id);
-      btn.addEventListener('click', () => openTfAccountModal(acc));
+      btn.addEventListener("click", () => openTfAccountModal(acc));
     });
-    document.querySelectorAll('.tf-add-repayment-btn').forEach(btn => {
-      btn.addEventListener('click', () => openTfRepaymentModal(btn.dataset.loanId, btn.dataset.loanName));
+    document.querySelectorAll(".tf-delete-account-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Remove ${btn.dataset.name}\'s account details?`)) return;
+        await sb.from("treasurer_accounts").delete().eq("id", btn.dataset.id);
+        showToast("Account removed."); renderTeamFunds();
+      });
     });
-    document.querySelectorAll('.tf-view-repayments-btn').forEach(btn => {
-      btn.addEventListener('click', () => openTfRepaymentHistory(btn.dataset.loanId, repayments, loans));
+    document.querySelectorAll(".tf-add-repayment-btn").forEach(btn => {
+      btn.addEventListener("click", () => openTfRepaymentModal(btn.dataset.loanId, btn.dataset.loanName));
     });
-    document.querySelectorAll('.tf-edit-tx-btn').forEach(btn => {
+    document.querySelectorAll(".tf-view-repayments-btn").forEach(btn => {
+      btn.addEventListener("click", () => openTfRepaymentHistory(btn.dataset.loanId, repayments, loans));
+    });
+    document.querySelectorAll(".tf-edit-tx-btn").forEach(btn => {
       const tx = transactions.find(t => t.id === btn.dataset.id);
-      btn.addEventListener('click', () => openTfEditTransactionModal(tx));
+      btn.addEventListener("click", () => openTfEditTransactionModal(tx));
     });
-    document.querySelectorAll('.tf-delete-tx-btn').forEach(btn => {
-      btn.addEventListener('click', () => deleteTfTransaction(btn.dataset.id));
+    document.querySelectorAll(".tf-delete-tx-btn").forEach(btn => {
+      btn.addEventListener("click", () => deleteTfTransaction(btn.dataset.id));
     });
-    document.querySelectorAll('.tf-edit-loan-btn').forEach(btn => {
+    document.querySelectorAll(".tf-edit-loan-btn").forEach(btn => {
       const loan = loans.find(l => l.id === btn.dataset.loanId);
-      btn.addEventListener('click', () => openTfEditLoanModal(loan));
+      btn.addEventListener("click", () => openTfEditLoanModal(loan));
     });
-    document.querySelectorAll('.tf-delete-loan-btn').forEach(btn => {
-      btn.addEventListener('click', () => deleteTfLoan(btn.dataset.loanId, btn.dataset.loanName));
+    document.querySelectorAll(".tf-delete-loan-btn").forEach(btn => {
+      btn.addEventListener("click", () => deleteTfLoan(btn.dataset.loanId, btn.dataset.loanName));
     });
   }
 }
+
 
 function tfDateField(id, label, required = true) {
   const today = isoDate(new Date());
