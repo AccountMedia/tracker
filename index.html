@@ -2373,7 +2373,25 @@ function openDayPanel(dateIso) {
   `;
   }).join('') : `<p class="muted">No leave logged for this day.</p>`;
 
-  openModal(formatPrettyDate(dateIso), `<div>${body}</div>`);
+  // Check for birthdays on this date, same logic as the calendar cell markers.
+  const clickedDate = new Date(dateIso + 'T00:00:00');
+  const birthdaysOnDay = state.employees.filter(emp => {
+    if (!emp.birthday || emp.active === false) return false;
+    const bday = new Date(emp.birthday + 'T00:00:00');
+    return bday.getMonth() === clickedDate.getMonth() && bday.getDate() === clickedDate.getDate();
+  });
+
+  const birthdaySection = birthdaysOnDay.length ? `
+    <div style="display:flex; align-items:center; gap:10px; padding:10px 0 12px; border-bottom:1px solid var(--line-soft); margin-bottom:10px;">
+      <span style="font-size:18px;">🎂</span>
+      <div>
+        <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:var(--ink-faint); margin-bottom:2px;">Birthday${birthdaysOnDay.length > 1 ? 's' : ''} today</div>
+        <div style="font-size:13px; font-weight:600;">${birthdaysOnDay.map(emp => escapeHtml(emp.display_name)).join(', ')}</div>
+      </div>
+    </div>
+  ` : '';
+
+  openModal(formatPrettyDate(dateIso), `<div>${birthdaySection}${body}</div>`);
   document.querySelectorAll('.cancel-leave-btn').forEach(b => {
     b.addEventListener('click', () => cancelLeave(b.dataset.id, true));
   });
