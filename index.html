@@ -367,10 +367,10 @@
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
+      <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds</a>
       <a class="nav-item" data-view="employee-management" id="nav-employee-management" style="display:none;"><span class="dot"></span>Employee Management</a>
       <div class="nav-section-label">Coming soon</div>
       <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
-      <a class="nav-item disabled"><span class="dot"></span>Team Funds</a>
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
@@ -470,6 +470,18 @@
         <div id="employee-management-actions"></div>
       </div>
       <div id="employee-management-content"></div>
+    </section>
+
+    <section class="view" id="view-team-funds">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>Team Funds</h1>
+          <p class="lede">Real-time tracking of team fund movements, balances, and treasurer account details.</p>
+        </div>
+        <div id="team-funds-actions"></div>
+      </div>
+      <div id="team-funds-content"></div>
     </section>
 
   </main>
@@ -714,7 +726,7 @@ function initNav() {
   }
 
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'employee-management'];
+  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'employee-management', 'team-funds'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
@@ -743,6 +755,7 @@ function switchView(viewName) {
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
   if (viewName === 'employee-management') renderEmployeeManagement();
+  if (viewName === 'team-funds') renderTeamFunds();
 
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
@@ -5633,6 +5646,498 @@ function formatPrettyDate(iso) {
 // Birthdays are shown as just "Jan 5" — no weekday (irrelevant for a
 // birthday) and no year (the stored year is just whatever was entered
 // in the date picker, not necessarily meaningful to display).
+// =====================================================================
+// TEAM FUNDS
+// =====================================================================
+
+const TF_FMT = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+async function renderTeamFunds() {
+  const actionsEl = document.getElementById('team-funds-actions');
+  const el = document.getElementById('team-funds-content');
+  const canEdit = canEditTeamFunds();
+
+  actionsEl.innerHTML = canEdit ? `
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-ghost" id="tf-add-credit-btn">+ Add funds</button>
+      <button class="btn btn-ghost" id="tf-add-loan-btn">+ Loan</button>
+      <button class="btn btn-primary" id="tf-add-debit-btn">− Record expense</button>
+    </div>
+  ` : '';
+
+  el.innerHTML = '<div class="loading-row">Loading…</div>';
+
+  const [settingsRes, txRes, accountsRes, loansRes, repaymentsRes] = await Promise.all([
+    sb.from('team_funds_settings').select('*').order('updated_at', { ascending: false }).limit(1),
+    sb.from('team_fund_transactions').select('*').order('transaction_date', { ascending: false }),
+    sb.from('treasurer_accounts').select('*').order('display_name'),
+    sb.from('employee_loans').select('*').order('loan_date', { ascending: false }),
+    sb.from('loan_repayments').select('*').order('payment_date', { ascending: false }),
+  ]);
+
+  const settings    = settingsRes.data?.[0] || null;
+  const transactions = txRes.data || [];
+  const accounts    = accountsRes.data || [];
+  const loans       = loansRes.data || [];
+  const repayments  = repaymentsRes.data || [];
+
+  const openingBalance = settings ? Number(settings.opening_balance) : 0;
+  const totalCredits = transactions.filter(t => t.type === 'credit').reduce((s, t) => s + Number(t.amount), 0);
+  const totalDebits  = transactions.filter(t => t.type === 'debit').reduce((s, t) => s + Number(t.amount), 0);
+  const totalLoaned  = loans.reduce((s, l) => s + Number(l.amount), 0);
+  const totalRepaid  = repayments.reduce((s, r) => s + Number(r.amount), 0);
+  const loanOutstanding = totalLoaned - totalRepaid; // still owed back to team funds
+  const currentBalance = openingBalance + totalCredits - totalDebits - loanOutstanding;
+
+  // ── Summary cards ──────────────────────────────────────────────
+  const summaryHtml = `
+    <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:8px;">
+      ${[
+        ['Opening Balance', openingBalance, 'var(--ink-soft)'],
+        ['Total Inflows',   totalCredits,   '#2E7D32'],
+        ['Total Outflows',  totalDebits,    'var(--coral)'],
+        ['Current Balance', currentBalance, currentBalance >= 0 ? 'var(--teal)' : 'var(--coral)'],
+      ].map(([label, val, color]) => `
+        <div class="card" style="padding:18px;">
+          <div class="faint" style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:8px;">${label}</div>
+          <div style="font-family:var(--font-display); font-size:26px; font-weight:700; color:${color};">${TF_FMT(val)}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div style="margin-bottom:24px;">
+      <span class="faint" style="font-size:12px;">Loans outstanding: <strong style="color:var(--coral);">${TF_FMT(loanOutstanding)}</strong> (reduces available balance until repaid)</span>
+    </div>
+  `;
+
+  // ── Opening balance control ─────────────────────────────────────
+  const openingBalanceHtml = canEdit ? `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:20px;">
+      <span class="faint" style="font-size:12.5px;">Opening balance: <strong>${TF_FMT(openingBalance)}</strong></span>
+      <button class="btn btn-ghost btn-sm" id="tf-set-opening-btn" style="font-size:11px; padding:4px 10px;">Edit</button>
+    </div>
+  ` : `<div class="faint" style="font-size:12.5px; margin-bottom:20px;">Opening balance: <strong>${TF_FMT(openingBalance)}</strong></div>`;
+
+  // ── Transaction history ─────────────────────────────────────────
+  const txHtml = `
+    <div class="card" style="padding:22px; margin-bottom:24px;">
+      <h3 style="margin:0 0 14px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Transaction History</h3>
+      ${transactions.length ? `
+        <div style="overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; min-width:700px;">
+            <thead>
+              <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+                <th style="padding:8px 12px; text-align:left;">Date</th>
+                <th style="padding:8px 12px; text-align:left;">Note</th>
+                <th style="padding:8px 12px; text-align:left;">Type</th>
+                <th style="padding:8px 12px; text-align:right;">Amount</th>
+                <th style="padding:8px 12px; text-align:left;">Recorded By</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${transactions.map(t => {
+                const isCredit = t.type === 'credit';
+                const dateStr = t.transaction_date ? formatPrettyDate(t.transaction_date) : '—';
+                return `
+                  <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+                    <td style="padding:10px 12px; white-space:nowrap;">${dateStr}</td>
+                    <td style="padding:10px 12px;">${escapeHtml(t.note)}</td>
+                    <td style="padding:10px 12px;">
+                      <span style="display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600;
+                        background:${isCredit ? '#E8F5E9' : 'var(--coral-wash)'};
+                        color:${isCredit ? '#2E7D32' : 'var(--coral)'};">
+                        ${isCredit ? 'Inflow' : 'Outflow'}
+                      </span>
+                    </td>
+                    <td style="padding:10px 12px; text-align:right; font-weight:600; color:${isCredit ? '#2E7D32' : 'var(--coral)'};">
+                      ${isCredit ? '+' : '−'}${TF_FMT(t.amount)}
+                    </td>
+                    <td style="padding:10px 12px;" class="faint">${escapeHtml(t.recorded_by)}</td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : `<p class="muted" style="margin:0;">No transactions recorded yet.</p>`}
+    </div>
+  `;
+
+  // ── Employee Loans ──────────────────────────────────────────────
+  const loansHtml = `
+    <div class="card" style="padding:22px; margin-bottom:24px;">
+      <h3 style="margin:0 0 6px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Employee Loans</h3>
+      <p class="muted" style="font-size:12px; margin:0 0 16px;">Loan amounts reduce the available balance until repaid. Repayments restore it automatically.</p>
+      ${loans.length ? `
+        <div style="overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; min-width:800px;">
+            <thead>
+              <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+                <th style="padding:8px 12px; text-align:left;">Employee</th>
+                <th style="padding:8px 12px; text-align:left;">Date</th>
+                <th style="padding:8px 12px; text-align:right;">Amount</th>
+                <th style="padding:8px 12px; text-align:right;">Repaid</th>
+                <th style="padding:8px 12px; text-align:right;">Outstanding</th>
+                <th style="padding:8px 12px; text-align:left;">Status</th>
+                <th style="padding:8px 12px; text-align:left;">Note</th>
+                ${canEdit ? `<th style="padding:8px 12px;"></th>` : ''}
+              </tr>
+            </thead>
+            <tbody>
+              ${loans.map(loan => {
+                const loanRepaid = repayments.filter(r => r.loan_id === loan.id).reduce((s, r) => s + Number(r.amount), 0);
+                const outstanding = Number(loan.amount) - loanRepaid;
+                const isPaid = loan.status === 'paid' || outstanding <= 0;
+                return `
+                  <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+                    <td style="padding:10px 12px; font-weight:600;">${escapeHtml(loan.employee_name)}</td>
+                    <td style="padding:10px 12px; white-space:nowrap;">${formatPrettyDate(loan.loan_date)}</td>
+                    <td style="padding:10px 12px; text-align:right;">${TF_FMT(loan.amount)}</td>
+                    <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(loanRepaid)}</td>
+                    <td style="padding:10px 12px; text-align:right; font-weight:600; color:${outstanding > 0 ? 'var(--coral)' : '#2E7D32'};">${TF_FMT(Math.max(0, outstanding))}</td>
+                    <td style="padding:10px 12px;">
+                      <span style="display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600;
+                        background:${isPaid ? '#E8F5E9' : 'var(--amber-wash)'};
+                        color:${isPaid ? '#2E7D32' : 'var(--amber-dark, #9E6B00)'};">
+                        ${isPaid ? '✓ Paid' : loan.paid_date ? 'Partial' : 'Active'}
+                      </span>
+                    </td>
+                    <td style="padding:10px 12px; font-size:12px;" class="faint">${escapeHtml(loan.note)}</td>
+                    ${canEdit ? `
+                      <td style="padding:10px 12px;">
+                        <div style="display:flex; gap:6px;">
+                          ${!isPaid ? `<button class="btn btn-ghost btn-sm tf-add-repayment-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 8px; white-space:nowrap;">+ Repayment</button>` : ''}
+                          <button class="btn btn-ghost btn-sm tf-view-repayments-btn" data-loan-id="${loan.id}" style="font-size:11px; padding:3px 8px;">History</button>
+                        </div>
+                      </td>
+                    ` : ''}
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : `<p class="muted" style="margin:0;">No loans recorded yet.</p>`}
+    </div>
+  `;
+
+  // ── Treasurer accounts ──────────────────────────────────────────
+  const accountsHtml = `
+    <div class="card" style="padding:22px;">
+      <h3 style="margin:0 0 6px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Treasurer Account Details</h3>
+      <p class="muted" style="font-size:12px; margin:0 0 16px;">Use these details when remitting funds to the team treasurer.</p>
+      ${canEdit ? `<button class="btn btn-ghost btn-sm" id="tf-add-account-btn" style="margin-bottom:16px;">+ Add account</button>` : ''}
+      ${accounts.length ? `
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr)); gap:16px;">
+          ${accounts.map(acc => `
+            <div style="border:1px solid var(--line-soft); border-radius:12px; padding:16px; display:flex; flex-direction:column; gap:8px;">
+              <div style="font-weight:700; font-size:14px;">${escapeHtml(acc.display_name)}</div>
+              ${acc.bank_name ? `<div class="faint" style="font-size:12px;">${escapeHtml(acc.bank_name)}</div>` : ''}
+              ${acc.account_number ? `
+                <div style="font-family:monospace; font-size:14px; font-weight:600; letter-spacing:0.05em; background:var(--line-soft); padding:6px 10px; border-radius:6px;">
+                  ${escapeHtml(acc.account_number)}
+                </div>
+              ` : ''}
+              ${acc.qr_code_data ? `
+                <img src="${acc.qr_code_data}" alt="QR code"
+                  style="width:140px; height:140px; object-fit:contain; border:1px solid var(--line-soft); border-radius:8px; margin-top:4px;">
+              ` : ''}
+              ${canEdit ? `<button class="btn btn-ghost btn-sm tf-edit-account-btn" data-id="${acc.id}" style="font-size:11px; margin-top:4px; align-self:flex-start;">Edit</button>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      ` : `<p class="muted" style="font-size:12.5px; margin:0;">No treasurer accounts added yet.</p>`}
+    </div>
+  `;
+
+  el.innerHTML = summaryHtml + openingBalanceHtml + txHtml + loansHtml + accountsHtml;
+
+  if (canEdit) {
+    document.getElementById('tf-add-credit-btn')?.addEventListener('click', () => openTfTransactionModal('credit'));
+    document.getElementById('tf-add-debit-btn')?.addEventListener('click', () => openTfTransactionModal('debit'));
+    document.getElementById('tf-add-loan-btn')?.addEventListener('click', openTfLoanModal);
+    document.getElementById('tf-set-opening-btn')?.addEventListener('click', openTfOpeningBalanceModal);
+    document.getElementById('tf-add-account-btn')?.addEventListener('click', () => openTfAccountModal(null));
+    document.querySelectorAll('.tf-edit-account-btn').forEach(btn => {
+      const acc = accounts.find(a => a.id === btn.dataset.id);
+      btn.addEventListener('click', () => openTfAccountModal(acc));
+    });
+    document.querySelectorAll('.tf-add-repayment-btn').forEach(btn => {
+      btn.addEventListener('click', () => openTfRepaymentModal(btn.dataset.loanId, btn.dataset.loanName));
+    });
+    document.querySelectorAll('.tf-view-repayments-btn').forEach(btn => {
+      btn.addEventListener('click', () => openTfRepaymentHistory(btn.dataset.loanId, repayments, loans));
+    });
+  }
+}
+
+function tfDateField(id, label, required = true) {
+  const today = isoDate(new Date());
+  return `
+    <div class="field">
+      <label for="${id}">${label}${required ? '' : ' <span class="faint">(optional)</span>'}</label>
+      <input type="date" id="${id}" value="${today}" ${required ? 'required' : ''}
+        style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+    </div>
+  `;
+}
+
+function openTfTransactionModal(type) {
+  const isCredit = type === 'credit';
+  openModal(isCredit ? 'Add funds (inflow)' : 'Record expense (outflow)', `
+    <form id="tf-tx-form" style="display:flex; flex-direction:column; gap:14px;">
+      ${tfDateField('tf-tx-date', isCredit ? 'Date received' : 'Date of expense')}
+      <div class="field">
+        <label for="tf-tx-amount">Amount (₱)</label>
+        <input type="number" id="tf-tx-amount" min="0.01" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-tx-note">${isCredit ? 'Source / details' : 'Purpose / details'}</label>
+        <textarea id="tf-tx-note" rows="3" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+          placeholder="${isCredit ? 'e.g. LI excess remittance from Arniel — July 2026' : 'e.g. Birthday cake for Mae Angiele — July 5, 2026'}"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">
+        ${isCredit ? 'Record inflow' : 'Record expense'}
+      </button>
+    </form>
+  `);
+  document.getElementById('tf-tx-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const date = document.getElementById('tf-tx-date').value;
+    const amount = parseFloat(document.getElementById('tf-tx-amount').value);
+    const note = document.getElementById('tf-tx-note').value.trim();
+    if (!date) { showToast('Please select a date.', true); return; }
+    if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
+    if (!note) { showToast('Please add a note — it is required.', true); return; }
+    const { error } = await sb.from('team_fund_transactions').insert({
+      type, amount, note, transaction_date: date, recorded_by: state.profile.display_name,
+    });
+    if (error) { showToast('Could not save the transaction.', true); return; }
+    closeModal();
+    showToast(isCredit ? 'Inflow recorded.' : 'Expense recorded.');
+    renderTeamFunds();
+  });
+}
+
+function openTfOpeningBalanceModal() {
+  openModal('Set opening balance', `
+    <form id="tf-opening-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">This sets the baseline starting balance. Changing it immediately affects the displayed current balance.</p>
+      ${tfDateField('tf-opening-date', 'Date of opening balance')}
+      <div class="field">
+        <label for="tf-opening-amount">Opening balance (₱)</label>
+        <input type="number" id="tf-opening-amount" min="0" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save opening balance</button>
+    </form>
+  `);
+  document.getElementById('tf-opening-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const amount = parseFloat(document.getElementById('tf-opening-amount').value);
+    if (isNaN(amount) || amount < 0) { showToast('Please enter a valid amount.', true); return; }
+    await sb.from('team_funds_settings').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    const { error } = await sb.from('team_funds_settings').insert({
+      opening_balance: amount, set_by: state.profile.display_name,
+    });
+    if (error) { showToast('Could not save the opening balance.', true); return; }
+    closeModal();
+    showToast('Opening balance saved.');
+    renderTeamFunds();
+  });
+}
+
+function openTfLoanModal() {
+  const activeEmployees = state.employees.filter(e => e.active !== false).sort(byKristinaFirstThenName);
+  openModal('Record employee loan', `
+    <form id="tf-loan-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tf-loan-emp">Employee</label>
+        <select id="tf-loan-emp" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <option value="">— Select employee —</option>
+          ${activeEmployees.map(emp => `<option value="${emp.id}" data-name="${escapeHtml(emp.display_name)}">${escapeHtml(emp.display_name)}</option>`).join('')}
+        </select>
+      </div>
+      ${tfDateField('tf-loan-date', 'Date of loan')}
+      <div class="field">
+        <label for="tf-loan-amount">Loan amount (₱)</label>
+        <input type="number" id="tf-loan-amount" min="0.01" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-loan-note">Purpose / details</label>
+        <textarea id="tf-loan-note" rows="3" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+          placeholder="e.g. Personal loan — to be repaid in 3 installments starting August 2026"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Record loan</button>
+    </form>
+  `);
+  document.getElementById('tf-loan-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const empSelect = document.getElementById('tf-loan-emp');
+    const empId = empSelect.value;
+    const empName = empSelect.options[empSelect.selectedIndex]?.dataset.name || '';
+    const date = document.getElementById('tf-loan-date').value;
+    const amount = parseFloat(document.getElementById('tf-loan-amount').value);
+    const note = document.getElementById('tf-loan-note').value.trim();
+    if (!empId) { showToast('Please select an employee.', true); return; }
+    if (!date) { showToast('Please select a date.', true); return; }
+    if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
+    if (!note) { showToast('Please add a note — it is required.', true); return; }
+    const { error } = await sb.from('employee_loans').insert({
+      employee_id: empId, employee_name: empName,
+      amount, note, loan_date: date,
+      status: 'active', recorded_by: state.profile.display_name,
+    });
+    if (error) { showToast('Could not record the loan.', true); return; }
+    closeModal();
+    showToast('Loan recorded. Balance will reflect this once saved.');
+    renderTeamFunds();
+  });
+}
+
+function openTfRepaymentModal(loanId, loanName) {
+  openModal(`Record repayment — ${loanName}`, `
+    <form id="tf-repay-form" style="display:flex; flex-direction:column; gap:14px;">
+      ${tfDateField('tf-repay-date', 'Payment date')}
+      <div class="field">
+        <label for="tf-repay-amount">Amount paid (₱)</label>
+        <input type="number" id="tf-repay-amount" min="0.01" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-repay-note">Note <span class="faint">(optional)</span></label>
+        <input type="text" id="tf-repay-note"
+          placeholder="e.g. 1st installment"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save repayment</button>
+    </form>
+  `);
+  document.getElementById('tf-repay-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const date = document.getElementById('tf-repay-date').value;
+    const amount = parseFloat(document.getElementById('tf-repay-amount').value);
+    const note = document.getElementById('tf-repay-note').value.trim();
+    if (!date) { showToast('Please select a payment date.', true); return; }
+    if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
+    const { error } = await sb.from('loan_repayments').insert({
+      loan_id: loanId, amount, payment_date: date, note: note || null,
+      recorded_by: state.profile.display_name,
+    });
+    if (error) { showToast('Could not record the repayment.', true); return; }
+    closeModal();
+    showToast('Repayment recorded.');
+    renderTeamFunds();
+  });
+}
+
+function openTfRepaymentHistory(loanId, repayments, loans) {
+  const loan = loans.find(l => l.id === loanId);
+  const loanRepayments = repayments.filter(r => r.loan_id === loanId).sort((a, b) => a.payment_date.localeCompare(b.payment_date));
+  const totalRepaid = loanRepayments.reduce((s, r) => s + Number(r.amount), 0);
+  const outstanding = Number(loan.amount) - totalRepaid;
+  openModal(`Repayment history — ${loan.employee_name}`, `
+    <div style="margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;">
+        <span class="faint">Loan amount:</span><span style="font-weight:600;">${TF_FMT(loan.amount)}</span>
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;">
+        <span class="faint">Total repaid:</span><span style="font-weight:600; color:#2E7D32;">${TF_FMT(totalRepaid)}</span>
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:13px;">
+        <span class="faint">Outstanding:</span><span style="font-weight:600; color:${outstanding > 0 ? 'var(--coral)' : '#2E7D32'};">${TF_FMT(Math.max(0, outstanding))}</span>
+      </div>
+    </div>
+    ${loanRepayments.length ? `
+      <div style="border-top:1px solid var(--line-soft); padding-top:12px;">
+        ${loanRepayments.map(r => `
+          <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+            <div>
+              <div style="font-weight:600;">${formatPrettyDate(r.payment_date)}</div>
+              ${r.note ? `<div class="faint" style="font-size:11.5px;">${escapeHtml(r.note)}</div>` : ''}
+            </div>
+            <div style="font-weight:600; color:#2E7D32;">+${TF_FMT(r.amount)}</div>
+          </div>
+        `).join('')}
+      </div>
+    ` : `<p class="muted" style="font-size:12.5px; margin:8px 0 0;">No repayments recorded yet.</p>`}
+  `);
+}
+
+function openTfAccountModal(existing) {
+  openModal(existing ? 'Edit treasurer account' : 'Add treasurer account', `
+    <form id="tf-account-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tf-acc-name">Treasurer name</label>
+        <input type="text" id="tf-acc-name" value="${escapeHtml(existing?.display_name || '')}" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-acc-bank">Bank / e-wallet <span class="faint">(optional)</span></label>
+        <input type="text" id="tf-acc-bank" value="${escapeHtml(existing?.bank_name || '')}" placeholder="e.g. GCash, BPI, BDO"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-acc-number">Account / mobile number <span class="faint">(optional)</span></label>
+        <input type="text" id="tf-acc-number" value="${escapeHtml(existing?.account_number || '')}"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label>QR code image <span class="faint">(optional — upload to replace)</span></label>
+        ${existing?.qr_code_data ? `<img src="${existing.qr_code_data}" alt="Current QR" style="width:100px; height:100px; object-fit:contain; border:1px solid var(--line-soft); border-radius:6px; margin-bottom:8px; display:block;">` : ''}
+        <input type="file" id="tf-acc-qr" accept="image/*"
+          style="width:100%; font-family:inherit; font-size:12.5px;">
+        <p class="faint" style="font-size:11px; margin:4px 0 0;">Upload a PNG or JPG of the QR code. Max recommended: 500×500px.</p>
+      </div>
+      ${existing ? `<button type="button" id="tf-acc-delete-btn" class="btn btn-ghost btn-sm" style="color:var(--coral); align-self:flex-start;">Remove this account</button>` : ''}
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">${existing ? 'Save changes' : 'Add account'}</button>
+    </form>
+  `);
+
+  if (existing) {
+    document.getElementById('tf-acc-delete-btn').addEventListener('click', async () => {
+      if (!confirm(`Remove ${existing.display_name}'s account details?`)) return;
+      await sb.from('treasurer_accounts').delete().eq('id', existing.id);
+      closeModal(); showToast('Account removed.'); renderTeamFunds();
+    });
+  }
+
+  document.getElementById('tf-account-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = document.getElementById('tf-acc-name').value.trim();
+    if (!name) { showToast('Please enter a name.', true); return; }
+
+    // Handle QR code image upload: convert to base64 data URL
+    const qrFile = document.getElementById('tf-acc-qr').files[0];
+    let qrData = existing?.qr_code_data || null;
+    if (qrFile) {
+      qrData = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read the image file.'));
+        reader.readAsDataURL(qrFile);
+      }).catch(err => { showToast(err.message, true); return null; });
+      if (!qrData) return;
+    }
+
+    const payload = {
+      display_name: name,
+      bank_name: document.getElementById('tf-acc-bank').value.trim() || null,
+      account_number: document.getElementById('tf-acc-number').value.trim() || null,
+      qr_code_data: qrData,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = existing
+      ? await sb.from('treasurer_accounts').update(payload).eq('id', existing.id)
+      : await sb.from('treasurer_accounts').insert(payload);
+    if (error) { showToast('Could not save the account details.', true); return; }
+    closeModal(); showToast(existing ? 'Account updated.' : 'Account added.'); renderTeamFunds();
+  });
+}
+
 function formatBirthday(iso) {
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
