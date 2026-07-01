@@ -3195,12 +3195,9 @@ async function decideRequest(id, decision) {
   if (requestsBeingDecided.has(guardKey)) return;
   requestsBeingDecided.add(guardKey);
 
-  // Snapshot VL/SL BEFORE approval so the notification can show what changed
-  const employeeBefore = entry ? state.employees.find(e => e.id === entry.employee_id) : null;
-  const fy = employeeBefore ? fiscalYearForDate(isoDate(new Date())) : null;
-  const fyStart = fy ? `${fy}-04-01` : null;
-  const vlBefore = employeeBefore && fyStart ? round2(fiscalPoolBalance(employeeBefore, 'vl', fyStart)) : null;
-  const slBefore = employeeBefore && fyStart ? round2(fiscalPoolBalance(employeeBefore, 'sl', fyStart)) : null;
+  // We'll capture VL/SL before/after at the right moments below.
+  const notifEmployeeId = entry ? entry.employee_id : null;
+  const fyNum = notifEmployeeId ? fiscalYearForDate(isoDate(new Date())) : null;
 
   try {
   const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
@@ -3215,6 +3212,13 @@ async function decideRequest(id, decision) {
     const query = sb.from('leave_entries').update({ status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString() });
     const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
     if (error) { showToast('Could not update the request.', true); return; }
+
+    // Capture BEFORE: DB write succeeded but local state still has
+    // the entry as 'pending' (excluded from balance) — this is exactly
+    // what the Credits section was showing before approval.
+    const empForNotif = notifEmployeeId ? state.employees.find(e => e.id === notifEmployeeId) : null;
+    const vlBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
+    const slBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
 
     // Re-fetch so the Leave-Without-Pay check runs against the database's
     // own freshly-approved rows and current stored balance, then apply
@@ -3242,36 +3246,35 @@ async function decideRequest(id, decision) {
         showToast(`${label} approved.`);
       }
 
-      // Build notification with before/after credit snapshot
-      if (employeeBefore && fyStart) {
-        const freshEmployee = state.employees.find(e => e.id === entry.employee_id);
-        if (freshEmployee) {
-          const vlAfter = round2(fiscalPoolBalance(freshEmployee, 'vl', fyStart));
-          const slAfter = round2(fiscalPoolBalance(freshEmployee, 'sl', fyStart));
-          const firstName = freshEmployee.display_name.split(' ')[0];
-          const creditMsg = `VL ${vlAfter}, SL ${slAfter}`;
-          const prevMsg   = `VL ${vlBefore}, SL ${slBefore}`;
-          const changed   = vlAfter !== vlBefore || slAfter !== slBefore;
+      // Capture AFTER: loadLeaveEntries already ran, so the entry is
+      // now 'approved' in local state — fiscalPoolBalance reflects the
+      // deducted balance, exactly matching the Credits section.
+      if (empForNotif && fyNum && vlBefore !== null) {
+        const freshEmp = state.employees.find(e => e.id === notifEmployeeId);
+        if (freshEmp) {
+          const vlAfter = round2(fiscalPoolBalance(freshEmp, 'vl', fyNum));
+          const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
+          const firstName = freshEmp.display_name.split(' ')[0];
+          const changed = vlAfter !== vlBefore || slAfter !== slBefore;
           const notifText = changed
-            ? `${firstName}'s leave has been approved. Leave credits are now ${creditMsg} (previously ${prevMsg}).`
-            : `${firstName}'s leave has been approved. Leave credits unchanged at ${creditMsg}.`;
+            ? `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
+            : `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
           pushLeaveNotification(notifText);
         }
       }
     } else {
       showToast(`${label} approved.`);
-      if (employeeBefore && fyStart) {
-        const freshEmployee = state.employees.find(e => e.id === entry.employee_id);
-        if (freshEmployee) {
-          const vlAfter = round2(fiscalPoolBalance(freshEmployee, 'vl', fyStart));
-          const slAfter = round2(fiscalPoolBalance(freshEmployee, 'sl', fyStart));
-          const firstName = freshEmployee.display_name.split(' ')[0];
-          const creditMsg = `VL ${vlAfter}, SL ${slAfter}`;
-          const prevMsg   = `VL ${vlBefore}, SL ${slBefore}`;
-          const changed   = vlAfter !== vlBefore || slAfter !== slBefore;
+      // Same credit notification for simple approvals (no LWOP conversion)
+      if (empForNotif && fyNum && vlBefore !== null) {
+        const freshEmp = state.employees.find(e => e.id === notifEmployeeId);
+        if (freshEmp) {
+          const vlAfter = round2(fiscalPoolBalance(freshEmp, 'vl', fyNum));
+          const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
+          const firstName = freshEmp.display_name.split(' ')[0];
+          const changed = vlAfter !== vlBefore || slAfter !== slBefore;
           const notifText = changed
-            ? `${firstName}'s leave has been approved. Leave credits are now ${creditMsg} (previously ${prevMsg}).`
-            : `${firstName}'s leave has been approved. Leave credits unchanged at ${creditMsg}.`;
+            ? `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
+            : `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
           pushLeaveNotification(notifText);
         }
       }
