@@ -562,10 +562,12 @@ const state = {
   dashboardPollHandle: null, // setInterval handle for auto-refresh while viewing the Dashboard
   appUsers: [], // every login account (username/role/employee_id) — only loaded for Employee Management, not needed elsewhere
   employeeManagementOpenMenuId: null, // employee id whose row-actions dropdown is currently open
-  teamFundsTab: 'transactions', // active tab in Team Funds: 'transactions' | 'loans' | 'accounts'
+  teamFundsTab: 'transactions', // active tab in Team Funds: 'transactions' | 'loans' | 'team-building' | 'accounts'
   teamFundsTxMenuId: null,   // transaction id whose ⋯ menu is open
   teamFundsLoanMenuId: null, // loan id whose ⋯ menu is open
   teamFundsPollHandle: null, // setInterval handle for auto-refresh
+  teamFundsTxFilter: '',     // filter value for "Recorded by" in Transaction History
+  teamFundsData: null,       // cached data from last fetch { settings, transactions, accounts, loans, repayments }
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -777,7 +779,7 @@ function switchView(viewName) {
   if (viewName === 'ot-filing') startOtFilingPolling();
   else stopOtFilingPolling();
   if (viewName === 'team-funds') startTeamFundsPolling();
-  else stopTeamFundsPolling();
+  else { stopTeamFundsPolling(); if (state.teamFundsData) state.teamFundsData = null; }
 
   if (viewName === 'dashboard') startDashboardPolling();
   else stopDashboardPolling();
@@ -3792,10 +3794,11 @@ function stopOtFilingPolling() {
 
 function startTeamFundsPolling() {
   stopTeamFundsPolling();
-  state.teamFundsPollHandle = setInterval(() => {
+  state.teamFundsPollHandle = setInterval(async () => {
     // Skip re-fetch if a dropdown menu is open to avoid yanking it away mid-interaction
     if (state.teamFundsTxMenuId !== null || state.teamFundsLoanMenuId !== null) return;
-    renderTeamFunds();
+    await loadTeamFundsData();
+    renderTeamFundsView(); // render without loading flash — same pattern as PrioList
   }, 4000);
 }
 
@@ -5675,6 +5678,25 @@ function formatPrettyDate(iso) {
 
 const TF_FMT = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+async function loadTeamFundsData() {
+  const [settingsRes, txRes, accountsRes, loansRes, repaymentsRes, tbSettingsRes] = await Promise.all([
+    sb.from('team_funds_settings').select('*').order('updated_at', { ascending: false }).limit(1),
+    sb.from('team_fund_transactions').select('*').order('transaction_date', { ascending: false }),
+    sb.from('treasurer_accounts').select('*').order('display_name'),
+    sb.from('employee_loans').select('*').order('loan_date', { ascending: false }),
+    sb.from('loan_repayments').select('*').order('payment_date', { ascending: false }),
+    sb.from('team_building_settings').select('*').order('updated_at', { ascending: false }).limit(1),
+  ]);
+  state.teamFundsData = {
+    settings:          settingsRes.data?.[0] || null,
+    transactions:      txRes.data || [],
+    accounts:          accountsRes.data || [],
+    loans:             loansRes.data || [],
+    repayments:        repaymentsRes.data || [],
+    tbSettings:        tbSettingsRes.data?.[0] || null,
+  };
+}
+
 async function renderTeamFunds() {
   const actionsEl = document.getElementById('team-funds-actions');
   const el = document.getElementById('team-funds-content');
@@ -5688,31 +5710,38 @@ async function renderTeamFunds() {
     </div>
   ` : '';
 
-  el.innerHTML = '<div class="loading-row">Loading…</div>';
+  // Show loading only on the very first load when there's no cached data yet
+  if (!state.teamFundsData) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    await loadTeamFundsData();
+  }
+  renderTeamFundsView();
+}
 
-  const [settingsRes, txRes, accountsRes, loansRes, repaymentsRes] = await Promise.all([
-    sb.from('team_funds_settings').select('*').order('updated_at', { ascending: false }).limit(1),
-    sb.from('team_fund_transactions').select('*').order('transaction_date', { ascending: false }),
-    sb.from('treasurer_accounts').select('*').order('display_name'),
-    sb.from('employee_loans').select('*').order('loan_date', { ascending: false }),
-    sb.from('loan_repayments').select('*').order('payment_date', { ascending: false }),
-  ]);
+// Pure synchronous render — called both on initial load (after data is fetched)
+// and by the polling loop (after a silent background re-fetch), so it never
+// shows a loading state or causes a visible flash during auto-refresh.
+function renderTeamFundsView() {
+  const el = document.getElementById('team-funds-content');
+  if (!el || !state.teamFundsData) return;
+  const canEdit = canEditTeamFunds();
 
-  const settings    = settingsRes.data?.[0] || null;
-  const transactions = txRes.data || [];
-  const accounts    = accountsRes.data || [];
-  const loans       = loansRes.data || [];
-  const repayments  = repaymentsRes.data || [];
+  const { settings, transactions, accounts, loans, repayments, tbSettings } = state.teamFundsData;
 
   const openingBalance = settings ? Number(settings.opening_balance) : 0;
-  const totalCredits = transactions.filter(t => t.type === 'credit').reduce((s, t) => s + Number(t.amount), 0);
-  const totalDebits  = transactions.filter(t => t.type === 'debit').reduce((s, t) => s + Number(t.amount), 0);
+  const tbBeginning    = tbSettings ? Number(tbSettings.beginning_balance) : 0;
+  // Team Building beginning balance is carved out of the main funds
+  const effectiveOpening = openingBalance - tbBeginning;
+  const totalCredits = transactions.filter(t => t.type === 'credit' && (t.category || 'general') === 'general').reduce((s, t) => s + Number(t.amount), 0);
+  const totalDebits  = transactions.filter(t => t.type === 'debit'  && (t.category || 'general') === 'general').reduce((s, t) => s + Number(t.amount), 0);
+  const tbCredits    = transactions.filter(t => t.type === 'credit' && t.category === 'team_building').reduce((s, t) => s + Number(t.amount), 0);
+  const tbDebits     = transactions.filter(t => t.type === 'debit'  && t.category === 'team_building').reduce((s, t) => s + Number(t.amount), 0);
   const totalLoaned  = loans.reduce((s, l) => s + Number(l.amount), 0);
   const totalRepaid  = repayments.reduce((s, r) => s + Number(r.amount), 0);
-  const loanOutstanding = totalLoaned - totalRepaid; // still owed back to team funds
-  const currentBalance = openingBalance + totalCredits - totalDebits - loanOutstanding;
+  const loanOutstanding = totalLoaned - totalRepaid;
+  const tbBalance    = tbBeginning + tbCredits - tbDebits;
+  const currentBalance = effectiveOpening + totalCredits - totalDebits - loanOutstanding;
 
-  // ── Summary cards ──────────────────────────────────────────────
   const summaryHtml = `
     <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-bottom:8px;">
       ${[
@@ -5727,8 +5756,22 @@ async function renderTeamFunds() {
         </div>
       `).join('')}
     </div>
+    ${tbBeginning > 0 ? `
+    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:8px;">
+      ${[
+        ['TB Allocation', tbBeginning, 'var(--amber-dark,#9E6B00)'],
+        ['TB Inflows',    tbCredits,   '#2E7D32'],
+        ['TB Balance',    tbBalance,   tbBalance >= 0 ? 'var(--teal)' : 'var(--coral)'],
+      ].map(([label, val, color]) => `
+        <div class="card" style="padding:14px; border:1px dashed var(--amber-wash,#F5E6C0);">
+          <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px;">${label}</div>
+          <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:${color};">${TF_FMT(val)}</div>
+        </div>
+      `).join('')}
+    </div>
+    ` : ''}
     <div style="margin-bottom:24px;">
-      <span class="faint" style="font-size:12px;">Loans outstanding: <strong style="color:var(--coral);">${TF_FMT(loanOutstanding)}</strong> (reduces available balance until repaid)</span>
+      <span class="faint" style="font-size:12px;">Loans outstanding: <strong style="color:var(--coral);">${TF_FMT(loanOutstanding)}</strong> (reduces available balance until repaid)${tbBeginning > 0 ? ` · Team Building allocation: <strong style="color:var(--amber-dark,#9E6B00);">${TF_FMT(tbBeginning)}</strong>` : ''}</span>
     </div>
   `;
 
@@ -5743,15 +5786,30 @@ async function renderTeamFunds() {
 
   // ── Tab content builders ────────────────────────────────────────
 
-  // Tab 1: Transaction History with separate debit/credit columns
+  // Tab 1: Transaction History with separate debit/credit columns + Recorded By filter
+  const allRecordedBy = [...new Set(transactions.map(t => t.recorded_by).filter(Boolean))].sort();
+  const activeFilter = state.teamFundsTxFilter || '';
+  const filteredTx = activeFilter ? transactions.filter(t => t.recorded_by === activeFilter) : transactions;
+  const filteredCredits = filteredTx.filter(t => t.type === 'credit').reduce((s,t) => s + Number(t.amount), 0);
+  const filteredDebits  = filteredTx.filter(t => t.type === 'debit').reduce((s,t) => s + Number(t.amount), 0);
+
   const txTabHtml = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+      <label style="font-size:12px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.04em;">Filter by Recorded By:</label>
+      <select id="tf-recorded-by-filter" style="padding:6px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px; background:var(--paper);">
+        <option value="">All</option>
+        ${allRecordedBy.map(name => `<option value="${escapeHtml(name)}" ${activeFilter === name ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
+      </select>
+      ${activeFilter ? `<span class="faint" style="font-size:12px;">Showing ${filteredTx.length} of ${transactions.length} entries</span>` : ''}
+    </div>
     <div style="overflow-x:auto;">
-      ${transactions.length ? `
+      ${filteredTx.length ? `
         <table style="width:100%; border-collapse:collapse; min-width:780px;">
           <thead>
             <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
               <th style="padding:8px 12px; text-align:left;">Date</th>
               <th style="padding:8px 12px; text-align:left;">Note</th>
+              <th style="padding:8px 12px; text-align:left;">Category</th>
               <th style="padding:8px 12px; text-align:right; color:#2E7D32;">Credit (In)</th>
               <th style="padding:8px 12px; text-align:right; color:var(--coral);">Debit (Out)</th>
               <th style="padding:8px 12px; text-align:left;">Recorded By</th>
@@ -5759,39 +5817,38 @@ async function renderTeamFunds() {
             </tr>
           </thead>
           <tbody>
-            ${transactions.map(t => {
+            ${filteredTx.map(t => {
               const isCredit = t.type === "credit";
               const dateStr = t.transaction_date ? formatPrettyDate(t.transaction_date) : "—";
               return `
                 <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
                   <td style="padding:10px 12px; white-space:nowrap;">${dateStr}</td>
                   <td style="padding:10px 12px;">${escapeHtml(t.note)}</td>
+                  <td style="padding:10px 12px;">
+                    ${t.category === 'team_building' ? `<span style="font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; background:var(--amber-wash,#FEF3C7); color:var(--amber-dark,#9E6B00);">🏕 Team Building</span>` : `<span class="faint" style="font-size:11px;">General</span>`}
+                  </td>
                   <td style="padding:10px 12px; text-align:right; font-weight:600; color:#2E7D32;">${isCredit ? TF_FMT(t.amount) : ""}</td>
                   <td style="padding:10px 12px; text-align:right; font-weight:600; color:var(--coral);">${!isCredit ? TF_FMT(t.amount) : ""}</td>
                   <td style="padding:10px 12px;" class="faint">${escapeHtml(t.recorded_by)}</td>
                   ${canEdit ? `
-                    <td style="padding:10px 12px; white-space:nowrap; position:relative;">
+                    <td style="padding:10px 12px; white-space:nowrap; text-align:right;">
                       <button class="btn btn-ghost btn-sm tf-tx-menu-trigger" data-id="${t.id}" style="font-size:14px; padding:2px 10px; letter-spacing:1px;">⋯</button>
-                      <div class="tf-tx-menu" data-id="${t.id}" style="display:${state.teamFundsTxMenuId === t.id ? 'block' : 'none'}; position:absolute; right:0; top:100%; margin-top:2px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:120px;">
-                        <div class="tf-tx-edit-item" data-id="${t.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Edit</div>
-                        <div class="tf-tx-delete-item" data-id="${t.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; color:var(--coral);">Delete</div>
-                      </div>
                     </td>
                   ` : ""}
                 </tr>
               `;
             }).join("")}
             <tr style="border-top:2px solid var(--line); font-size:12.5px; font-weight:700;">
-              <td style="padding:10px 12px;" colspan="2">Totals</td>
-              <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(totalCredits)}</td>
-              <td style="padding:10px 12px; text-align:right; color:var(--coral);">${TF_FMT(totalDebits)}</td>
+              <td style="padding:10px 12px;" colspan="3">Totals${activeFilter ? ` (${escapeHtml(activeFilter)})` : ''}</td>
+              <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(filteredCredits)}</td>
+              <td style="padding:10px 12px; text-align:right; color:var(--coral);">${TF_FMT(filteredDebits)}</td>
               <td ${canEdit ? 'colspan="2"' : ""} style="padding:10px 12px;" class="faint">
-                Net: <strong style="color:${totalCredits - totalDebits >= 0 ? "#2E7D32" : "var(--coral)"};">${TF_FMT(totalCredits - totalDebits)}</strong>
+                Net: <strong style="color:${filteredCredits - filteredDebits >= 0 ? "#2E7D32" : "var(--coral)"};">${TF_FMT(filteredCredits - filteredDebits)}</strong>
               </td>
             </tr>
           </tbody>
         </table>
-      ` : `<p class="muted" style="margin:0;">No transactions recorded yet.</p>`}
+      ` : `<p class="muted" style="margin:0;">No transactions match the current filter.</p>`}
     </div>
   `;
 
@@ -5836,15 +5893,10 @@ async function renderTeamFunds() {
                   <td style="padding:10px 12px; font-size:12px;" class="faint">${escapeHtml(loan.note)}</td>
                   <td style="padding:10px 12px; font-size:12px;" class="faint">${escapeHtml(loan.recorded_by || '')}</td>
                   ${canEdit ? `
-                    <td style="padding:10px 12px; white-space:nowrap; position:relative;">
-                      <div style="display:flex; align-items:center; gap:6px;">
+                    <td style="padding:10px 12px; white-space:nowrap; text-align:right;">
+                      <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px;">
                         ${!isPaid ? `<button class="btn btn-ghost btn-sm tf-add-repayment-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 8px; white-space:nowrap;">+ Repayment</button>` : ""}
                         <button class="btn btn-ghost btn-sm tf-loan-menu-trigger" data-id="${loan.id}" style="font-size:14px; padding:2px 10px; letter-spacing:1px;">⋯</button>
-                      </div>
-                      <div class="tf-loan-menu" data-id="${loan.id}" style="display:${state.teamFundsLoanMenuId === loan.id ? 'block' : 'none'}; position:absolute; right:0; top:100%; margin-top:2px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:140px;">
-                        <div class="tf-loan-history-item" data-id="${loan.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Repayment history</div>
-                        <div class="tf-loan-edit-item" data-id="${loan.id}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer;">Edit</div>
-                        <div class="tf-loan-delete-item" data-id="${loan.id}" data-name="${escapeHtml(loan.employee_name)}" style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; color:var(--coral);">Delete</div>
                       </div>
                     </td>
                   ` : ""}
@@ -5888,32 +5940,120 @@ async function renderTeamFunds() {
     ` : `<p class="muted" style="margin:0;">No treasurer accounts added yet.</p>`}
   `;
 
+  // ── Team Building tab ───────────────────────────────────────────
+  const tbTxList = transactions.filter(t => t.category === 'team_building');
+  const tbTabHtml = `
+    <div style="background:var(--amber-wash,#FEF3C7); border:1px solid var(--amber-dark,#9E6B00); border-radius:8px; padding:12px 16px; margin-bottom:18px; font-size:12.5px; color:var(--ink-soft);">
+      <strong style="display:block; margin-bottom:4px;">How Team Building funds work</strong>
+      <ul style="margin:0; padding-left:18px; line-height:1.7;">
+        <li>Any <strong>Beginning Balance</strong> entered here will be deducted from the overall Team Funds balance.</li>
+        <li>Any <strong>Additional Budget</strong> added comes from a separate company allocation and will <em>not</em> be deducted from the main Team Funds.</li>
+      </ul>
+    </div>
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
+      <div class="card" style="padding:14px; flex:1; min-width:160px;">
+        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Beginning Balance</div>
+        <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:var(--teal);">${TF_FMT(tbBeginning)}</div>
+        ${canEdit ? `<button class="btn btn-ghost btn-sm" id="tf-tb-set-budget-btn" style="font-size:11px; padding:3px 8px; margin-top:6px;">Edit</button>` : ''}
+      </div>
+      <div class="card" style="padding:14px; flex:1; min-width:160px;">
+        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Additional Budget</div>
+        <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:#2E7D32;">${TF_FMT(tbCredits)}</div>
+      </div>
+      <div class="card" style="padding:14px; flex:1; min-width:160px;">
+        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Total Expenses</div>
+        <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:var(--coral);">${TF_FMT(tbDebits)}</div>
+      </div>
+      <div class="card" style="padding:14px; flex:1; min-width:160px;">
+        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Remaining Balance</div>
+        <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:${tbBalance >= 0 ? 'var(--teal)' : 'var(--coral)'};">${TF_FMT(tbBalance)}</div>
+      </div>
+    </div>
+    ${canEdit ? `
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <button class="btn btn-ghost btn-sm" id="tf-tb-add-budget-btn">+ Add budget</button>
+        <button class="btn btn-ghost btn-sm" id="tf-tb-add-expense-btn">− Record expense</button>
+      </div>
+    ` : ''}
+    <div style="overflow-x:auto;">
+      ${tbTxList.length ? `
+        <table style="width:100%; border-collapse:collapse; min-width:640px;">
+          <thead>
+            <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+              <th style="padding:8px 12px; text-align:left;">Date</th>
+              <th style="padding:8px 12px; text-align:left;">Note</th>
+              <th style="padding:8px 12px; text-align:right; color:#2E7D32;">Budget Added</th>
+              <th style="padding:8px 12px; text-align:right; color:var(--coral);">Expense</th>
+              <th style="padding:8px 12px; text-align:left;">Recorded By</th>
+              ${canEdit ? `<th style="padding:8px 12px;"></th>` : ''}
+            </tr>
+          </thead>
+          <tbody>
+            ${tbTxList.map(t => {
+              const isCredit = t.type === 'credit';
+              const dateStr = t.transaction_date ? formatPrettyDate(t.transaction_date) : '—';
+              return `
+                <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+                  <td style="padding:10px 12px; white-space:nowrap;">${dateStr}</td>
+                  <td style="padding:10px 12px;">${escapeHtml(t.note)}</td>
+                  <td style="padding:10px 12px; text-align:right; font-weight:600; color:#2E7D32;">${isCredit ? TF_FMT(t.amount) : ''}</td>
+                  <td style="padding:10px 12px; text-align:right; font-weight:600; color:var(--coral);">${!isCredit ? TF_FMT(t.amount) : ''}</td>
+                  <td style="padding:10px 12px;" class="faint">${escapeHtml(t.recorded_by)}</td>
+                  ${canEdit ? `
+                    <td style="padding:10px 12px; white-space:nowrap; text-align:right;">
+                      <button class="btn btn-ghost btn-sm tf-tx-menu-trigger" data-id="${t.id}" style="font-size:14px; padding:2px 10px; letter-spacing:1px;">⋯</button>
+                    </td>
+                  ` : ''}
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      ` : `<p class="muted" style="margin:0;">No team building transactions yet.</p>`}
+    </div>
+  `;
+
   // ── Tab switcher ────────────────────────────────────────────────
   const activeTab = state.teamFundsTab;
   const tabs = [
-    { id: "transactions", label: "Transaction History" },
-    { id: "loans",        label: "Employee Loans" },
-    { id: "accounts",     label: "Treasurer Accounts" },
+    { id: "transactions",   label: "Transaction History" },
+    { id: "loans",          label: "Employee Loans" },
+    { id: "team-building",  label: "Team Building" },
+    { id: "accounts",       label: "Treasurer Accounts" },
   ];
 
   const tabbedCard = `
     <div class="card" style="padding:22px;">
-      <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin-bottom:20px;">
-        ${tabs.map(tab => `
-          <button class="tf-tab-btn" data-tab="${tab.id}" style="
-            padding:10px 20px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer;
-            border-bottom:${activeTab === tab.id ? "3px solid var(--teal)" : "3px solid transparent"};
-            color:${activeTab === tab.id ? "var(--teal)" : "var(--ink-faint)"};
-            margin-bottom:-2px; font-family:inherit;">
-            ${tab.label}
-          </button>
-        `).join("")}
+      <div style="display:flex; align-items:center; border-bottom:2px solid var(--line); margin-bottom:20px;">
+        <div style="display:flex; gap:0; flex:1;">
+          ${tabs.map(tab => `
+            <button class="tf-tab-btn" data-tab="${tab.id}" style="
+              padding:10px 20px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer;
+              border-bottom:${activeTab === tab.id ? "3px solid var(--teal)" : "3px solid transparent"};
+              color:${activeTab === tab.id ? "var(--teal)" : "var(--ink-faint)"};
+              margin-bottom:-2px; font-family:inherit;">
+              ${tab.label}
+            </button>
+          `).join("")}
+        </div>
+        <button class="btn btn-ghost btn-sm" id="tf-download-report-btn" style="font-size:12px; padding:6px 14px; margin-bottom:2px; white-space:nowrap;">Download report</button>
       </div>
-      ${activeTab === "transactions" ? txTabHtml : activeTab === "loans" ? loansTabHtml : accountsTabHtml}
+      ${activeTab === "transactions" ? txTabHtml : activeTab === "loans" ? loansTabHtml : activeTab === "team-building" ? tbTabHtml : accountsTabHtml}
     </div>
   `;
 
   el.innerHTML = summaryHtml + openingBalanceHtml + tabbedCard;
+
+  // Download report button — opens a full Team Funds report in a new tab
+  document.getElementById('tf-download-report-btn')?.addEventListener('click', () => {
+    openTfReport({ transactions, loans, repayments, openingBalance, totalCredits, totalDebits, totalLoaned, totalRepaid, loanOutstanding, currentBalance });
+  });
+
+  // Recorded By filter
+  document.getElementById('tf-recorded-by-filter')?.addEventListener('change', (e) => {
+    state.teamFundsTxFilter = e.target.value;
+    renderTeamFunds();
+  });
 
   // Tab click — no re-fetch, just flip state and re-render
   document.querySelectorAll(".tf-tab-btn").forEach(btn => {
@@ -5929,6 +6069,11 @@ async function renderTeamFunds() {
     document.getElementById("tf-add-loan-btn")?.addEventListener("click", openTfLoanModal);
     document.getElementById("tf-set-opening-btn")?.addEventListener("click", openTfOpeningBalanceModal);
     document.getElementById("tf-add-account-btn")?.addEventListener("click", () => openTfAccountModal(null));
+
+    // Team Building buttons
+    document.getElementById("tf-tb-set-budget-btn")?.addEventListener("click", openTfTbBudgetModal);
+    document.getElementById("tf-tb-add-budget-btn")?.addEventListener("click", () => openTfTbTransactionModal('credit'));
+    document.getElementById("tf-tb-add-expense-btn")?.addEventListener("click", () => openTfTbTransactionModal('debit'));
     document.querySelectorAll(".tf-edit-account-btn").forEach(btn => {
       const acc = accounts.find(a => a.id === btn.dataset.id);
       btn.addEventListener("click", () => openTfAccountModal(acc));
@@ -5946,51 +6091,82 @@ async function renderTeamFunds() {
       btn.addEventListener("click", () => openTfRepaymentModal(btn.dataset.loanId, btn.dataset.loanName));
     });
 
-    // Transaction ⋯ menu
+    // ── Portal dropdown — positioned via getBoundingClientRect so the
+    // dropdown floats in a fixed overlay div outside the table entirely,
+    // eliminating any layout shift when it opens ────────────────────
+    const portal = document.getElementById('tf-portal-menu');
+
+    function showPortalMenu(triggerBtn, items) {
+      const rect = triggerBtn.getBoundingClientRect();
+      portal.innerHTML = items.map(item => `
+        <div class="tf-portal-item" data-action="${item.action}" data-id="${item.id || ''}" data-name="${escapeHtml(item.name || '')}"
+          style="padding:8px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; color:${item.danger ? 'var(--coral)' : 'inherit'}; white-space:nowrap;">
+          ${item.label}
+        </div>
+      `).join('');
+      portal.style.display = 'block';
+      const menuWidth = 160;
+      let left = rect.right - menuWidth;
+      if (left < 8) left = 8;
+      portal.style.left = left + 'px';
+      portal.style.top  = (rect.bottom + 4) + 'px';
+      portal.querySelectorAll('.tf-portal-item').forEach(el => {
+        el.addEventListener('mouseenter', () => { el.style.background = el.dataset.action.includes('delete') ? 'var(--coral-wash)' : 'var(--line-soft)'; });
+        el.addEventListener('mouseleave', () => { el.style.background = 'transparent'; });
+      });
+    }
+
+    function hidePortalMenu() {
+      portal.style.display = 'none';
+      portal.innerHTML = '';
+      state.teamFundsTxMenuId = null;
+      state.teamFundsLoanMenuId = null;
+    }
+
+    // Transaction ⋯
     document.querySelectorAll(".tf-tx-menu-trigger").forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        state.teamFundsTxMenuId = state.teamFundsTxMenuId === btn.dataset.id ? null : btn.dataset.id;
+        if (state.teamFundsTxMenuId === btn.dataset.id) { hidePortalMenu(); return; }
+        state.teamFundsTxMenuId = btn.dataset.id;
         state.teamFundsLoanMenuId = null;
-        renderTeamFunds();
+        const tx = transactions.find(t => t.id === btn.dataset.id);
+        showPortalMenu(btn, [
+          { action: 'tx-edit',   id: btn.dataset.id, label: 'Edit' },
+          { action: 'tx-delete', id: btn.dataset.id, label: 'Delete', danger: true },
+        ]);
+        portal.querySelectorAll('.tf-portal-item').forEach(el => {
+          el.addEventListener('click', () => {
+            hidePortalMenu();
+            if (el.dataset.action === 'tx-edit')   openTfEditTransactionModal(tx);
+            if (el.dataset.action === 'tx-delete') deleteTfTransaction(el.dataset.id);
+          });
+        });
       });
     });
-    document.querySelectorAll(".tf-tx-edit-item").forEach(item => {
-      item.addEventListener("mouseenter", () => { item.style.background = "var(--line-soft)"; });
-      item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
-      const tx = transactions.find(t => t.id === item.dataset.id);
-      item.addEventListener("click", () => { state.teamFundsTxMenuId = null; openTfEditTransactionModal(tx); });
-    });
-    document.querySelectorAll(".tf-tx-delete-item").forEach(item => {
-      item.addEventListener("mouseenter", () => { item.style.background = "var(--coral-wash)"; });
-      item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
-      item.addEventListener("click", () => { state.teamFundsTxMenuId = null; deleteTfTransaction(item.dataset.id); });
-    });
 
-    // Loan ⋯ menu
+    // Loan ⋯
     document.querySelectorAll(".tf-loan-menu-trigger").forEach(btn => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        state.teamFundsLoanMenuId = state.teamFundsLoanMenuId === btn.dataset.id ? null : btn.dataset.id;
+        if (state.teamFundsLoanMenuId === btn.dataset.id) { hidePortalMenu(); return; }
+        state.teamFundsLoanMenuId = btn.dataset.id;
         state.teamFundsTxMenuId = null;
-        renderTeamFunds();
+        const loan = loans.find(l => l.id === btn.dataset.id);
+        showPortalMenu(btn, [
+          { action: 'loan-history', id: btn.dataset.id, label: 'Repayment history' },
+          { action: 'loan-edit',    id: btn.dataset.id, label: 'Edit' },
+          { action: 'loan-delete',  id: btn.dataset.id, label: 'Delete', danger: true, name: loan?.employee_name },
+        ]);
+        portal.querySelectorAll('.tf-portal-item').forEach(el => {
+          el.addEventListener('click', () => {
+            hidePortalMenu();
+            if (el.dataset.action === 'loan-history') openTfRepaymentHistory(el.dataset.id, repayments, loans);
+            if (el.dataset.action === 'loan-edit')    openTfEditLoanModal(loan);
+            if (el.dataset.action === 'loan-delete')  deleteTfLoan(el.dataset.id, el.dataset.name);
+          });
+        });
       });
-    });
-    document.querySelectorAll(".tf-loan-history-item").forEach(item => {
-      item.addEventListener("mouseenter", () => { item.style.background = "var(--line-soft)"; });
-      item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
-      item.addEventListener("click", () => { state.teamFundsLoanMenuId = null; openTfRepaymentHistory(item.dataset.id, repayments, loans); });
-    });
-    document.querySelectorAll(".tf-loan-edit-item").forEach(item => {
-      item.addEventListener("mouseenter", () => { item.style.background = "var(--line-soft)"; });
-      item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
-      const loan = loans.find(l => l.id === item.dataset.id);
-      item.addEventListener("click", () => { state.teamFundsLoanMenuId = null; openTfEditLoanModal(loan); });
-    });
-    document.querySelectorAll(".tf-loan-delete-item").forEach(item => {
-      item.addEventListener("mouseenter", () => { item.style.background = "var(--coral-wash)"; });
-      item.addEventListener("mouseleave", () => { item.style.background = "transparent"; });
-      item.addEventListener("click", () => { state.teamFundsLoanMenuId = null; deleteTfLoan(item.dataset.id, item.dataset.name); });
     });
 
     // Register outside-click handler once per app lifetime
@@ -6000,15 +6176,312 @@ async function renderTeamFunds() {
 
 // Registered once (guarded by a window flag) — closes any open ⋯ menu
 // in Team Funds when the user clicks anywhere outside it.
+function openTfReport({ transactions, loans, repayments, openingBalance, totalCredits, totalDebits, totalLoaned, totalRepaid, loanOutstanding, currentBalance }) {
+  const win = window.open('', '_blank');
+  if (!win) { showToast('Could not open a new tab — your browser may have blocked the pop-up.', true); return; }
+
+  const generatedOn = formatPrettyDate(isoDate(new Date()));
+  const allRecordedBy = [...new Set(transactions.map(t => t.recorded_by).filter(Boolean))].sort();
+
+  // Serialize data for use inside the new tab's script
+  const txJson   = JSON.stringify(transactions).replace(/</g, '\\u003c');
+  const loansJson = JSON.stringify(loans.map(loan => ({
+    ...loan,
+    repaid: repayments.filter(r => r.loan_id === loan.id).reduce((s,r) => s + Number(r.amount), 0),
+  }))).replace(/</g, '\\u003c');
+
+  const fmt = (n) => `₱${Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const summaryRowsHtml = [
+    ['Opening Balance', fmt(openingBalance), ''],
+    ['Total Inflows',   fmt(totalCredits),   'color:#2E7D32'],
+    ['Total Outflows',  fmt(totalDebits),    'color:#C0392B'],
+    ['Loans Outstanding', fmt(loanOutstanding), 'color:#C0392B'],
+    ['Current Balance', fmt(currentBalance), currentBalance >= 0 ? 'color:#1F6B4F;font-weight:700' : 'color:#C0392B;font-weight:700'],
+  ].map(([label, val, style]) => `<tr><td style="padding:6px 14px;">${label}</td><td style="padding:6px 14px; text-align:right; ${style}">${val}</td></tr>`).join('');
+
+  const txRowsHtml = transactions.map(t => `
+    <tr data-recorded-by="${escapeHtml(t.recorded_by || '')}" data-type="${t.type}">
+      <td style="padding:8px 12px; white-space:nowrap;">${t.transaction_date ? t.transaction_date : '—'}</td>
+      <td style="padding:8px 12px;">${escapeHtml(t.note)}</td>
+      <td style="padding:8px 12px; text-align:right; color:#2E7D32; font-weight:600;">${t.type === 'credit' ? fmt(Number(t.amount)) : ''}</td>
+      <td style="padding:8px 12px; text-align:right; color:#C0392B; font-weight:600;">${t.type === 'debit' ? fmt(Number(t.amount)) : ''}</td>
+      <td style="padding:8px 12px; color:#888;">${escapeHtml(t.recorded_by || '')}</td>
+    </tr>
+  `).join('');
+
+  const loanRowsHtml = loans.map(loan => {
+    const loanRepaid = repayments.filter(r => r.loan_id === loan.id).reduce((s,r) => s + Number(r.amount), 0);
+    const outstanding = Math.max(0, Number(loan.amount) - loanRepaid);
+    const isPaid = loan.status === 'paid' || outstanding <= 0;
+    return `
+      <tr>
+        <td style="padding:8px 12px; font-weight:600;">${escapeHtml(loan.employee_name)}</td>
+        <td style="padding:8px 12px; white-space:nowrap;">${loan.loan_date}</td>
+        <td style="padding:8px 12px; text-align:right;">${fmt(Number(loan.amount))}</td>
+        <td style="padding:8px 12px; text-align:right; color:#2E7D32;">${fmt(loanRepaid)}</td>
+        <td style="padding:8px 12px; text-align:right; color:${outstanding > 0 ? '#C0392B' : '#2E7D32'};">${fmt(outstanding)}</td>
+        <td style="padding:8px 12px;">${isPaid ? '✓ Paid' : 'Active'}</td>
+        <td style="padding:8px 12px; color:#888;">${escapeHtml(loan.note)}</td>
+        <td style="padding:8px 12px; color:#888;">${escapeHtml(loan.recorded_by || '')}</td>
+      </tr>
+    `;
+  }).join('');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Team Funds Report</title>
+      <style>
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;background:#FAF7F1;color:#3A3A38;margin:0;padding:32px 40px 60px;}
+        h1{font-size:22px;font-weight:700;color:#1F3D3A;margin:0 0 4px;}
+        h2{font-size:15px;font-weight:700;color:#1F3D3A;margin:28px 0 10px;}
+        .sub{font-size:13px;color:#A8A39A;margin:0 0 24px;}
+        .toolbar{display:flex;justify-content:flex-end;margin-bottom:16px;}
+        .toolbar button{font-family:inherit;font-size:13px;font-weight:600;padding:9px 16px;border-radius:999px;border:1px solid #1F3D3A;background:#1F3D3A;color:#F7F3E8;cursor:pointer;}
+        .toolbar button:hover{background:#2A4F4B;}
+        .filter-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;background:#fff;border:1px solid #E4DECF;border-radius:10px;padding:14px;margin-bottom:16px;}
+        .filter-field{display:flex;flex-direction:column;gap:4px;}
+        .filter-field label{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;color:#A8A39A;}
+        .filter-field select,.filter-field input{font-family:inherit;font-size:12.5px;padding:7px 9px;border-radius:6px;border:1px solid #E4DECF;background:#FAF7F1;min-width:140px;}
+        #clear-btn{font-family:inherit;font-size:12.5px;font-weight:600;padding:8px 14px;border-radius:6px;border:1px solid #E4DECF;background:transparent;color:#6B6862;cursor:pointer;}
+        #clear-btn:hover{background:#EDE8DA;}
+        #result-count{font-size:11.5px;color:#A8A39A;margin-bottom:8px;}
+        table{border-collapse:collapse;width:100%;background:#fff;border:1px solid #E4DECF;border-radius:10px;overflow:hidden;}
+        th{text-align:left;padding:8px 12px;font-size:11px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:#A8A39A;border-bottom:2px solid #E4DECF;}
+        td{padding:8px 12px;font-size:13px;border-bottom:1px solid #EDE8DA;vertical-align:top;}
+        tr:last-child td{border-bottom:none;}
+        .summary-table{max-width:340px;margin-bottom:28px;}
+        .row-hidden{display:none;}
+      </style>
+    </head>
+    <body>
+      <h1>Team Funds Report</h1>
+      <p class="sub">Generated ${generatedOn}</p>
+
+      <div class="toolbar"><button id="dl-btn">Download as CSV</button></div>
+
+      <h2>Balance Summary</h2>
+      <table class="summary-table">
+        <tbody>${summaryRowsHtml}</tbody>
+      </table>
+
+      <h2>Transaction History</h2>
+      <div class="filter-bar">
+        <div class="filter-field">
+          <label>From</label>
+          <input type="date" id="filter-from">
+        </div>
+        <div class="filter-field">
+          <label>To</label>
+          <input type="date" id="filter-to">
+        </div>
+        <div class="filter-field">
+          <label>Type</label>
+          <select id="filter-type">
+            <option value="">All</option>
+            <option value="credit">Credit (In)</option>
+            <option value="debit">Debit (Out)</option>
+          </select>
+        </div>
+        <div class="filter-field">
+          <label>Recorded By</label>
+          <select id="filter-recorded-by">
+            <option value="">All</option>
+            ${allRecordedBy.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+          </select>
+        </div>
+        <button id="clear-btn">Clear filters</button>
+      </div>
+      <div id="result-count"></div>
+      <table id="tx-table">
+        <thead>
+          <tr>
+            <th>Date</th><th>Note</th>
+            <th style="text-align:right;color:#2E7D32;">Credit (In)</th>
+            <th style="text-align:right;color:#C0392B;">Debit (Out)</th>
+            <th>Recorded By</th>
+          </tr>
+        </thead>
+        <tbody id="tx-body">${txRowsHtml || '<tr><td colspan="5" style="color:#A8A39A;text-align:center;padding:30px;">No transactions yet.</td></tr>'}</tbody>
+      </table>
+
+      <h2 style="margin-top:36px;">Employee Loans</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Employee</th><th>Date</th>
+            <th style="text-align:right;">Loaned</th>
+            <th style="text-align:right;color:#2E7D32;">Repaid</th>
+            <th style="text-align:right;color:#C0392B;">Outstanding</th>
+            <th>Status</th><th>Note</th><th>Recorded By</th>
+          </tr>
+        </thead>
+        <tbody>${loanRowsHtml || '<tr><td colspan="8" style="color:#A8A39A;text-align:center;padding:30px;">No loans yet.</td></tr>'}</tbody>
+      </table>
+
+      <script>
+        const ALL_TX = ${txJson};
+        const ALL_LOANS = ${loansJson};
+
+        function fmt(n){ return '₱'+Number(n).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+        function esc(v){ const s=String(v??''); return /[",\\r\\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+
+        function applyFilters(){
+          const from = document.getElementById('filter-from').value;
+          const to   = document.getElementById('filter-to').value;
+          const type = document.getElementById('filter-type').value;
+          const rec  = document.getElementById('filter-recorded-by').value;
+          const rows = document.querySelectorAll('#tx-body tr[data-recorded-by]');
+          let vis = 0;
+          rows.forEach(tr => {
+            const date = tr.querySelector('td').textContent.trim();
+            const trType = tr.dataset.type;
+            const trRec  = tr.dataset.recordedBy;
+            const show = (!from || date >= from) && (!to || date <= to) && (!type || trType === type) && (!rec || trRec === rec);
+            tr.classList.toggle('row-hidden', !show);
+            if(show) vis++;
+          });
+          const any = from||to||type||rec;
+          document.getElementById('result-count').textContent = any ? 'Showing '+vis+' of '+rows.length+' entries' : '';
+        }
+
+        ['filter-from','filter-to','filter-type','filter-recorded-by'].forEach(id => {
+          document.getElementById(id).addEventListener('change', applyFilters);
+        });
+        document.getElementById('clear-btn').addEventListener('click', () => {
+          ['filter-from','filter-to','filter-type','filter-recorded-by'].forEach(id => { document.getElementById(id).value=''; });
+          applyFilters();
+        });
+
+        document.getElementById('dl-btn').addEventListener('click', () => {
+          const visRows = ALL_TX.filter((_,i) => {
+            const tr = document.querySelector('#tx-body tr[data-recorded-by]:nth-child('+(i+1)+')');
+            return tr && !tr.classList.contains('row-hidden');
+          });
+          const csvRows = [
+            ['Team Funds Report — Generated ${generatedOn}'],
+            [],
+            ['Balance Summary'],
+            ['Opening Balance', ${openingBalance}],
+            ['Total Inflows',   ${totalCredits}],
+            ['Total Outflows',  ${totalDebits}],
+            ['Loans Outstanding', ${loanOutstanding}],
+            ['Current Balance', ${currentBalance}],
+            [],
+            ['Transaction History'],
+            ['Date','Note','Credit (In)','Debit (Out)','Recorded By'],
+            ...ALL_TX.filter((_,i) => {
+              const tr = document.querySelectorAll('#tx-body tr[data-recorded-by]')[i];
+              return tr && !tr.classList.contains('row-hidden');
+            }).map(t => [t.transaction_date||'', t.note, t.type==='credit'?t.amount:'', t.type==='debit'?t.amount:'', t.recorded_by||'']),
+            [],
+            ['Employee Loans'],
+            ['Employee','Date','Loaned','Repaid','Outstanding','Status','Note','Recorded By'],
+            ...ALL_LOANS.map(l => [l.employee_name, l.loan_date, l.amount, l.repaid, Math.max(0,l.amount-l.repaid), (l.status==='paid'||l.repaid>=l.amount)?'Paid':'Active', l.note, l.recorded_by||'']),
+          ];
+          const csv = csvRows.map(r => r.map(esc).join(',')).join('\\r\\n');
+          const blob = new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href=url; a.download='Team Funds Report.csv';
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a); URL.revokeObjectURL(url);
+        });
+      <\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
+function openTfTbBudgetModal() {
+  openModal('Set Team Building beginning balance', `
+    <form id="tf-tb-budget-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">This amount is carved out of the main opening balance for Team Building activities. It will appear as a deduction from the main funds and as a starting balance in the Team Building tab.</p>
+      ${tfDateField('tf-tb-budget-date', 'Effective date')}
+      <div class="field">
+        <label for="tf-tb-budget-amount">Beginning balance (₱)</label>
+        <input type="number" id="tf-tb-budget-amount" min="0" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save</button>
+    </form>
+  `);
+  document.getElementById('tf-tb-budget-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const date = document.getElementById('tf-tb-budget-date').value;
+    const amount = parseFloat(document.getElementById('tf-tb-budget-amount').value);
+    if (!date) { showToast('Please select a date.', true); return; }
+    if (isNaN(amount) || amount < 0) { showToast('Please enter a valid amount.', true); return; }
+    // Save beginning balance
+    await sb.from('team_building_settings').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+    const { error } = await sb.from('team_building_settings').insert({ beginning_balance: amount, set_by: state.profile.display_name });
+    if (error) { showToast('Could not save.', true); return; }
+    // Record it in transaction history as a general debit (allocation to TB)
+    await sb.from('team_fund_transactions').insert({
+      type: 'debit', amount, category: 'general',
+      note: `Team Building allocation — beginning balance set to ${TF_FMT(amount)}`,
+      transaction_date: date, recorded_by: state.profile.display_name,
+    });
+    closeModal(); showToast('Team Building balance set.'); renderTeamFunds();
+  });
+}
+
+function openTfTbTransactionModal(type) {
+  const isCredit = type === 'credit';
+  openModal(isCredit ? 'Add Team Building budget' : 'Record Team Building expense', `
+    <form id="tf-tb-tx-form" style="display:flex; flex-direction:column; gap:14px;">
+      ${tfDateField('tf-tb-tx-date', isCredit ? 'Date received' : 'Date of expense')}
+      <div class="field">
+        <label for="tf-tb-tx-amount">Amount (₱)</label>
+        <input type="number" id="tf-tb-tx-amount" min="0.01" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-tb-tx-note">${isCredit ? 'Source / details' : 'Purpose / details'}</label>
+        <textarea id="tf-tb-tx-note" rows="3" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+          placeholder="${isCredit ? 'e.g. Additional company budget for Q3 team building' : 'e.g. Team dinner at Max\'s Restaurant — Jul 1, 2026'}"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">
+        ${isCredit ? 'Add budget' : 'Record expense'}
+      </button>
+    </form>
+  `);
+  document.getElementById('tf-tb-tx-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const date = document.getElementById('tf-tb-tx-date').value;
+    const amount = parseFloat(document.getElementById('tf-tb-tx-amount').value);
+    const note = document.getElementById('tf-tb-tx-note').value.trim();
+    if (!date) { showToast('Please select a date.', true); return; }
+    if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
+    if (!note) { showToast('Please add a note — it is required.', true); return; }
+    const { error } = await sb.from('team_fund_transactions').insert({
+      type, amount, note, category: 'team_building',
+      transaction_date: date, recorded_by: state.profile.display_name,
+    });
+    if (error) { showToast('Could not save the transaction.', true); return; }
+    closeModal(); showToast(isCredit ? 'Budget added.' : 'Expense recorded.'); renderTeamFunds();
+  });
+}
+
 function tfRegisterOutsideClick() {
   if (window._tfOutsideClickBound) return;
   window._tfOutsideClickBound = true;
   document.addEventListener("click", () => {
     if (state.currentView !== "team-funds") return;
-    if (state.teamFundsTxMenuId === null && state.teamFundsLoanMenuId === null) return;
-    state.teamFundsTxMenuId = null;
-    state.teamFundsLoanMenuId = null;
-    renderTeamFunds();
+    const portal = document.getElementById('tf-portal-menu');
+    if (portal && portal.style.display !== 'none') {
+      portal.style.display = 'none';
+      portal.innerHTML = '';
+      state.teamFundsTxMenuId = null;
+      state.teamFundsLoanMenuId = null;
+      // No re-render needed — portal lives outside the table so hiding
+      // it doesn't affect layout
+    }
   });
 }
 
@@ -6026,6 +6499,8 @@ function tfDateField(id, label, required = true) {
 
 function openTfTransactionModal(type) {
   const isCredit = type === 'credit';
+  const creditPresets = ['LI Excess', 'Birthday Cake', 'Other'];
+
   openModal(isCredit ? 'Add funds (inflow)' : 'Record expense (outflow)', `
     <form id="tf-tx-form" style="display:flex; flex-direction:column; gap:14px;">
       ${tfDateField('tf-tx-date', isCredit ? 'Date received' : 'Date of expense')}
@@ -6034,25 +6509,79 @@ function openTfTransactionModal(type) {
         <input type="number" id="tf-tx-amount" min="0.01" step="0.01" required
           style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
-      <div class="field">
-        <label for="tf-tx-note">${isCredit ? 'Source / details' : 'Purpose / details'}</label>
-        <textarea id="tf-tx-note" rows="3" required
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
-          placeholder="${isCredit ? 'e.g. LI excess remittance from Arniel — July 2026' : 'e.g. Birthday cake for Mae Angiele — July 5, 2026'}"></textarea>
-      </div>
+      ${isCredit ? `
+        <div class="field">
+          <label for="tf-tx-preset">Source</label>
+          <select id="tf-tx-preset" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            ${creditPresets.map(p => `<option value="${p}">${p}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" id="tf-tx-note-field">
+          <label for="tf-tx-note">Details <span id="tf-tx-note-optional" class="faint">(optional)</span></label>
+          <textarea id="tf-tx-note" rows="3"
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+            placeholder="e.g. LI excess remittance from Arniel — July 2026"></textarea>
+        </div>
+      ` : `
+        <div class="field">
+          <label for="tf-tx-note">Purpose / details</label>
+          <textarea id="tf-tx-note" rows="3" required
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+            placeholder="e.g. Birthday cake for Mae Angiele — July 5, 2026"></textarea>
+        </div>
+      `}
       <button type="submit" class="btn btn-primary" style="justify-content:center;">
         ${isCredit ? 'Record inflow' : 'Record expense'}
       </button>
     </form>
   `);
+
+  // For credits: wire the preset dropdown to update placeholder and required state
+  if (isCredit) {
+    const presetEl = document.getElementById('tf-tx-preset');
+    const noteEl   = document.getElementById('tf-tx-note');
+    const optLabel = document.getElementById('tf-tx-note-optional');
+
+    const placeholders = {
+      'LI Excess':    'e.g. LI excess remittance from Arniel — July 2026',
+      'Birthday Cake':'e.g. Birthday cake for Jacquelyn Bolibar — July 5, 2026',
+      'Other':        'Describe the source of funds (required)',
+    };
+
+    function updateNoteField() {
+      const val = presetEl.value;
+      const isOther = val === 'Other';
+      noteEl.placeholder = placeholders[val] || '';
+      noteEl.required = isOther;
+      optLabel.style.display = isOther ? 'none' : '';
+    }
+
+    presetEl.addEventListener('change', updateNoteField);
+    updateNoteField(); // run once on open
+  }
+
   document.getElementById('tf-tx-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const date = document.getElementById('tf-tx-date').value;
+    const date   = document.getElementById('tf-tx-date').value;
     const amount = parseFloat(document.getElementById('tf-tx-amount').value);
-    const note = document.getElementById('tf-tx-note').value.trim();
+    const noteRaw = document.getElementById('tf-tx-note').value.trim();
+
     if (!date) { showToast('Please select a date.', true); return; }
     if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
-    if (!note) { showToast('Please add a note — it is required.', true); return; }
+
+    let note;
+    if (isCredit) {
+      const preset = document.getElementById('tf-tx-preset').value;
+      if (preset === 'Other' && !noteRaw) {
+        showToast('Please add details — required when "Other" is selected.', true); return;
+      }
+      // Combine preset label with optional details for a descriptive note
+      note = noteRaw ? `${preset} — ${noteRaw}` : preset;
+    } else {
+      if (!noteRaw) { showToast('Please add a note — it is required.', true); return; }
+      note = noteRaw;
+    }
+
     const { error } = await sb.from('team_fund_transactions').insert({
       type, amount, note, transaction_date: date, recorded_by: state.profile.display_name,
     });
@@ -6435,5 +6964,10 @@ document.addEventListener('focusin', (e) => {
 checkExistingSession();
 
 </script>
+
+<!-- Portal dropdown for Team Funds ⋯ menus — lives outside all tables
+     so it never affects table layout or causes row shifting when opened -->
+<div id="tf-portal-menu" style="display:none; position:fixed; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:1000; min-width:148px;"></div>
+
 </body>
 </html>
