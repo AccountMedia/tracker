@@ -2894,43 +2894,100 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
       return;
     }
 
-    // Partial coverage: split into a covered portion (stays paid) and an
-    // unpaid overflow portion, with a note recording exactly how much
-    // credit was still applied.
+    // Partial coverage: some portion of this request exceeds the primary
+    // pool (SL or VL). Before marking overflow as LNP, check whether the
+    // OTHER paid pool (VL for SL rows, SL for VL rows) has any remaining
+    // credit that can absorb it — LNP is only the last resort once both
+    // pools are completely empty.
     const overflowHours = round2(requestedHours - availableHours);
-    const coveredNote = availableHours > 0
-      ? `Auto-split: ${availableHours}h still covered by remaining ${fiscalYearLabel(fy)} credit; ${overflowHours}h marked Leave Without Pay.`
-      : `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} credit.`;
+    const isHalf = !!(LEAVE_TYPES[row.leave_type] && LEAVE_TYPES[row.leave_type].half);
 
-    if (availableHours > 0) {
-      updates.push({
-        id: row.id,
-        fields: {
-          hours: availableHours,
-          note: appendAutoNote(row.note, coveredNote),
-        },
-      });
-      inserts.push({
-        employee_id: row.employee_id,
-        leave_type: noPayEquivalent(row.leave_type),
-        leave_date: row.leave_date,
-        note: appendAutoNote(row.note, coveredNote),
-        status: STATUS.APPROVED,
-        requested_by: row.requested_by,
-        request_group_id: row.request_group_id,
-        hours: overflowHours,
-      });
+    // Determine the spillover pool and what leave type to use for it
+    const spillPool = pool === 'sl' ? 'vl' : null; // only SL→VL spill for now; VL has no further fallback
+    const spillLeaveType = pool === 'sl' ? (isHalf ? 'VLH' : 'VL') : null;
+    const spillKey = spillPool ? `${fy}:${spillPool}` : null;
+
+    // How much VL balance is available at this point (accounting for VL
+    // already virtually consumed by earlier rows in this same group)?
+    const spillBalanceBefore = (spillPool && spillKey)
+      ? round2(
+          round2(poolBalance(employee, spillPool, fy) + (alreadyCountedAgainstSelf[spillKey] || 0))
+          - (virtualUsed[spillKey] || 0)
+        )
+      : 0;
+    const spillAvailableHours = round2(Math.max(0, spillBalanceBefore) * 8);
+    const spillCoveredHours   = round2(Math.min(overflowHours, spillAvailableHours));
+    const trueOverflowHours   = round2(overflowHours - spillCoveredHours);
+
+    // Build a human-readable auto-note summarising exactly what happened
+    let coveredNote;
+    if (availableHours > 0 && spillCoveredHours > 0 && trueOverflowHours > 0) {
+      coveredNote = `Auto-split: ${availableHours}h covered by remaining ${fiscalYearLabel(fy)} ${pool.toUpperCase()} credit; ${spillCoveredHours}h covered by remaining ${pool === 'sl' ? 'VL' : 'SL'} credit; ${trueOverflowHours}h marked Leave Without Pay.`;
+    } else if (availableHours > 0 && spillCoveredHours > 0 && trueOverflowHours <= 0) {
+      coveredNote = `Auto-split: ${availableHours}h covered by remaining ${fiscalYearLabel(fy)} ${pool.toUpperCase()} credit; ${spillCoveredHours}h covered by remaining ${pool === 'sl' ? 'VL' : 'SL'} credit.`;
+    } else if (availableHours > 0 && spillCoveredHours <= 0) {
+      coveredNote = `Auto-split: ${availableHours}h still covered by remaining ${fiscalYearLabel(fy)} credit; ${overflowHours}h marked Leave Without Pay.`;
+    } else if (spillCoveredHours > 0 && trueOverflowHours > 0) {
+      coveredNote = `Auto-marked: ${spillCoveredHours}h covered by remaining ${pool === 'sl' ? 'VL' : 'SL'} credit; ${trueOverflowHours}h marked Leave Without Pay.`;
+    } else if (spillCoveredHours > 0 && trueOverflowHours <= 0) {
+      coveredNote = `Auto-converted: covered by remaining ${pool === 'sl' ? 'VL' : 'SL'} credit after ${pool.toUpperCase()} was exhausted.`;
     } else {
-      updates.push({
-        id: row.id,
-        fields: {
-          leave_type: noPayEquivalent(row.leave_type),
-          note: appendAutoNote(row.note, coveredNote),
-        },
+      coveredNote = `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} credit.`;
+    }
+
+    // ── Write the database operations ──────────────────────────────
+
+    // 1. The original row: update in place if some hours are covered by
+    //    the primary pool, otherwise convert the whole thing to the spill
+    //    type or LNP.
+    if (availableHours > 0) {
+      updates.push({ id: row.id, fields: { hours: availableHours, note: appendAutoNote(row.note, coveredNote) } });
+      virtualUsed[key] = round2((virtualUsed[key] || 0) + availableHours / 8);
+    } else {
+      // Primary pool completely empty: change the row type to whatever
+      // absorbs it (spill type or LNP), then let the spill logic below
+      // handle the hours.
+      if (spillLeaveType && spillCoveredHours > 0) {
+        // The whole day can be covered by the spill pool
+        updates.push({ id: row.id, fields: { leave_type: spillLeaveType, hours: spillCoveredHours, note: appendAutoNote(row.note, coveredNote) } });
+        virtualUsed[spillKey] = round2((virtualUsed[spillKey] || 0) + spillCoveredHours / 8);
+        if (trueOverflowHours > 0) {
+          inserts.push({
+            employee_id: row.employee_id, leave_type: noPayEquivalent(row.leave_type),
+            leave_date: row.leave_date, note: appendAutoNote(row.note, coveredNote),
+            status: STATUS.APPROVED, requested_by: row.requested_by,
+            request_group_id: row.request_group_id, hours: trueOverflowHours,
+          });
+        }
+      } else {
+        updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: requestedHours, note: appendAutoNote(row.note, coveredNote) } });
+      }
+      return;
+    }
+
+    // 2. Spill portion: new VL row (if any hours can be absorbed by VL)
+    if (spillLeaveType && spillCoveredHours > 0) {
+      inserts.push({
+        employee_id: row.employee_id, leave_type: spillLeaveType,
+        leave_date: row.leave_date, note: appendAutoNote(row.note, coveredNote),
+        status: STATUS.APPROVED, requested_by: row.requested_by,
+        request_group_id: row.request_group_id, hours: spillCoveredHours,
+      });
+      virtualUsed[spillKey] = round2((virtualUsed[spillKey] || 0) + spillCoveredHours / 8);
+    }
+
+    // 3. True overflow: only what neither pool could cover becomes LNP
+    if (trueOverflowHours > 0) {
+      inserts.push({
+        employee_id: row.employee_id, leave_type: noPayEquivalent(row.leave_type),
+        leave_date: row.leave_date, note: appendAutoNote(row.note, coveredNote),
+        status: STATUS.APPROVED, requested_by: row.requested_by,
+        request_group_id: row.request_group_id, hours: trueOverflowHours,
       });
     }
 
-    virtualUsed[key] = round2((virtualUsed[key] || 0) + availableHours / 8);
+    // No further update to virtualUsed[key] here — availableHours were
+    // already tracked above when we wrote the original row.
   });
 
   return { updates, inserts };
