@@ -362,14 +362,12 @@
     </div>
     <nav class="nav">
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
-      <a class="nav-item" data-view="task-manager" id="nav-task-manager" style="display:none;"><span class="dot"></span>Task Manager</a>
-      <a class="nav-item" data-view="leave-tracker"><span class="dot"></span>Leave Tracker</a>
+      <a class="nav-item" data-view="account-hub" id="nav-account-hub"><span class="dot"></span>Leave Tracker</a>
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds</a>
-      <a class="nav-item" data-view="employee-management" id="nav-employee-management" style="display:none;"><span class="dot"></span>Employee Management</a>
       <div class="nav-section-label">Coming soon</div>
       <a class="nav-item disabled"><span class="dot"></span>LinkedIn Premium Tracker</a>
     </nav>
@@ -397,7 +395,8 @@
     </section>
 
     <!-- LEAVE TRACKER VIEW -->
-    <section class="view" id="view-leave-tracker">
+    <!-- ACCOUNT HUB — combined Leave Tracker + Task Manager + Employee Management -->
+    <section class="view" id="view-account-hub">
       <div class="page-head">
         <div style="display:flex; align-items:center; gap:12px;">
           <div>
@@ -406,9 +405,27 @@
           </div>
           <div id="leave-tracker-bell"></div>
         </div>
-        <div id="leave-tracker-actions"></div>
+        <div id="account-hub-actions"></div>
       </div>
-      <div id="leave-tracker-content"></div>
+      <!-- Tab bar + action buttons on same row, separated by a flex spacer -->
+      <div id="account-hub-tab-row" style="display:flex; align-items:flex-end; justify-content:space-between; border-bottom:1px solid var(--line); margin-bottom:0;">
+        <div id="account-hub-tabs" style="display:flex; gap:4px;"></div>
+        <div id="account-hub-tab-btns" style="display:flex; align-items:center; gap:8px; padding-bottom:8px;"></div>
+      </div>
+      <div id="account-hub-content"></div>
+    </section>
+
+    <section class="view" id="view-leave-tracker">
+      <div class="page-head">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div>
+            <span class="eyebrow">PH Team</span>
+            <h1>Leave Tracker</h1>
+          </div>
+        </div>
+        <div></div>
+      </div>
+      <div></div>
     </section>
 
     <!-- PAYROLL CONFIRMATION VIEW -->
@@ -471,9 +488,9 @@
           <h1>Employee Management</h1>
           <p class="lede">The master employee list — add, remove, and manage account access.</p>
         </div>
-        <div id="employee-management-actions"></div>
+        <div></div>
       </div>
-      <div id="employee-management-content"></div>
+      <div></div>
     </section>
 
     <section class="view" id="view-task-manager">
@@ -483,9 +500,9 @@
           <h1>Task Manager</h1>
           <p class="lede">Daily task tracking for Kristina and Jeinna.</p>
         </div>
-        <div id="task-manager-actions"></div>
+        <div></div>
       </div>
-      <div id="task-manager-content"></div>
+      <div></div>
     </section>
 
     <section class="view" id="view-team-funds">
@@ -586,6 +603,7 @@ const state = {
   teamFundsData: null,       // cached data from last fetch { settings, transactions, accounts, loans, repayments }
   leaveNotifications: [],    // { id, text, time, read } — session-only, cleared on logout
   leaveNotifPanelOpen: false,
+  accountHubTab: 'leave-tracker', // active tab in Account Hub
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -752,14 +770,15 @@ function initNav() {
   if (employeeManagementNavItem) {
     employeeManagementNavItem.style.display = canManageEmployees() ? '' : 'none';
   }
-  const taskManagerNavItem = document.getElementById('nav-task-manager');
-  if (taskManagerNavItem) {
-    taskManagerNavItem.style.display = canManageEmployees() ? '' : 'none'; // same list: Kristina + Jeinna
-  }
 
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'task-manager', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'employee-management', 'team-funds'];
-  switchView(validViews.includes(savedView) ? savedView : 'dashboard');
+  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds'];
+  // Redirect any saved view that has moved into Account Hub
+  const hubViews = ['leave-tracker', 'task-manager', 'employee-management'];
+  const startView = hubViews.includes(savedView) ? 'account-hub'
+    : validViews.includes(savedView) ? savedView : 'dashboard';
+  if (hubViews.includes(savedView)) state.accountHubTab = savedView;
+  switchView(startView);
 }
 
 function switchView(viewName) {
@@ -781,13 +800,11 @@ function switchView(viewName) {
   if (target) target.classList.add('active');
 
   if (viewName === 'dashboard') renderDashboard();
-  if (viewName === 'leave-tracker') renderLeaveTracker();
+  if (viewName === 'account-hub') renderAccountHub();
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
   if (viewName === 'priolist') renderPrioList();
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
-  if (viewName === 'employee-management') renderEmployeeManagement();
-  if (viewName === 'task-manager') renderTaskManager();
   if (viewName === 'team-funds') renderTeamFunds();
 
   if (viewName === 'priolist') startPriolistPolling();
@@ -796,7 +813,8 @@ function switchView(viewName) {
   if (viewName === 'li-restriction') startLiRestrictionTicker();
   else stopLiRestrictionTicker();
 
-  if (viewName === 'leave-tracker') startLeaveTrackerPolling();
+  // Leave Tracker polling runs when Account Hub is active on the leave-tracker tab
+  if (viewName === 'account-hub' && state.accountHubTab === 'leave-tracker') startLeaveTrackerPolling();
   else stopLeaveTrackerPolling();
 
   if (viewName === 'payroll-confirmation') startPayrollPolling();
@@ -819,7 +837,7 @@ async function loadAllData() {
   await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
   await ensureYearEndHolidayBlocks();
   renderDashboard();
-  renderLeaveTracker();
+  if (state.currentView === 'account-hub') renderAccountHub();
   renderPayrollConfirmation();
   renderPrioList();
   renderLiRestriction();
@@ -830,8 +848,8 @@ async function loadAllData() {
   // tab), the initial switchView() call already ran against an empty
   // state.employees before this finished — re-render it now that real
   // data exists, or it's stuck showing "No employees yet" indefinitely.
-  if (state.currentView === 'employee-management' && canManageEmployees()) {
-    renderEmployeeManagement();
+  if (state.currentView === 'account-hub' && canManageEmployees()) {
+    renderAccountHub();
   }
 }
 
@@ -1359,21 +1377,173 @@ function dashboardStatCard(label, value, sub, accentCls) {
 // LEAVE TRACKER VIEW
 // =====================================================================
 
+// =====================================================================
+// ACCOUNT HUB — unified view for Leave Tracker, Task Manager, Employee Management
+// =====================================================================
+
+function renderAccountHub() {
+  const hubContent  = document.getElementById('account-hub-content');
+  const hubTabsEl   = document.getElementById('account-hub-tabs');
+  const hubTabBtns  = document.getElementById('account-hub-tab-btns');
+  const hubActions  = document.getElementById('account-hub-actions');
+  if (!hubContent) return;
+
+  // Tab order: Leave Tracker → Employees → Task Manager
+  const tabs = [
+    { id: 'leave-tracker',      label: 'Leave Tracker' },
+    ...(canManageEmployees()    ? [{ id: 'employee-management', label: 'Employees' }] : []),
+    ...(canAccessTaskManager()  ? [{ id: 'task-manager',        label: 'Task Manager' }] : []),
+  ];
+
+  // Validate active tab
+  if (!tabs.find(t => t.id === state.accountHubTab)) state.accountHubTab = tabs[0].id;
+  const activeId = state.accountHubTab;
+
+  // ── Tab buttons (left side of the row) ──────────────────────────
+  hubTabsEl.innerHTML = tabs.map(t => {
+    const isActive = t.id === activeId;
+    return `
+      <button type="button" class="account-hub-tab" data-tab="${t.id}" style="
+        padding:9px 18px; font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer;
+        border:1px solid var(--line); border-bottom:none; border-radius:10px 10px 0 0;
+        background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
+        color:${isActive ? '#F7F3E8' : 'var(--ink-soft)'};
+        position:relative; ${isActive ? 'z-index:2;' : 'z-index:1; margin-top:3px;'}">
+        ${t.label}
+      </button>
+    `;
+  }).join('');
+
+  // ── Action buttons (right side of the row) ───────────────────────
+  if (activeId === 'leave-tracker') {
+    hubTabBtns.innerHTML = `
+      ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="btn-todays-approvals">Today's approvals</button>` : ''}
+      ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="btn-download-report">Download monthly report</button>` : ''}
+      <button class="btn btn-primary btn-sm" id="btn-new-request">+ Request leave</button>
+    `;
+    document.getElementById('btn-new-request')?.addEventListener('click', openRequestModal);
+    document.getElementById('btn-download-report')?.addEventListener('click', () => buildAndOpenLeaveReport());
+    document.getElementById('btn-todays-approvals')?.addEventListener('click', openTodaysApprovalsReport);
+  } else if (activeId === 'employee-management') {
+    // Employee search + add button live in the tab row
+    hubTabBtns.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div style="position:relative;">
+          <input type="text" id="em-search" placeholder="Search employees…" autocomplete="off"
+            style="padding:7px 12px 7px 32px; border-radius:999px; border:1px solid var(--line);
+                   background:var(--paper); font-family:inherit; font-size:12.5px; width:200px;">
+          <span style="position:absolute; left:11px; top:50%; transform:translateY(-50%);
+                       color:var(--ink-faint); font-size:13px; pointer-events:none;">⌕</span>
+        </div>
+        <button class="btn btn-primary btn-sm" id="btn-add-employee">+ Add employee</button>
+      </div>
+    `;
+    document.getElementById('btn-add-employee')?.addEventListener('click', openAddEmployeeModal);
+    document.getElementById('em-search')?.addEventListener('input', renderEmployeeManagementTable);
+  } else if (activeId === 'task-manager') {
+    hubTabBtns.innerHTML = `<button class="btn btn-primary btn-sm" id="tm-add-task-btn">+ Add task</button>`;
+    document.getElementById('tm-add-task-btn')?.addEventListener('click', openTmAddTaskModal);
+  } else {
+    hubTabBtns.innerHTML = '';
+  }
+
+  hubActions.innerHTML = '';
+
+  // ── Content area ─────────────────────────────────────────────────
+  hubContent.style.paddingTop = '20px';
+
+  if (activeId === 'leave-tracker') {
+    const bellSlot = document.getElementById('leave-tracker-bell');
+    if (bellSlot && isAdmin()) {
+      const unread = state.leaveNotifications.filter(n => !n.read).length;
+      bellSlot.innerHTML = `
+        <button id="btn-leave-notif" title="Leave approval notifications" style="
+          position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
+          color:var(--ink-faint); display:flex; align-items:center; border-radius:8px;
+          transition:color 0.12s, background 0.12s; margin-top:6px;"
+          onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
+          onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+            <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+          </svg>
+          ${unread > 0 ? `<span style="position:absolute;top:0;right:0;background:var(--coral);color:#fff;font-size:9px;font-weight:700;border-radius:999px;min-width:14px;height:14px;display:flex;align-items:center;justify-content:center;padding:0 2px;font-family:inherit;line-height:1;border:1.5px solid var(--paper);">${unread > 9 ? '9+' : unread}</span>` : ''}
+        </button>
+      `;
+      document.getElementById('btn-leave-notif')?.addEventListener('click', (e) => {
+        e.stopPropagation(); toggleLeaveNotifPanel();
+      });
+    } else if (bellSlot) {
+      bellSlot.innerHTML = '';
+    }
+    hubContent.innerHTML = `<div id="leave-tracker-content"></div>`;
+    renderLeaveTrackerContent();
+    startLeaveTrackerPolling();
+
+  } else if (activeId === 'employee-management') {
+    const bellSlot = document.getElementById('leave-tracker-bell');
+    if (bellSlot) bellSlot.innerHTML = '';
+    // Scaffold ONLY the content div — actions are in the tab row now
+    // but renderEmployeeManagement still looks for #employee-management-actions
+    // so we provide a hidden one it can write to (values ignored since we
+    // already built the real controls above)
+    hubContent.innerHTML = `
+      <div id="employee-management-actions" style="display:none;"></div>
+      <div id="employee-management-content"></div>
+    `;
+    stopLeaveTrackerPolling();
+    renderEmployeeManagement();
+
+  } else if (activeId === 'task-manager') {
+    const bellSlot = document.getElementById('leave-tracker-bell');
+    if (bellSlot) bellSlot.innerHTML = '';
+    // Scaffold BOTH elements renderTaskManager expects
+    hubContent.innerHTML = `
+      <div id="task-manager-actions" style="display:none;"></div>
+      <div id="task-manager-content"></div>
+    `;
+    stopLeaveTrackerPolling();
+    renderTaskManager();
+  }
+
+  // Tab click handlers
+  document.querySelectorAll('.account-hub-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.accountHubTab = btn.dataset.tab;
+      renderAccountHub();
+    });
+  });
+}
+
+// Renders only the Leave Tracker calendar/pending/credits grid —
+// used by Account Hub which puts the action buttons in the tab row.
+// Since Account Hub doesn't scaffold a #leave-tracker-actions div,
+// renderLeaveTracker's actions block gracefully no-ops (null-safe).
+function renderLeaveTrackerContent() {
+  renderLeaveTracker();
+}
+
+// Task Manager content render — just delegates to the existing function.
+function renderTaskManagerContent() {
+  renderTaskManager();
+}
+
 function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
-  actionsEl.style.marginBottom = '6px';
-  actionsEl.innerHTML = `
-    <div style="display:flex; align-items:center; gap:8px;">
-      ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
-      ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download monthly report</button>` : ''}
-      <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
-    </div>
-  `;
-  document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
-  const reportBtn = document.getElementById('btn-download-report');
-  if (reportBtn) reportBtn.addEventListener('click', () => buildAndOpenLeaveReport());
-  const todaysApprovalsBtn = document.getElementById('btn-todays-approvals');
-  if (todaysApprovalsBtn) todaysApprovalsBtn.addEventListener('click', openTodaysApprovalsReport);
+  if (actionsEl) {
+    actionsEl.style.marginBottom = '6px';
+    actionsEl.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px;">
+        ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
+        ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download monthly report</button>` : ''}
+        <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
+      </div>
+    `;
+    document.getElementById('btn-new-request')?.addEventListener('click', openRequestModal);
+    document.getElementById('btn-download-report')?.addEventListener('click', () => buildAndOpenLeaveReport());
+    document.getElementById('btn-todays-approvals')?.addEventListener('click', openTodaysApprovalsReport);
+  }
 
   // Render the bell icon in the page head slot beside "Leave Tracker"
   const bellSlot = document.getElementById('leave-tracker-bell');
@@ -1410,6 +1580,7 @@ function renderLeaveTracker() {
   }
 
   const el = document.getElementById('leave-tracker-content');
+  if (!el) return;
   if (!state.employees.length) {
     el.innerHTML = '<div class="loading-row">Loading…</div>';
     return;
@@ -7213,9 +7384,12 @@ async function renderTaskManager() {
   const actionsEl = document.getElementById('task-manager-actions');
   const el = document.getElementById('task-manager-content');
 
-  actionsEl.innerHTML = `<button class="btn btn-primary" id="tm-add-task-btn">+ Add task</button>`;
-  document.getElementById('tm-add-task-btn').addEventListener('click', openTmAddTaskModal);
+  if (actionsEl) {
+    actionsEl.innerHTML = `<button class="btn btn-primary" id="tm-add-task-btn">+ Add task</button>`;
+    document.getElementById('tm-add-task-btn').addEventListener('click', openTmAddTaskModal);
+  }
 
+  if (!el) return;
   el.innerHTML = '<div class="loading-row">Loading…</div>';
   await loadTmData();
   renderTaskManagerView();
