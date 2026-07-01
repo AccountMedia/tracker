@@ -362,6 +362,7 @@
     </div>
     <nav class="nav">
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
+      <a class="nav-item" data-view="task-manager" id="nav-task-manager" style="display:none;"><span class="dot"></span>Task Manager</a>
       <a class="nav-item" data-view="leave-tracker"><span class="dot"></span>Leave Tracker</a>
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
@@ -470,6 +471,18 @@
         <div id="employee-management-actions"></div>
       </div>
       <div id="employee-management-content"></div>
+    </section>
+
+    <section class="view" id="view-task-manager">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">Restricted</span>
+          <h1>Task Manager</h1>
+          <p class="lede">Daily task tracking for Kristina and Jeinna.</p>
+        </div>
+        <div id="task-manager-actions"></div>
+      </div>
+      <div id="task-manager-content"></div>
     </section>
 
     <section class="view" id="view-team-funds">
@@ -731,9 +744,13 @@ function initNav() {
   if (employeeManagementNavItem) {
     employeeManagementNavItem.style.display = canManageEmployees() ? '' : 'none';
   }
+  const taskManagerNavItem = document.getElementById('nav-task-manager');
+  if (taskManagerNavItem) {
+    taskManagerNavItem.style.display = canManageEmployees() ? '' : 'none'; // same list: Kristina + Jeinna
+  }
 
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'employee-management', 'team-funds'];
+  const validViews = ['dashboard', 'task-manager', 'leave-tracker', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'employee-management', 'team-funds'];
   switchView(validViews.includes(savedView) ? savedView : 'dashboard');
 }
 
@@ -762,6 +779,7 @@ function switchView(viewName) {
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
   if (viewName === 'employee-management') renderEmployeeManagement();
+  if (viewName === 'task-manager') renderTaskManager();
   if (viewName === 'team-funds') renderTeamFunds();
 
   if (viewName === 'priolist') startPriolistPolling();
@@ -5984,7 +6002,6 @@ function renderTeamFundsView() {
             <tr style="border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
               <th style="padding:8px 12px; text-align:left;">Date</th>
               <th style="padding:8px 12px; text-align:left;">Note</th>
-              <th style="padding:8px 12px; text-align:left;">Category</th>
               <th style="padding:8px 12px; text-align:right; color:#2E7D32;">Credit (In)</th>
               <th style="padding:8px 12px; text-align:right; color:var(--coral);">Debit (Out)</th>
               <th style="padding:8px 12px; text-align:left;">Recorded By</th>
@@ -5999,9 +6016,6 @@ function renderTeamFundsView() {
                 <tr style="border-bottom:1px solid var(--line-soft); font-size:12.5px;">
                   <td style="padding:10px 12px; white-space:nowrap;">${dateStr}</td>
                   <td style="padding:10px 12px;">${escapeHtml(t.note)}</td>
-                  <td style="padding:10px 12px;">
-                    ${t.category === 'team_building' ? `<span style="font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; background:var(--amber-wash,#FEF3C7); color:var(--amber-dark,#9E6B00);">🏕 Team Building</span>` : `<span class="faint" style="font-size:11px;">General</span>`}
-                  </td>
                   <td style="padding:10px 12px; text-align:right; font-weight:600; color:#2E7D32;">${isCredit ? TF_FMT(t.amount) : ""}</td>
                   <td style="padding:10px 12px; text-align:right; font-weight:600; color:var(--coral);">${!isCredit ? TF_FMT(t.amount) : ""}</td>
                   <td style="padding:10px 12px;" class="faint">${escapeHtml(t.recorded_by)}</td>
@@ -6014,7 +6028,7 @@ function renderTeamFundsView() {
               `;
             }).join("")}
             <tr style="border-top:2px solid var(--line); font-size:12.5px; font-weight:700;">
-              <td style="padding:10px 12px;" colspan="3">Totals${activeFilter ? ` (${escapeHtml(activeFilter)})` : ''}</td>
+              <td style="padding:10px 12px;" colspan="2">Totals${activeFilter ? ` (${escapeHtml(activeFilter)})` : ''}</td>
               <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(filteredCredits)}</td>
               <td style="padding:10px 12px; text-align:right; color:var(--coral);">${TF_FMT(filteredDebits)}</td>
               <td ${canEdit ? 'colspan="2"' : ""} style="padding:10px 12px;" class="faint">
@@ -6227,14 +6241,14 @@ function renderTeamFundsView() {
   // Recorded By filter
   document.getElementById('tf-recorded-by-filter')?.addEventListener('change', (e) => {
     state.teamFundsTxFilter = e.target.value;
-    renderTeamFunds();
+    loadTeamFundsData().then(renderTeamFundsView);
   });
 
   // Tab click — no re-fetch, just flip state and re-render
   document.querySelectorAll(".tf-tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       state.teamFundsTab = btn.dataset.tab;
-      renderTeamFunds();
+      loadTeamFundsData().then(renderTeamFundsView);
     });
   });
 
@@ -6257,7 +6271,7 @@ function renderTeamFundsView() {
       btn.addEventListener("click", async () => {
         if (!confirm(`Remove ${btn.dataset.name}\'s account details?`)) return;
         await sb.from("treasurer_accounts").delete().eq("id", btn.dataset.id);
-        showToast("Account removed."); renderTeamFunds();
+        showToast("Account removed."); loadTeamFundsData().then(renderTeamFundsView);
       });
     });
 
@@ -6601,7 +6615,7 @@ function openTfTbBudgetModal() {
       note: `Team Building allocation — beginning balance set to ${TF_FMT(amount)}`,
       transaction_date: date, recorded_by: state.profile.display_name,
     });
-    closeModal(); showToast('Team Building balance set.'); renderTeamFunds();
+    closeModal(); showToast('Team Building balance set.'); loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -6639,7 +6653,7 @@ function openTfTbTransactionModal(type) {
       transaction_date: date, recorded_by: state.profile.display_name,
     });
     if (error) { showToast('Could not save the transaction.', true); return; }
-    closeModal(); showToast(isCredit ? 'Budget added.' : 'Expense recorded.'); renderTeamFunds();
+    closeModal(); showToast(isCredit ? 'Budget added.' : 'Expense recorded.'); loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -6767,7 +6781,7 @@ function openTfTransactionModal(type) {
     if (error) { showToast('Could not save the transaction.', true); return; }
     closeModal();
     showToast(isCredit ? 'Inflow recorded.' : 'Expense recorded.');
-    renderTeamFunds();
+    loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -6795,7 +6809,7 @@ function openTfOpeningBalanceModal() {
     if (error) { showToast('Could not save the opening balance.', true); return; }
     closeModal();
     showToast('Opening balance saved.');
-    renderTeamFunds();
+    loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -6845,7 +6859,7 @@ function openTfLoanModal() {
     if (error) { showToast('Could not record the loan.', true); return; }
     closeModal();
     showToast('Loan recorded. Balance will reflect this once saved.');
-    renderTeamFunds();
+    loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -6881,7 +6895,7 @@ function openTfRepaymentModal(loanId, loanName) {
     if (error) { showToast('Could not record the repayment.', true); return; }
     closeModal();
     showToast('Repayment recorded.');
-    renderTeamFunds();
+    loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -6950,7 +6964,7 @@ function openTfEditTransactionModal(tx) {
     if (!note) { showToast('Please add a note — it is required.', true); return; }
     const { error } = await sb.from('team_fund_transactions').update({ transaction_date: date, amount, note }).eq('id', tx.id);
     if (error) { showToast('Could not save the changes.', true); return; }
-    closeModal(); showToast('Transaction updated.'); renderTeamFunds();
+    closeModal(); showToast('Transaction updated.'); loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -6958,7 +6972,7 @@ async function deleteTfTransaction(id) {
   if (!confirm('Permanently delete this transaction? This cannot be undone.')) return;
   const { error } = await sb.from('team_fund_transactions').delete().eq('id', id);
   if (error) { showToast('Could not delete the transaction.', true); return; }
-  showToast('Transaction deleted.'); renderTeamFunds();
+  showToast('Transaction deleted.'); loadTeamFundsData().then(renderTeamFundsView);
 }
 
 function openTfEditLoanModal(loan) {
@@ -7004,7 +7018,7 @@ function openTfEditLoanModal(loan) {
       employee_id: empId, employee_name: empName, loan_date: date, amount, note,
     }).eq('id', loan.id);
     if (error) { showToast('Could not save the changes.', true); return; }
-    closeModal(); showToast('Loan updated.'); renderTeamFunds();
+    closeModal(); showToast('Loan updated.'); loadTeamFundsData().then(renderTeamFundsView);
   });
 }
 
@@ -7014,7 +7028,7 @@ async function deleteTfLoan(id, name) {
   await sb.from('loan_repayments').delete().eq('loan_id', id);
   const { error } = await sb.from('employee_loans').delete().eq('id', id);
   if (error) { showToast('Could not delete the loan.', true); return; }
-  showToast('Loan and all repayments deleted.'); renderTeamFunds();
+  showToast('Loan and all repayments deleted.'); loadTeamFundsData().then(renderTeamFundsView);
 }
 
 function openTfAccountModal(existing) {
@@ -7051,7 +7065,7 @@ function openTfAccountModal(existing) {
     document.getElementById('tf-acc-delete-btn').addEventListener('click', async () => {
       if (!confirm(`Remove ${existing.display_name}'s account details?`)) return;
       await sb.from('treasurer_accounts').delete().eq('id', existing.id);
-      closeModal(); showToast('Account removed.'); renderTeamFunds();
+      closeModal(); showToast('Account removed.'); loadTeamFundsData().then(renderTeamFundsView);
     });
   }
 
@@ -7084,8 +7098,371 @@ function openTfAccountModal(existing) {
       ? await sb.from('treasurer_accounts').update(payload).eq('id', existing.id)
       : await sb.from('treasurer_accounts').insert(payload);
     if (error) { showToast('Could not save the account details.', true); return; }
-    closeModal(); showToast(existing ? 'Account updated.' : 'Account added.'); renderTeamFunds();
+    closeModal(); showToast(existing ? 'Account updated.' : 'Account added.'); loadTeamFundsData().then(renderTeamFundsView);
   });
+}
+
+// =====================================================================
+// TASK MANAGER — restricted to Kristina Mutia and Jeinna Louise Perez
+// =====================================================================
+
+const TM_USERS = ['kristina', 'jeinna']; // tab keys
+const TM_LABELS = { kristina: 'Kristina Mutia', jeinna: 'Jeinna Louise Perez' };
+const TM_ALLOWED = ['Kristina Mutia', 'Jeinna Louise Perez'];
+
+function canAccessTaskManager() {
+  return !!state.profile && TM_ALLOWED.includes(state.profile.display_name);
+}
+
+// State for Task Manager
+const tmState = {
+  tab: 'kristina',          // active person tab
+  dateOffset: 0,            // 0 = today, -1 = yesterday, etc.
+  tasks: [],                // all task definitions
+  completions: [],          // completions for the visible date range
+};
+
+async function renderTaskManager() {
+  if (!canAccessTaskManager()) return;
+  const actionsEl = document.getElementById('task-manager-actions');
+  const el = document.getElementById('task-manager-content');
+
+  actionsEl.innerHTML = `<button class="btn btn-primary" id="tm-add-task-btn">+ Add task</button>`;
+  document.getElementById('tm-add-task-btn').addEventListener('click', openTmAddTaskModal);
+
+  el.innerHTML = '<div class="loading-row">Loading…</div>';
+  await loadTmData();
+  renderTaskManagerView();
+}
+
+async function loadTmData() {
+  const today = isoDate(new Date());
+  // Load tasks + completions for the last 30 days (for carry-over history)
+  const since = isoDate(new Date(Date.now() - 30 * 86400000));
+  const [tasksRes, completionsRes] = await Promise.all([
+    sb.from('tasks').select('*').eq('archived', false).order('created_at'),
+    sb.from('task_completions').select('*').gte('task_date', since).order('task_date', { ascending: false }),
+  ]);
+  tmState.tasks = tasksRes.data || [];
+  tmState.completions = completionsRes.data || [];
+  // Ensure today's completions exist for all recurring tasks
+  await ensureTodayCompletions(today);
+}
+
+async function ensureTodayCompletions(today) {
+  // For each recurring task, make sure a completion row exists for today
+  const needed = [];
+  for (const task of tmState.tasks.filter(t => t.is_recurring)) {
+    const owners = task.owner === 'both' ? ['kristina', 'jeinna'] : [task.owner];
+    for (const person of owners) {
+      const exists = tmState.completions.find(c => c.task_id === task.id && c.assigned_to === person && c.task_date === today);
+      if (!exists) {
+        needed.push({ task_id: task.id, assigned_to: person, task_date: today, completed: false });
+      }
+    }
+  }
+  if (needed.length) {
+    const { data } = await sb.from('task_completions').insert(needed).select();
+    if (data) tmState.completions.push(...data);
+  }
+}
+
+function renderTaskManagerView() {
+  const el = document.getElementById('task-manager-content');
+  if (!el) return;
+
+  const targetDate = isoDate(new Date(Date.now() + tmState.dateOffset * 86400000));
+  const today = isoDate(new Date());
+  const isToday = targetDate === today;
+  const isPast = targetDate < today;
+
+  // Date nav label
+  let dateLabel;
+  if (targetDate === today) dateLabel = `Today — ${formatPrettyDate(today)}`;
+  else if (targetDate === isoDate(new Date(Date.now() - 86400000))) dateLabel = `Yesterday — ${formatPrettyDate(targetDate)}`;
+  else dateLabel = formatPrettyDate(targetDate);
+
+  // Person tabs
+  const personTabsHtml = `
+    <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin-bottom:20px;">
+      ${TM_USERS.map(person => `
+        <button class="tm-person-tab" data-person="${person}" style="
+          padding:10px 24px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer;
+          border-bottom:${tmState.tab === person ? '3px solid var(--teal)' : '3px solid transparent'};
+          color:${tmState.tab === person ? 'var(--teal)' : 'var(--ink-faint)'};
+          margin-bottom:-2px; font-family:inherit;">
+          ${TM_LABELS[person]}
+        </button>
+      `).join('')}
+    </div>
+  `;
+
+  // Tasks for current person + date
+  const person = tmState.tab;
+  const myTasks = tmState.tasks.filter(t =>
+    t.owner === person || t.owner === 'both'
+  );
+  const completionsForDay = tmState.completions.filter(c =>
+    c.assigned_to === person && c.task_date === targetDate
+  );
+
+  // Carry-over: pending tasks from previous days that weren't completed
+  const pendingPrev = tmState.completions.filter(c =>
+    c.assigned_to === person &&
+    c.task_date < targetDate &&
+    c.task_date >= isoDate(new Date(Date.now() - 7 * 86400000)) &&
+    !c.completed
+  ).reduce((acc, c) => {
+    // Only keep latest instance per task (avoid duplicates)
+    const existing = acc.find(x => x.task_id === c.task_id);
+    if (!existing || c.task_date > existing.task_date) {
+      return [...acc.filter(x => x.task_id !== c.task_id), c];
+    }
+    return acc;
+  }, []).filter(c => {
+    // Only show carry-overs for tasks not already covered today
+    return !completionsForDay.find(x => x.task_id === c.task_id);
+  });
+
+  const doneCount = completionsForDay.filter(c => c.completed).length;
+  const totalCount = completionsForDay.length;
+
+  // Progress bar
+  const progressPct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+  const progressHtml = totalCount > 0 ? `
+    <div style="margin-bottom:20px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-size:12.5px; font-weight:600; color:var(--ink-soft);">${doneCount} of ${totalCount} completed</span>
+        <span style="font-size:12px; color:var(--ink-faint);">${progressPct}%</span>
+      </div>
+      <div style="background:var(--line-soft); border-radius:999px; height:6px; overflow:hidden;">
+        <div style="background:var(--teal); height:100%; width:${progressPct}%; border-radius:999px; transition:width 0.3s ease;"></div>
+      </div>
+    </div>
+  ` : '';
+
+  function taskRowHtml(completion, task, isCarryOver = false) {
+    const done = completion.completed;
+    return `
+      <div class="tm-task-row" data-completion-id="${completion.id}" style="
+        display:flex; align-items:flex-start; gap:12px; padding:14px 16px;
+        background:${done ? 'var(--line-soft)' : 'var(--paper-raised)'};
+        border-radius:10px; margin-bottom:8px;
+        border:1px solid ${done ? 'transparent' : isCarryOver ? 'var(--amber-wash,#FEF3C7)' : 'var(--line-soft)'};
+        opacity:${done ? '0.65' : '1'}; transition:opacity 0.2s;">
+        <button class="tm-toggle-btn btn-reset" data-id="${completion.id}" data-done="${done}" style="
+          width:22px; height:22px; min-width:22px; border-radius:50%;
+          border:2px solid ${done ? 'var(--teal)' : 'var(--line)'};
+          background:${done ? 'var(--teal)' : 'transparent'};
+          cursor:pointer; display:flex; align-items:center; justify-content:center;
+          margin-top:1px; transition:all 0.15s;">
+          ${done ? '<span style="color:#fff; font-size:12px; line-height:1;">✓</span>' : ''}
+        </button>
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600; font-size:13.5px; ${done ? 'text-decoration:line-through; color:var(--ink-faint);' : ''}">
+            ${escapeHtml(task.title)}
+            ${isCarryOver ? '<span style="font-size:10px; font-weight:700; color:var(--amber-dark,#9E6B00); background:var(--amber-wash,#FEF3C7); padding:1px 6px; border-radius:4px; margin-left:6px; vertical-align:middle;">carried over</span>' : ''}
+          </div>
+          ${task.description ? `<div class="faint" style="font-size:12px; margin-top:2px;">${escapeHtml(task.description)}</div>` : ''}
+          ${completion.note ? `
+            <div style="margin-top:8px; padding:8px 10px; background:var(--paper); border-radius:6px; border-left:3px solid var(--teal-soft); font-size:12px; color:var(--ink-soft);">
+              📝 ${escapeHtml(completion.note)}
+            </div>
+          ` : ''}
+          ${completion.completed_at ? `<div class="faint" style="font-size:11px; margin-top:6px;">Completed ${new Date(completion.completed_at).toLocaleTimeString('en-PH', { hour:'2-digit', minute:'2-digit' })}</div>` : ''}
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="tm-note-btn btn btn-ghost btn-sm" data-id="${completion.id}" data-note="${escapeHtml(completion.note || '')}" style="font-size:11px; padding:3px 8px; white-space:nowrap;">
+            ${completion.note ? 'Edit note' : '+ Note'}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  const carryOverHtml = pendingPrev.length ? `
+    <div style="margin-bottom:24px;">
+      <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--amber-dark,#9E6B00); margin-bottom:10px;">
+        ⚠ Carried over from previous days
+      </div>
+      ${pendingPrev.map(c => {
+        const task = tmState.tasks.find(t => t.id === c.task_id);
+        return task ? taskRowHtml(c, task, true) : '';
+      }).join('')}
+    </div>
+  ` : '';
+
+  const todayTasksHtml = completionsForDay.length ? `
+    <div>
+      <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--ink-faint); margin-bottom:10px;">
+        ${isToday ? "Today's tasks" : isPast ? 'Tasks for this day' : 'Upcoming tasks'}
+      </div>
+      ${completionsForDay.map(c => {
+        const task = tmState.tasks.find(t => t.id === c.task_id);
+        return task ? taskRowHtml(c, task) : '';
+      }).join('')}
+    </div>
+  ` : `
+    <div style="text-align:center; padding:40px 20px; color:var(--ink-faint);">
+      <div style="font-size:32px; margin-bottom:8px;">✓</div>
+      <div style="font-size:14px; font-weight:600;">No tasks for ${dateLabel}</div>
+      <div style="font-size:12.5px; margin-top:4px;">Add tasks using the button above.</div>
+    </div>
+  `;
+
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:20px;">
+      <button class="btn btn-ghost btn-sm" id="tm-prev-day">← Prev</button>
+      <span style="font-size:14px; font-weight:600; flex:1; text-align:center;">${dateLabel}</span>
+      <button class="btn btn-ghost btn-sm" id="tm-next-day" ${isToday ? 'disabled style="opacity:0.4;"' : ''}>Next →</button>
+    </div>
+    <div class="card" style="padding:22px;">
+      ${personTabsHtml}
+      ${progressHtml}
+      ${carryOverHtml}
+      ${todayTasksHtml}
+    </div>
+  `;
+
+  // Date nav
+  document.getElementById('tm-prev-day').addEventListener('click', () => {
+    tmState.dateOffset--;
+    renderTaskManagerView();
+  });
+  const nextBtn = document.getElementById('tm-next-day');
+  if (nextBtn && !isToday) {
+    nextBtn.addEventListener('click', () => {
+      tmState.dateOffset++;
+      renderTaskManagerView();
+    });
+  }
+
+  // Person tabs
+  el.querySelectorAll('.tm-person-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      tmState.tab = btn.dataset.person;
+      renderTaskManagerView();
+    });
+  });
+
+  // Toggle completion
+  el.querySelectorAll('.tm-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const nowDone = btn.dataset.done === 'false';
+      const { error } = await sb.from('task_completions').update({
+        completed: nowDone,
+        completed_at: nowDone ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString(),
+      }).eq('id', id);
+      if (error) { showToast('Could not update task.', true); return; }
+      // Update local state immediately
+      const c = tmState.completions.find(x => x.id === id);
+      if (c) {
+        c.completed = nowDone;
+        c.completed_at = nowDone ? new Date().toISOString() : null;
+      }
+      renderTaskManagerView();
+    });
+  });
+
+  // Note buttons
+  el.querySelectorAll('.tm-note-btn').forEach(btn => {
+    btn.addEventListener('click', () => openTmNoteModal(btn.dataset.id, btn.dataset.note));
+  });
+}
+
+function openTmAddTaskModal() {
+  openModal('Add task', `
+    <form id="tm-add-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tm-task-title">Task title</label>
+        <input type="text" id="tm-task-title" required placeholder="e.g. Send daily report"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tm-task-desc">Description <span class="faint">(optional)</span></label>
+        <textarea id="tm-task-desc" rows="2"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+          placeholder="Any extra details about this task"></textarea>
+      </div>
+      <div class="field">
+        <label for="tm-task-owner">Assign to</label>
+        <select id="tm-task-owner" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <option value="kristina">Kristina Mutia</option>
+          <option value="jeinna">Jeinna Louise Perez</option>
+          <option value="both">Both</option>
+        </select>
+      </div>
+      <div class="field">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px;">
+          <input type="checkbox" id="tm-task-recurring" checked style="width:15px; height:15px;">
+          Recurring (appears every day until completed or archived)
+        </label>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Add task</button>
+    </form>
+  `);
+  document.getElementById('tm-add-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = document.getElementById('tm-task-title').value.trim();
+    const description = document.getElementById('tm-task-desc').value.trim() || null;
+    const owner = document.getElementById('tm-task-owner').value;
+    const is_recurring = document.getElementById('tm-task-recurring').checked;
+    if (!title) { showToast('Please enter a task title.', true); return; }
+    const { data, error } = await sb.from('tasks').insert({
+      title, description, owner, is_recurring,
+      created_by: state.profile.display_name,
+    }).select().single();
+    if (error) { showToast('Could not add the task.', true); return; }
+    tmState.tasks.push(data);
+    // Create today's completion immediately
+    const today = isoDate(new Date());
+    const owners = owner === 'both' ? ['kristina', 'jeinna'] : [owner];
+    const newCompletions = owners.map(p => ({ task_id: data.id, assigned_to: p, task_date: today, completed: false }));
+    const { data: cd } = await sb.from('task_completions').insert(newCompletions).select();
+    if (cd) tmState.completions.push(...cd);
+    closeModal();
+    showToast('Task added.');
+    renderTaskManagerView();
+  });
+}
+
+function openTmNoteModal(completionId, existingNote) {
+  openModal('Task note', `
+    <form id="tm-note-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tm-note-text">Note</label>
+        <textarea id="tm-note-text" rows="4"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+          placeholder="Add a note about this task...">${escapeHtml(existingNote)}</textarea>
+      </div>
+      <div style="display:flex; gap:8px;">
+        ${existingNote ? `<button type="button" id="tm-note-clear" class="btn btn-ghost" style="color:var(--coral);">Clear note</button>` : ''}
+        <button type="submit" class="btn btn-primary" style="flex:1; justify-content:center;">Save note</button>
+      </div>
+    </form>
+  `);
+  document.getElementById('tm-note-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const note = document.getElementById('tm-note-text').value.trim() || null;
+    await saveTmNote(completionId, note);
+  });
+  document.getElementById('tm-note-clear')?.addEventListener('click', async () => {
+    await saveTmNote(completionId, null);
+  });
+}
+
+async function saveTmNote(completionId, note) {
+  const { error } = await sb.from('task_completions').update({
+    note, updated_at: new Date().toISOString(),
+  }).eq('id', completionId);
+  if (error) { showToast('Could not save the note.', true); return; }
+  const c = tmState.completions.find(x => x.id === completionId);
+  if (c) c.note = note;
+  closeModal();
+  showToast(note ? 'Note saved.' : 'Note cleared.');
+  renderTaskManagerView();
 }
 
 function formatBirthday(iso) {
