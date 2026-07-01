@@ -399,9 +399,12 @@
     <!-- LEAVE TRACKER VIEW -->
     <section class="view" id="view-leave-tracker">
       <div class="page-head">
-        <div>
-          <span class="eyebrow">PH Team</span>
-          <h1>Leave Tracker</h1>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div>
+            <span class="eyebrow">PH Team</span>
+            <h1>Leave Tracker</h1>
+          </div>
+          <div id="leave-tracker-bell"></div>
         </div>
         <div id="leave-tracker-actions"></div>
       </div>
@@ -581,6 +584,8 @@ const state = {
   teamFundsPollHandle: null, // setInterval handle for auto-refresh
   teamFundsTxFilter: '',     // filter value for "Recorded by" in Transaction History
   teamFundsData: null,       // cached data from last fetch { settings, transactions, accounts, loans, repayments }
+  leaveNotifications: [],    // { id, text, time, read } — session-only, cleared on logout
+  leaveNotifPanelOpen: false,
   otFilingDates: [],   // open OT filing dates (admin-managed)
   otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
@@ -709,6 +714,9 @@ function logout() {
   sessionStorage.removeItem('registry_active_view');
   state.profile = null;
   state.creditsEditMode = false;
+  state.leaveNotifications = [];
+  state.leaveNotifPanelOpen = false;
+  hideLeaveNotifPanel();
   stopPriolistPolling();
   stopLiRestrictionTicker();
   stopLeaveTrackerPolling();
@@ -1231,7 +1239,7 @@ function renderDashboard() {
 
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
-      ${dashboardStatCard('Out today', todayEntries.length, todayEntries.map(e => employeeName(e.employee_id)).join(', ') || 'No one is out today.', 'vl')}
+      ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl')}
       ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl')}
       ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl')}
       ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
@@ -1355,15 +1363,51 @@ function renderLeaveTracker() {
   const actionsEl = document.getElementById('leave-tracker-actions');
   actionsEl.style.marginBottom = '6px';
   actionsEl.innerHTML = `
-    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals" style="margin-right:8px;">Today's approvals</button>` : ''}
-    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report" style="margin-right:8px;">Download monthly report</button>` : ''}
-    <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
+    <div style="display:flex; align-items:center; gap:8px;">
+      ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
+      ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download monthly report</button>` : ''}
+      <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
+    </div>
   `;
   document.getElementById('btn-new-request').addEventListener('click', openRequestModal);
   const reportBtn = document.getElementById('btn-download-report');
   if (reportBtn) reportBtn.addEventListener('click', () => buildAndOpenLeaveReport());
   const todaysApprovalsBtn = document.getElementById('btn-todays-approvals');
   if (todaysApprovalsBtn) todaysApprovalsBtn.addEventListener('click', openTodaysApprovalsReport);
+
+  // Render the bell icon in the page head slot beside "Leave Tracker"
+  const bellSlot = document.getElementById('leave-tracker-bell');
+  if (bellSlot && isAdmin()) {
+    const unread = state.leaveNotifications.filter(n => !n.read).length;
+    bellSlot.innerHTML = `
+      <button id="btn-leave-notif" title="Leave approval notifications" style="
+        position:relative; background:none; border:none; padding:4px 6px;
+        cursor:pointer; color:var(--ink-faint); display:flex; align-items:center;
+        border-radius:8px; transition:color 0.12s, background 0.12s;
+        margin-top:6px;"
+        onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
+        onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        ${unread > 0 ? `<span style="
+          position:absolute; top:0px; right:0px;
+          background:var(--coral); color:#fff;
+          font-size:9px; font-weight:700; border-radius:999px;
+          min-width:14px; height:14px; display:flex; align-items:center;
+          justify-content:center; padding:0 2px; font-family:inherit; line-height:1;
+          border:1.5px solid var(--paper);">${unread > 9 ? '9+' : unread}</span>` : ''}
+      </button>
+    `;
+    document.getElementById('btn-leave-notif').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleLeaveNotifPanel();
+    });
+  } else if (bellSlot) {
+    bellSlot.innerHTML = '';
+  }
 
   const el = document.getElementById('leave-tracker-content');
   if (!state.employees.length) {
@@ -3148,8 +3192,15 @@ async function decideRequest(id, decision) {
   const entry = state.leaveEntries.find(e => e.id === id);
   const groupId = entry ? entry.request_group_id : null;
   const guardKey = groupId || id;
-  if (requestsBeingDecided.has(guardKey)) return; // already in progress — ignore the repeat click
+  if (requestsBeingDecided.has(guardKey)) return;
   requestsBeingDecided.add(guardKey);
+
+  // Snapshot VL/SL BEFORE approval so the notification can show what changed
+  const employeeBefore = entry ? state.employees.find(e => e.id === entry.employee_id) : null;
+  const fy = employeeBefore ? fiscalYearForDate(isoDate(new Date())) : null;
+  const fyStart = fy ? `${fy}-04-01` : null;
+  const vlBefore = employeeBefore && fyStart ? round2(fiscalPoolBalance(employeeBefore, 'vl', fyStart)) : null;
+  const slBefore = employeeBefore && fyStart ? round2(fiscalPoolBalance(employeeBefore, 'sl', fyStart)) : null;
 
   try {
   const groupCount = groupId ? state.leaveEntries.filter(e => e.request_group_id === groupId).length : 1;
@@ -3190,8 +3241,40 @@ async function decideRequest(id, decision) {
       } else {
         showToast(`${label} approved.`);
       }
+
+      // Build notification with before/after credit snapshot
+      if (employeeBefore && fyStart) {
+        const freshEmployee = state.employees.find(e => e.id === entry.employee_id);
+        if (freshEmployee) {
+          const vlAfter = round2(fiscalPoolBalance(freshEmployee, 'vl', fyStart));
+          const slAfter = round2(fiscalPoolBalance(freshEmployee, 'sl', fyStart));
+          const firstName = freshEmployee.display_name.split(' ')[0];
+          const creditMsg = `VL ${vlAfter}, SL ${slAfter}`;
+          const prevMsg   = `VL ${vlBefore}, SL ${slBefore}`;
+          const changed   = vlAfter !== vlBefore || slAfter !== slBefore;
+          const notifText = changed
+            ? `${firstName}'s leave has been approved. Leave credits are now ${creditMsg} (previously ${prevMsg}).`
+            : `${firstName}'s leave has been approved. Leave credits unchanged at ${creditMsg}.`;
+          pushLeaveNotification(notifText);
+        }
+      }
     } else {
       showToast(`${label} approved.`);
+      if (employeeBefore && fyStart) {
+        const freshEmployee = state.employees.find(e => e.id === entry.employee_id);
+        if (freshEmployee) {
+          const vlAfter = round2(fiscalPoolBalance(freshEmployee, 'vl', fyStart));
+          const slAfter = round2(fiscalPoolBalance(freshEmployee, 'sl', fyStart));
+          const firstName = freshEmployee.display_name.split(' ')[0];
+          const creditMsg = `VL ${vlAfter}, SL ${slAfter}`;
+          const prevMsg   = `VL ${vlBefore}, SL ${slBefore}`;
+          const changed   = vlAfter !== vlBefore || slAfter !== slBefore;
+          const notifText = changed
+            ? `${firstName}'s leave has been approved. Leave credits are now ${creditMsg} (previously ${prevMsg}).`
+            : `${firstName}'s leave has been approved. Leave credits unchanged at ${creditMsg}.`;
+          pushLeaveNotification(notifText);
+        }
+      }
     }
   }
   } finally {
@@ -7588,6 +7671,113 @@ async function saveTmNote(completionId, note) {
   renderTaskManagerView();
 }
 
+// =====================================================================
+// LEAVE TRACKER NOTIFICATIONS
+// =====================================================================
+
+function pushLeaveNotification(text) {
+  state.leaveNotifications.unshift({
+    id: Date.now() + Math.random(),
+    text,
+    time: new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
+    read: false,
+  });
+  if (state.leaveNotifications.length > 50) state.leaveNotifications.length = 50;
+  // Re-render just the bell slot to update the badge count
+  if (state.currentView === 'leave-tracker') {
+    renderLeaveTracker();
+  }
+}
+
+function toggleLeaveNotifPanel() {
+  state.leaveNotifPanelOpen = !state.leaveNotifPanelOpen;
+  if (state.leaveNotifPanelOpen) {
+    showLeaveNotifPanel();
+    // Mark all as read
+    state.leaveNotifications.forEach(n => { n.read = true; });
+    // Update bell badge immediately (no full re-render needed)
+    const bellBtn = document.getElementById('btn-leave-notif');
+    if (bellBtn) {
+      const badge = bellBtn.querySelector('span');
+      if (badge) badge.remove();
+    }
+  } else {
+    hideLeaveNotifPanel();
+  }
+}
+
+function showLeaveNotifPanel() {
+  const panel = document.getElementById('leave-notif-panel');
+  if (!panel) return;
+  const bellBtn = document.getElementById('btn-leave-notif');
+  if (bellBtn) {
+    const rect = bellBtn.getBoundingClientRect();
+    panel.style.top  = (rect.bottom + 8) + 'px';
+    panel.style.right = (window.innerWidth - rect.right) + 'px';
+  }
+
+  const notifs = state.leaveNotifications;
+  panel.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line-soft); flex-shrink:0;">
+      <span style="font-weight:700; font-size:14px;">Notifications</span>
+      ${notifs.length ? `<button id="notif-clear-all" style="font-size:11px; color:var(--ink-faint); background:none; border:none; cursor:pointer; font-family:inherit; padding:0;">Clear all</button>` : ''}
+    </div>
+    <div style="overflow-y:auto; flex:1; max-height:400px;">
+      ${notifs.length ? notifs.map((n, i) => `
+        <div style="padding:12px 16px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start;">
+          <span style="font-size:18px; flex-shrink:0; margin-top:1px;">🔔</span>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:12.5px; line-height:1.5; color:var(--ink);">${escapeHtml(n.text)}</div>
+            <div class="faint" style="font-size:11px; margin-top:3px;">${n.time}</div>
+          </div>
+          <button class="notif-dismiss-btn" data-index="${i}" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>
+        </div>
+      `).join('') : `
+        <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
+          <div style="font-size:28px; margin-bottom:8px;">🔔</div>
+          <div style="font-size:13px;">No notifications yet.</div>
+          <div style="font-size:12px; margin-top:4px;">Leave approvals will appear here.</div>
+        </div>
+      `}
+    </div>
+  `;
+
+  panel.style.display = 'flex';
+  panel.style.flexDirection = 'column';
+
+  panel.querySelector('#notif-clear-all')?.addEventListener('click', () => {
+    state.leaveNotifications = [];
+    state.leaveNotifPanelOpen = false;
+    hideLeaveNotifPanel();
+    renderLeaveTracker();
+  });
+  panel.querySelectorAll('.notif-dismiss-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.leaveNotifications.splice(Number(btn.dataset.index), 1);
+      showLeaveNotifPanel(); // re-render panel in place
+    });
+  });
+
+  // Register outside-click handler once
+  if (!window._notifOutsideClickBound) {
+    window._notifOutsideClickBound = true;
+    document.addEventListener('click', (e) => {
+      const panel = document.getElementById('leave-notif-panel');
+      const bell = document.getElementById('btn-leave-notif');
+      if (!panel || panel.style.display === 'none') return;
+      if (panel.contains(e.target) || (bell && bell.contains(e.target))) return;
+      hideLeaveNotifPanel();
+      state.leaveNotifPanelOpen = false;
+    });
+  }
+}
+
+function hideLeaveNotifPanel() {
+  const panel = document.getElementById('leave-notif-panel');
+  if (panel) panel.style.display = 'none';
+}
+
 function formatBirthday(iso) {
   const d = new Date(iso + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -7647,6 +7837,9 @@ checkExistingSession();
 <!-- Portal dropdown for Team Funds ⋯ menus — lives outside all tables
      so it never affects table layout or causes row shifting when opened -->
 <div id="tf-portal-menu" style="display:none; position:fixed; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:1000; min-width:148px;"></div>
+
+<!-- Leave Tracker notification panel — fixed portal outside the page flow -->
+<div id="leave-notif-panel" style="display:none; position:fixed; top:0; right:0; background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow-md); z-index:1001; width:360px; max-height:480px; display:none; flex-direction:column; overflow:hidden;"></div>
 
 </body>
 </html>
