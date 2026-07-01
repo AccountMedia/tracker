@@ -5660,8 +5660,8 @@ async function renderTeamFunds() {
   actionsEl.innerHTML = canEdit ? `
     <div style="display:flex; gap:8px;">
       <button class="btn btn-ghost" id="tf-add-credit-btn">+ Add funds</button>
+      <button class="btn btn-ghost" id="tf-add-debit-btn">− Record expense</button>
       <button class="btn btn-ghost" id="tf-add-loan-btn">+ Loan</button>
-      <button class="btn btn-primary" id="tf-add-debit-btn">− Record expense</button>
     </div>
   ` : '';
 
@@ -5731,6 +5731,7 @@ async function renderTeamFunds() {
                 <th style="padding:8px 12px; text-align:left;">Type</th>
                 <th style="padding:8px 12px; text-align:right;">Amount</th>
                 <th style="padding:8px 12px; text-align:left;">Recorded By</th>
+                ${canEdit ? `<th style="padding:8px 12px;"></th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -5752,6 +5753,12 @@ async function renderTeamFunds() {
                       ${isCredit ? '+' : '−'}${TF_FMT(t.amount)}
                     </td>
                     <td style="padding:10px 12px;" class="faint">${escapeHtml(t.recorded_by)}</td>
+                    ${canEdit ? `
+                      <td style="padding:10px 12px; white-space:nowrap;">
+                        <button class="btn btn-ghost btn-sm tf-edit-tx-btn" data-id="${t.id}" style="font-size:11px; padding:3px 8px;">Edit</button>
+                        <button class="btn btn-ghost btn-sm tf-delete-tx-btn" data-id="${t.id}" style="font-size:11px; padding:3px 6px; color:var(--coral); margin-left:4px;" title="Delete this transaction">✕</button>
+                      </td>
+                    ` : ''}
                   </tr>
                 `;
               }).join('')}
@@ -5807,6 +5814,8 @@ async function renderTeamFunds() {
                         <div style="display:flex; gap:6px;">
                           ${!isPaid ? `<button class="btn btn-ghost btn-sm tf-add-repayment-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 8px; white-space:nowrap;">+ Repayment</button>` : ''}
                           <button class="btn btn-ghost btn-sm tf-view-repayments-btn" data-loan-id="${loan.id}" style="font-size:11px; padding:3px 8px;">History</button>
+                          <button class="btn btn-ghost btn-sm tf-edit-loan-btn" data-loan-id="${loan.id}" style="font-size:11px; padding:3px 8px;">Edit</button>
+                          <button class="btn btn-ghost btn-sm tf-delete-loan-btn" data-loan-id="${loan.id}" data-loan-name="${escapeHtml(loan.employee_name)}" style="font-size:11px; padding:3px 6px; color:var(--coral);" title="Delete this loan">✕</button>
                         </div>
                       </td>
                     ` : ''}
@@ -5866,6 +5875,20 @@ async function renderTeamFunds() {
     });
     document.querySelectorAll('.tf-view-repayments-btn').forEach(btn => {
       btn.addEventListener('click', () => openTfRepaymentHistory(btn.dataset.loanId, repayments, loans));
+    });
+    document.querySelectorAll('.tf-edit-tx-btn').forEach(btn => {
+      const tx = transactions.find(t => t.id === btn.dataset.id);
+      btn.addEventListener('click', () => openTfEditTransactionModal(tx));
+    });
+    document.querySelectorAll('.tf-delete-tx-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteTfTransaction(btn.dataset.id));
+    });
+    document.querySelectorAll('.tf-edit-loan-btn').forEach(btn => {
+      const loan = loans.find(l => l.id === btn.dataset.loanId);
+      btn.addEventListener('click', () => openTfEditLoanModal(loan));
+    });
+    document.querySelectorAll('.tf-delete-loan-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteTfLoan(btn.dataset.loanId, btn.dataset.loanName));
     });
   }
 }
@@ -6065,6 +6088,105 @@ function openTfRepaymentHistory(loanId, repayments, loans) {
       </div>
     ` : `<p class="muted" style="font-size:12.5px; margin:8px 0 0;">No repayments recorded yet.</p>`}
   `);
+}
+
+function openTfEditTransactionModal(tx) {
+  const isCredit = tx.type === 'credit';
+  openModal(isCredit ? 'Edit inflow' : 'Edit expense', `
+    <form id="tf-edit-tx-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tf-edit-tx-date">${isCredit ? 'Date received' : 'Date of expense'}</label>
+        <input type="date" id="tf-edit-tx-date" value="${tx.transaction_date || ''}" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-edit-tx-amount">Amount (₱)</label>
+        <input type="number" id="tf-edit-tx-amount" value="${tx.amount}" min="0.01" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-edit-tx-note">${isCredit ? 'Source / details' : 'Purpose / details'}</label>
+        <textarea id="tf-edit-tx-note" rows="3" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(tx.note)}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save changes</button>
+    </form>
+  `);
+  document.getElementById('tf-edit-tx-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const date = document.getElementById('tf-edit-tx-date').value;
+    const amount = parseFloat(document.getElementById('tf-edit-tx-amount').value);
+    const note = document.getElementById('tf-edit-tx-note').value.trim();
+    if (!date) { showToast('Please select a date.', true); return; }
+    if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
+    if (!note) { showToast('Please add a note — it is required.', true); return; }
+    const { error } = await sb.from('team_fund_transactions').update({ transaction_date: date, amount, note }).eq('id', tx.id);
+    if (error) { showToast('Could not save the changes.', true); return; }
+    closeModal(); showToast('Transaction updated.'); renderTeamFunds();
+  });
+}
+
+async function deleteTfTransaction(id) {
+  if (!confirm('Permanently delete this transaction? This cannot be undone.')) return;
+  const { error } = await sb.from('team_fund_transactions').delete().eq('id', id);
+  if (error) { showToast('Could not delete the transaction.', true); return; }
+  showToast('Transaction deleted.'); renderTeamFunds();
+}
+
+function openTfEditLoanModal(loan) {
+  const activeEmployees = state.employees.filter(e => e.active !== false).sort(byKristinaFirstThenName);
+  openModal('Edit loan', `
+    <form id="tf-edit-loan-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tf-edit-loan-emp">Employee</label>
+        <select id="tf-edit-loan-emp" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          ${activeEmployees.map(emp => `<option value="${emp.id}" data-name="${escapeHtml(emp.display_name)}" ${emp.id === loan.employee_id ? 'selected' : ''}>${escapeHtml(emp.display_name)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field">
+        <label for="tf-edit-loan-date">Date of loan</label>
+        <input type="date" id="tf-edit-loan-date" value="${loan.loan_date}" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-edit-loan-amount">Loan amount (₱)</label>
+        <input type="number" id="tf-edit-loan-amount" value="${loan.amount}" min="0.01" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-edit-loan-note">Purpose / details</label>
+        <textarea id="tf-edit-loan-note" rows="3" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(loan.note)}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save changes</button>
+    </form>
+  `);
+  document.getElementById('tf-edit-loan-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const empSelect = document.getElementById('tf-edit-loan-emp');
+    const empId = empSelect.value;
+    const empName = empSelect.options[empSelect.selectedIndex]?.dataset.name || loan.employee_name;
+    const date = document.getElementById('tf-edit-loan-date').value;
+    const amount = parseFloat(document.getElementById('tf-edit-loan-amount').value);
+    const note = document.getElementById('tf-edit-loan-note').value.trim();
+    if (!date) { showToast('Please select a date.', true); return; }
+    if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
+    if (!note) { showToast('Please add a note — it is required.', true); return; }
+    const { error } = await sb.from('employee_loans').update({
+      employee_id: empId, employee_name: empName, loan_date: date, amount, note,
+    }).eq('id', loan.id);
+    if (error) { showToast('Could not save the changes.', true); return; }
+    closeModal(); showToast('Loan updated.'); renderTeamFunds();
+  });
+}
+
+async function deleteTfLoan(id, name) {
+  if (!confirm(`Permanently delete ${name}'s loan record? All associated repayments will also be deleted. This cannot be undone.`)) return;
+  // Repayments cascade-delete via FK, but let's be explicit
+  await sb.from('loan_repayments').delete().eq('loan_id', id);
+  const { error } = await sb.from('employee_loans').delete().eq('id', id);
+  if (error) { showToast('Could not delete the loan.', true); return; }
+  showToast('Loan and all repayments deleted.'); renderTeamFunds();
 }
 
 function openTfAccountModal(existing) {
