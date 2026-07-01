@@ -6674,7 +6674,10 @@ function tfDateField(id, label, required = true) {
 
 function openTfTransactionModal(type) {
   const isCredit = type === 'credit';
-  const creditPresets = ['LI Excess', 'Birthday Cake', 'Other'];
+  // Credit (Add Funds): only LI Excess — single source, no dropdown needed
+  // Debit (Record Expense): Birthday Cake or Other — Other requires details
+  const creditPresets = ['LI Excess', 'Other'];
+  const debitPresets = ['Birthday Cake', 'Other'];
 
   openModal(isCredit ? 'Add funds (inflow)' : 'Record expense (outflow)', `
     <form id="tf-tx-form" style="display:flex; flex-direction:column; gap:14px;">
@@ -6691,7 +6694,7 @@ function openTfTransactionModal(type) {
             ${creditPresets.map(p => `<option value="${p}">${p}</option>`).join('')}
           </select>
         </div>
-        <div class="field" id="tf-tx-note-field">
+        <div class="field">
           <label for="tf-tx-note">Details <span id="tf-tx-note-optional" class="faint">(optional)</span></label>
           <textarea id="tf-tx-note" rows="3"
             style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
@@ -6699,8 +6702,14 @@ function openTfTransactionModal(type) {
         </div>
       ` : `
         <div class="field">
-          <label for="tf-tx-note">Purpose / details</label>
-          <textarea id="tf-tx-note" rows="3" required
+          <label for="tf-tx-preset">Purpose</label>
+          <select id="tf-tx-preset" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            ${debitPresets.map(p => `<option value="${p}">${p}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label for="tf-tx-note">Details <span id="tf-tx-note-optional" class="faint">(optional)</span></label>
+          <textarea id="tf-tx-note" rows="3"
             style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
             placeholder="e.g. Birthday cake for Mae Angiele — July 5, 2026"></textarea>
         </div>
@@ -6711,51 +6720,46 @@ function openTfTransactionModal(type) {
     </form>
   `);
 
-  // For credits: wire the preset dropdown to update placeholder and required state
-  if (isCredit) {
-    const presetEl = document.getElementById('tf-tx-preset');
-    const noteEl   = document.getElementById('tf-tx-note');
-    const optLabel = document.getElementById('tf-tx-note-optional');
+  // Wire the preset dropdown for both credit and debit —
+  // Other always makes Details required; everything else keeps it optional.
+  const presetEl = document.getElementById('tf-tx-preset');
+  const noteEl   = document.getElementById('tf-tx-note');
+  const optLabel = document.getElementById('tf-tx-note-optional');
 
-    const placeholders = {
-      'LI Excess':    'e.g. LI excess remittance from Arniel — July 2026',
-      'Birthday Cake':'e.g. Birthday cake for Jacquelyn Bolibar — July 5, 2026',
-      'Other':        'Describe the source of funds (required)',
-    };
+  const placeholders = isCredit ? {
+    'LI Excess': 'e.g. LI excess remittance from Arniel — July 2026',
+    'Other':     'Describe the source of funds (required)',
+  } : {
+    'Birthday Cake': 'e.g. Birthday cake for Mae Angiele — July 5, 2026',
+    'Other':         'Describe the purpose of this expense (required)',
+  };
 
-    function updateNoteField() {
-      const val = presetEl.value;
-      const isOther = val === 'Other';
-      noteEl.placeholder = placeholders[val] || '';
-      noteEl.required = isOther;
-      optLabel.style.display = isOther ? 'none' : '';
-    }
-
-    presetEl.addEventListener('change', updateNoteField);
-    updateNoteField(); // run once on open
+  function updateNoteField() {
+    const val = presetEl.value;
+    const isOther = val === 'Other';
+    noteEl.placeholder = placeholders[val] || '';
+    noteEl.required = isOther;
+    optLabel.style.display = isOther ? 'none' : '';
   }
+
+  presetEl.addEventListener('change', updateNoteField);
+  updateNoteField();
 
   document.getElementById('tf-tx-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const date   = document.getElementById('tf-tx-date').value;
-    const amount = parseFloat(document.getElementById('tf-tx-amount').value);
+    const date    = document.getElementById('tf-tx-date').value;
+    const amount  = parseFloat(document.getElementById('tf-tx-amount').value);
     const noteRaw = document.getElementById('tf-tx-note').value.trim();
 
     if (!date) { showToast('Please select a date.', true); return; }
     if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
 
     let note;
-    if (isCredit) {
-      const preset = document.getElementById('tf-tx-preset').value;
-      if (preset === 'Other' && !noteRaw) {
-        showToast('Please add details — required when "Other" is selected.', true); return;
-      }
-      // Combine preset label with optional details for a descriptive note
-      note = noteRaw ? `${preset} — ${noteRaw}` : preset;
-    } else {
-      if (!noteRaw) { showToast('Please add a note — it is required.', true); return; }
-      note = noteRaw;
+    const preset = document.getElementById('tf-tx-preset').value;
+    if (preset === 'Other' && !noteRaw) {
+      showToast(`Please add details — required when "Other" is selected.`, true); return;
     }
+    note = noteRaw ? `${preset} — ${noteRaw}` : preset;
 
     const { error } = await sb.from('team_fund_transactions').insert({
       type, amount, note, transaction_date: date, recorded_by: state.profile.display_name,
