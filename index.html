@@ -2037,27 +2037,31 @@ async function openTodaysApprovalsReport() {
   const todayStart = todayLocalStart.toISOString();
   const todayEnd = todayLocalEnd.toISOString();
 
-  // Fetch today's approved leave entries using decided_at
-  const { data: approvedEntries, error: e1 } = await sb
-    .from('leave_entries')
-    .select('*')
-    .gte('decided_at', todayStart)
-    .lte('decided_at', todayEnd)
-    .eq('status', STATUS.APPROVED)
-    .order('decided_at', { ascending: true });
-
-  // Fetch today's cancellation log entries
-  const { data: cancellations, error: e2 } = await sb
-    .from('leave_cancellation_log')
-    .select('*')
-    .gte('decided_at', todayStart)
-    .lte('decided_at', todayEnd)
-    .order('decided_at', { ascending: true });
-
-  if (e1 || e2) { showToast('Could not load today\'s approvals.', true); return; }
-
+  // Open the tab IMMEDIATELY so the user sees instant feedback (and the
+  // popup isn't blocked); fetch in parallel while the placeholder shows.
   const win = window.open('', '_blank');
   if (!win) { showToast('Could not open a new tab — your browser may have blocked the pop-up.', true); return; }
+  win.document.write(`<!DOCTYPE html><html><head><title>Today's Approvals</title></head>
+    <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;background:#FAF7F1;color:#A8A39A;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+    Preparing today's approvals…</body></html>`);
+
+  // Both queries run in parallel instead of one after the other
+  const [approvedRes, cancelRes] = await Promise.all([
+    sb.from('leave_entries').select('*')
+      .gte('decided_at', todayStart).lte('decided_at', todayEnd)
+      .eq('status', STATUS.APPROVED).order('decided_at', { ascending: true }),
+    sb.from('leave_cancellation_log').select('*')
+      .gte('decided_at', todayStart).lte('decided_at', todayEnd)
+      .order('decided_at', { ascending: true }),
+  ]);
+  const approvedEntries = approvedRes.data;
+  const cancellations = cancelRes.data;
+  const e1 = approvedRes.error, e2 = cancelRes.error;
+
+  if (e1 || e2) { win.close(); showToast('Could not load today\'s approvals.', true); return; }
+
+  // Reset the document for the real report content
+  win.document.open();
 
   const todayLabel = formatPrettyDate(today);
 
