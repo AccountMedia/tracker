@@ -1462,6 +1462,9 @@ function renderAccountHub() {
     }
     hubContent.innerHTML = `<div id="leave-tracker-content"></div>`;
     renderLeaveTrackerContent();
+    // Warm the Employees cache in the background so the first toggle
+    // to Employees paints instantly with no loading flash
+    if (showEmployees && (!state.appUsers || !state.appUsers.length)) loadAppUsers();
     startLeaveTrackerPolling();
 
   } else if (activeId === 'employee-management') {
