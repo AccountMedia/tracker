@@ -6912,15 +6912,23 @@ function openTfTbTransactionModal(type) {
   openModal(isCredit ? 'Add Team Building budget' : 'Record Team Building expense', `
     <form id="tf-tb-tx-form" style="display:flex; flex-direction:column; gap:14px;">
       ${tfDateField('tf-tb-tx-date', isCredit ? 'Date received' : 'Date of expense')}
-      ${isCredit ? tfTreasurerField('tf-tb-tx-treasurer', true) : ''}
+      ${isCredit ? tfTreasurerField('tf-tb-tx-treasurer', true) : `
+        <div class="field">
+          <label for="tf-tb-tx-category">Expense category</label>
+          <select id="tf-tb-tx-category" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            <option value="">— Select category —</option>
+            ${['Transportation','Plane Tickets','Food & Catering','Snacks & Drinks','Accommodation','Venue Rental','Activities & Games','Prizes','Awards & Trophies','T-shirt Printing','Souvenirs & Giveaways','Equipment Rental','Sound System','Photography & Videography','Decorations','First Aid & Medical','Permits & Fees','Tips & Gratuities','Miscellaneous','Other'].map(cat => `<option value="${cat}">${cat}</option>`).join('')}
+          </select>
+        </div>
+      `}
       <div class="field">
         <label for="tf-tb-tx-amount">Amount (₱)</label>
         <input type="number" id="tf-tb-tx-amount" min="0.01" step="0.01" required
           style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
       <div class="field">
-        <label for="tf-tb-tx-note">${isCredit ? 'Source / details' : 'Purpose / details'}</label>
-        <textarea id="tf-tb-tx-note" rows="3" required
+        <label for="tf-tb-tx-note">${isCredit ? 'Source / details' : 'Details'} ${isCredit ? '' : '<span id="tf-tb-note-optional" class="faint">(optional)</span>'}</label>
+        <textarea id="tf-tb-tx-note" rows="3" ${isCredit ? 'required' : ''}
           style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
           placeholder="${isCredit ? 'e.g. Additional company budget for Q3 team building' : 'e.g. Team dinner at Max\'s Restaurant — Jul 1, 2026'}"></textarea>
       </div>
@@ -6929,18 +6937,34 @@ function openTfTbTransactionModal(type) {
       </button>
     </form>
   `);
+  if (!isCredit) {
+    const catEl = document.getElementById('tf-tb-tx-category');
+    const noteEl2 = document.getElementById('tf-tb-tx-note');
+    const optLbl = document.getElementById('tf-tb-note-optional');
+    catEl.addEventListener('change', () => {
+      const isOther = catEl.value === 'Other';
+      noteEl2.required = isOther;
+      if (optLbl) optLbl.style.display = isOther ? 'none' : '';
+      noteEl2.placeholder = isOther ? 'Describe this expense (required)' : `e.g. ${catEl.value || 'expense'} for team building — details`;
+    });
+  }
+
   document.getElementById('tf-tb-tx-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const date = document.getElementById('tf-tb-tx-date').value;
     const amount = parseFloat(document.getElementById('tf-tb-tx-amount').value);
     const note = document.getElementById('tf-tb-tx-note').value.trim();
     const treasurer = isCredit ? document.getElementById('tf-tb-tx-treasurer').value : null;
+    const tbCategory = isCredit ? null : document.getElementById('tf-tb-tx-category').value;
     if (!date) { showToast('Please select a date.', true); return; }
     if (isCredit && !treasurer) { showToast("Please select where this budget came from.", true); return; }
+    if (!isCredit && !tbCategory) { showToast('Please select an expense category.', true); return; }
     if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
-    if (!note) { showToast('Please add a note — it is required.', true); return; }
+    if (isCredit && !note) { showToast('Please add a note — it is required.', true); return; }
+    if (!isCredit && tbCategory === 'Other' && !note) { showToast('Please add details — required when "Other" is selected.', true); return; }
+    const finalNote = isCredit ? note : (note ? `${tbCategory} — ${note}` : tbCategory);
     const { error } = await sb.from('team_fund_transactions').insert({
-      type, amount, note, category: 'team_building',
+      type, amount, note: finalNote, category: 'team_building',
       treasurer: (treasurer && treasurer !== 'Other') ? treasurer : null,
       transaction_date: date, recorded_by: state.profile.display_name,
     });
