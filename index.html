@@ -6994,6 +6994,31 @@ function initTfCalculator() {
   toggle.addEventListener('click', () => {
     panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
   });
+
+  // Keyboard support — active whenever the panel is open and the user
+  // isn't typing in an input/textarea elsewhere on the page
+  document.addEventListener('keydown', (e) => {
+    if (panel.style.display === 'none') return;
+    const tag = (document.activeElement?.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+    const keyMap = {
+      '/': '÷', '*': '×', '-': '−', '+': '+', '%': '%', '.': '.',
+      'Enter': '=', '=': '=', 'Backspace': '⌫', 'Delete': 'C', 'Escape': 'C',
+    };
+    let k = null;
+    if (/^[0-9]$/.test(e.key)) k = e.key;
+    else if (keyMap[e.key]) k = keyMap[e.key];
+    if (k === null) return;
+    e.preventDefault();
+    press(k);
+    // Brief visual feedback on the matching on-screen key
+    const btn = keysEl.querySelector(`.tf-calc-key[data-key="${k}"]`);
+    if (btn) {
+      btn.style.filter = 'brightness(0.85)';
+      setTimeout(() => { btn.style.filter = ''; }, 120);
+    }
+  });
 }
 
 function tfRegisterOutsideClick() {
