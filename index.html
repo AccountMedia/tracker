@@ -5237,9 +5237,17 @@ async function renderEmployeeManagement() {
   });
 
   const el = document.getElementById('employee-management-content');
-  el.innerHTML = '<div class="loading-row">Loading…</div>';
-
-  await loadAppUsers();
+  // Only show the loading flash on the very first visit — afterwards,
+  // render instantly from cached data and refresh silently in the
+  // background (same pattern as PrioList / Team Funds).
+  if (!state.appUsers || !state.appUsers.length) {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    await loadAppUsers();
+  } else {
+    renderEmployeeManagementTable();      // instant paint from cache
+    loadAppUsers().then(renderEmployeeManagementTable); // silent refresh
+    return;
+  }
   renderEmployeeManagementTable();
 }
 
