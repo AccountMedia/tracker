@@ -6139,6 +6139,11 @@ async function renderTeamFunds() {
   const el = document.getElementById('team-funds-content');
   const canEdit = canEditTeamFunds();
 
+  // Ensure the floating calculator is visible (covers page-refresh, where
+  // switchView can run before the calculator markup is parsed)
+  const calcWrap = document.getElementById('tf-calc-wrap');
+  if (calcWrap) { calcWrap.style.display = 'flex'; initTfCalculator(); }
+
   actionsEl.innerHTML = canEdit ? `
     <div style="display:flex; gap:8px;">
       <button class="btn btn-ghost" id="tf-add-credit-btn">+ Add funds</button>
