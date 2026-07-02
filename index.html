@@ -6186,7 +6186,7 @@ function renderTeamFundsView() {
   const totalLoaned  = loans.reduce((s, l) => s + Number(l.amount), 0);
   const totalRepaid  = repayments.reduce((s, r) => s + Number(r.amount), 0);
   const loanOutstanding = totalLoaned - totalRepaid;
-  const tbBalance    = tbBeginning + tbCredits - tbDebits;
+  const tbBalance    = tbCredits - tbDebits; // all TB funds come from Add budget
   // Current balance: treasurers' logged cash already reflects past inflows
   // minus loans they provided — it is NOT an additional allocation. Only
   // treasurer-tagged transactions move it. Legacy fallback when no cash set.
@@ -6228,7 +6228,6 @@ function renderTeamFundsView() {
         <div class="card" style="padding:14px;">
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
             <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">${escapeHtml(t.treasurer_name)} — Funds Held</div>
-            ${canEdit ? `<button class="btn btn-ghost btn-sm tf-set-cash-btn" data-name="${escapeHtml(t.treasurer_name)}" data-amount="${t.amount}" style="font-size:10px; padding:2px 8px;">Set cash</button>` : ''}
           </div>
           <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:${t.balance >= 0 ? 'var(--teal)' : 'var(--coral)'};">${TF_FMT(t.balance)}</div>
           <div class="faint" style="font-size:11px; margin-top:2px;">Cash logged: ${TF_FMT(t.amount)}</div>
@@ -6401,21 +6400,9 @@ function renderTeamFundsView() {
   // ── Team Building tab ───────────────────────────────────────────
   const tbTxList = transactions.filter(t => t.category === 'team_building');
   const tbTabHtml = `
-    <div style="background:var(--amber-wash,#FEF3C7); border:1px solid var(--amber-dark,#9E6B00); border-radius:8px; padding:12px 16px; margin-bottom:18px; font-size:12.5px; color:var(--ink-soft);">
-      <strong style="display:block; margin-bottom:4px;">How Team Building funds work</strong>
-      <ul style="margin:0; padding-left:18px; line-height:1.7;">
-        <li>Any <strong>Beginning Balance</strong> entered here will be deducted from the overall Team Funds balance.</li>
-        <li>Any <strong>Additional Budget</strong> added comes from a separate company allocation and will <em>not</em> be deducted from the main Team Funds.</li>
-      </ul>
-    </div>
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
       <div class="card" style="padding:14px; flex:1; min-width:160px;">
-        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Beginning Balance</div>
-        <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:var(--teal);">${TF_FMT(tbBeginning)}</div>
-        ${canEdit ? `<button class="btn btn-ghost btn-sm" id="tf-tb-set-budget-btn" style="font-size:11px; padding:3px 8px; margin-top:6px;">Edit</button>` : ''}
-      </div>
-      <div class="card" style="padding:14px; flex:1; min-width:160px;">
-        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Additional Budget</div>
+        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">Budget Added</div>
         <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:#2E7D32;">${TF_FMT(tbCredits)}</div>
       </div>
       <div class="card" style="padding:14px; flex:1; min-width:160px;">
@@ -6526,15 +6513,9 @@ function renderTeamFundsView() {
     document.getElementById("tf-add-debit-btn")?.addEventListener("click", () => openTfTransactionModal("debit"));
     document.getElementById("tf-add-loan-btn")?.addEventListener("click", openTfLoanModal);
     document.getElementById("tf-set-opening-btn")?.addEventListener("click", openTfOpeningBalanceModal);
-
-    // Per-treasurer cash on hand
-    document.querySelectorAll(".tf-set-cash-btn").forEach(btn => {
-      btn.addEventListener("click", () => openTfSetCashModal(btn.dataset.name, btn.dataset.amount));
-    });
     document.getElementById("tf-add-account-btn")?.addEventListener("click", () => openTfAccountModal(null));
 
     // Team Building buttons
-    document.getElementById("tf-tb-set-budget-btn")?.addEventListener("click", openTfTbBudgetModal);
     document.getElementById("tf-tb-add-budget-btn")?.addEventListener("click", () => openTfTbTransactionModal('credit'));
     document.getElementById("tf-tb-add-expense-btn")?.addEventListener("click", () => openTfTbTransactionModal('debit'));
     document.querySelectorAll(".tf-edit-account-btn").forEach(btn => {
@@ -6922,7 +6903,7 @@ function openTfTbTransactionModal(type) {
   openModal(isCredit ? 'Add Team Building budget' : 'Record Team Building expense', `
     <form id="tf-tb-tx-form" style="display:flex; flex-direction:column; gap:14px;">
       ${tfDateField('tf-tb-tx-date', isCredit ? 'Date received' : 'Date of expense')}
-      ${tfTreasurerField('tf-tb-tx-treasurer')}
+      ${tfTreasurerField('tf-tb-tx-treasurer', true)}
       <div class="field">
         <label for="tf-tb-tx-amount">Amount (₱)</label>
         <input type="number" id="tf-tb-tx-amount" min="0.01" step="0.01" required
@@ -7145,9 +7126,10 @@ function openTfTransactionModal(type) {
 }
 
 // Shared treasurer selector — which treasurer's held funds this affects
-function tfTreasurerField(id) {
+function tfTreasurerField(id, includeOther = false) {
   const names = (state.teamFundsData?.treasurerCash || []).map(t => t.treasurer_name);
-  const opts = names.length ? names : ['Katrena', 'Emerald', 'Roxanne'];
+  let opts = names.length ? names : ['Katrena', 'Emerald', 'Roxanne'];
+  if (includeOther) opts = [...opts, 'Other'];
   return `
     <div class="field">
       <label for="${id}">Treasurer (whose funds)</label>
