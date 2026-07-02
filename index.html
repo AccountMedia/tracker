@@ -7235,12 +7235,12 @@ function openTfLoanModal() {
   const activeEmployees = state.employees.filter(e => e.active !== false).sort(byKristinaFirstThenName);
   openModal('Record employee loan', `
     <form id="tf-loan-form" style="display:flex; flex-direction:column; gap:14px;">
-      <div class="field">
-        <label for="tf-loan-emp">Employee</label>
-        <select id="tf-loan-emp" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-          <option value="">— Select employee —</option>
-          ${activeEmployees.map(emp => `<option value="${emp.id}" data-name="${escapeHtml(emp.display_name)}">${escapeHtml(emp.display_name)}</option>`).join('')}
-        </select>
+      <div class="field" style="position:relative;">
+        <label for="tf-loan-emp-search">Employee</label>
+        <input type="text" id="tf-loan-emp-search" placeholder="Type to search…" autocomplete="off" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <input type="hidden" id="tf-loan-emp" value="">
+        <div id="tf-loan-emp-list" style="display:none; position:absolute; left:0; right:0; top:100%; margin-top:2px; max-height:190px; overflow-y:auto; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); z-index:30;"></div>
       </div>
       ${tfDateField('tf-loan-date', 'Date of loan')}
       ${tfTreasurerField('tf-loan-treasurer')}
@@ -7258,16 +7258,53 @@ function openTfLoanModal() {
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Record loan</button>
     </form>
   `);
+  // ── Searchable employee picker ────────────────────────────────
+  const empSearch = document.getElementById('tf-loan-emp-search');
+  const empHidden = document.getElementById('tf-loan-emp');
+  const empList   = document.getElementById('tf-loan-emp-list');
+  let empName = '';
+
+  function renderEmpList(query) {
+    const q = query.trim().toLowerCase();
+    const matches = q
+      ? activeEmployees.filter(e => e.display_name.toLowerCase().includes(q))
+      : activeEmployees;
+    if (!matches.length) {
+      empList.innerHTML = `<div class="faint" style="padding:10px 12px; font-size:12.5px;">No matches.</div>`;
+    } else {
+      empList.innerHTML = matches.map(e => `
+        <div class="tf-loan-emp-item" data-id="${e.id}" data-name="${escapeHtml(e.display_name)}"
+          style="padding:9px 12px; font-size:13px; cursor:pointer;">${escapeHtml(e.display_name)}</div>
+      `).join('');
+      empList.querySelectorAll('.tf-loan-emp-item').forEach(item => {
+        item.addEventListener('mouseenter', () => { item.style.background = 'var(--line-soft)'; });
+        item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
+        item.addEventListener('click', () => {
+          empHidden.value = item.dataset.id;
+          empName = item.dataset.name;
+          empSearch.value = item.dataset.name;
+          empList.style.display = 'none';
+        });
+      });
+    }
+    empList.style.display = 'block';
+  }
+
+  empSearch.addEventListener('input', () => {
+    empHidden.value = ''; empName = ''; // typing invalidates prior selection
+    renderEmpList(empSearch.value);
+  });
+  empSearch.addEventListener('focus', () => renderEmpList(empSearch.value));
+  empSearch.addEventListener('blur', () => setTimeout(() => { empList.style.display = 'none'; }, 180));
+
   document.getElementById('tf-loan-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const empSelect = document.getElementById('tf-loan-emp');
-    const empId = empSelect.value;
-    const empName = empSelect.options[empSelect.selectedIndex]?.dataset.name || '';
+    const empId = empHidden.value;
     const date = document.getElementById('tf-loan-date').value;
     const amount = parseFloat(document.getElementById('tf-loan-amount').value);
     const note = document.getElementById('tf-loan-note').value.trim();
     const treasurer = document.getElementById('tf-loan-treasurer').value;
-    if (!empId) { showToast('Please select an employee.', true); return; }
+    if (!empId) { showToast('Please pick an employee from the list.', true); return; }
     if (!date) { showToast('Please select a date.', true); return; }
     if (!treasurer) { showToast("Please select which treasurer's funds this loan comes from.", true); return; }
     if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
