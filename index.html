@@ -397,7 +397,7 @@
     <!-- LEAVE TRACKER VIEW -->
     <!-- ACCOUNT HUB — combined Leave Tracker + Employee Management -->
     <section class="view" id="view-account-hub">
-      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:nowrap; margin-bottom:28px;">
+      <div class="page-head" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:nowrap; margin-bottom:28px;">
         <div style="display:flex; align-items:center; gap:10px; flex-shrink:0;">
           <div>
             <span class="eyebrow">PH Team</span>
@@ -727,7 +727,6 @@ function logout() {
   sessionStorage.removeItem('registry_active_view');
   state.profile = null;
   state.creditsEditMode = false;
-  state.leaveNotifications = [];
   state.leaveNotifPanelOpen = false;
   hideLeaveNotifPanel();
   stopPriolistPolling();
@@ -8056,14 +8055,25 @@ async function saveTmNote(completionId, note) {
 // LEAVE TRACKER NOTIFICATIONS
 // =====================================================================
 
+function saveLeaveNotifications() {
+  try { localStorage.setItem('registry_leave_notifs', JSON.stringify(state.leaveNotifications)); } catch {}
+}
+function loadLeaveNotifications() {
+  try {
+    const raw = localStorage.getItem('registry_leave_notifs');
+    if (raw) state.leaveNotifications = JSON.parse(raw) || [];
+  } catch {}
+}
+
 function pushLeaveNotification(text) {
   state.leaveNotifications.unshift({
     id: Date.now() + Math.random(),
     text,
-    time: new Date().toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit' }),
+    time: new Date().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
     read: false,
   });
   if (state.leaveNotifications.length > 50) state.leaveNotifications.length = 50;
+  saveLeaveNotifications();
   // Re-render just the bell slot to update the badge count
   if (state.currentView === 'leave-tracker') {
     renderLeaveTracker();
@@ -8074,8 +8084,9 @@ function toggleLeaveNotifPanel() {
   state.leaveNotifPanelOpen = !state.leaveNotifPanelOpen;
   if (state.leaveNotifPanelOpen) {
     showLeaveNotifPanel();
-    // Mark all as read
+    // Mark all as read (they stay in the list until dismissed with ✕)
     state.leaveNotifications.forEach(n => { n.read = true; });
+    saveLeaveNotifications();
     // Update bell badge immediately (no full re-render needed)
     const bellBtn = document.getElementById('btn-leave-notif');
     if (bellBtn) {
@@ -8128,6 +8139,7 @@ function showLeaveNotifPanel() {
 
   panel.querySelector('#notif-clear-all')?.addEventListener('click', () => {
     state.leaveNotifications = [];
+    saveLeaveNotifications();
     state.leaveNotifPanelOpen = false;
     hideLeaveNotifPanel();
     renderLeaveTracker();
@@ -8136,6 +8148,7 @@ function showLeaveNotifPanel() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       state.leaveNotifications.splice(Number(btn.dataset.index), 1);
+      saveLeaveNotifications();
       showLeaveNotifPanel(); // re-render panel in place
     });
   });
@@ -8211,6 +8224,7 @@ document.addEventListener('focusin', (e) => {
   }
 });
 
+loadLeaveNotifications();
 checkExistingSession();
 
 // Sync the floating calculator's visibility once the FULL page is parsed —
