@@ -197,6 +197,13 @@
   }
 
   /* ---------- Buttons ---------- */
+  /* ---------- Thin, unobtrusive scrollbars (global) ---------- */
+  *{ scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  *::-webkit-scrollbar{ width:6px; height:6px; }
+  *::-webkit-scrollbar-track{ background: transparent; }
+  *::-webkit-scrollbar-thumb{ background: var(--line); border-radius: 999px; }
+  *::-webkit-scrollbar-thumb:hover{ background: var(--ink-faint); }
+
   .btn{
     display: inline-flex;
     align-items: center;
@@ -595,6 +602,7 @@ const state = {
   teamFundsLoanMenuId: null, // loan id whose ⋯ menu is open
   teamFundsPollHandle: null, // setInterval handle for auto-refresh
   teamFundsTxFilter: '',     // filter value for "Recorded by" in Transaction History
+  tfTxPage: 1,               // current page of Transaction History (15 per page)
   teamFundsData: null,       // cached data from last fetch { settings, transactions, accounts, loans, repayments }
   leaveNotifications: [],    // { id, text, time, read } — session-only, cleared on logout
   leaveNotifPanelOpen: false,
@@ -817,7 +825,7 @@ function switchView(viewName) {
   if (viewName === 'ot-filing') startOtFilingPolling();
   else stopOtFilingPolling();
   if (viewName === 'team-funds') startTeamFundsPolling();
-  else { stopTeamFundsPolling(); if (state.teamFundsData) state.teamFundsData = null; }
+  else { stopTeamFundsPolling(); } // cache kept — re-entry renders instantly, then silently refreshes
   // Floating calculator bubble — Team Funds only
   const calcWrap = document.getElementById('tf-calc-wrap');
   if (calcWrap) {
@@ -835,6 +843,9 @@ function switchView(viewName) {
 
 async function loadAllData() {
   await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
+  // Warm the Team Funds cache in the background (not awaited) so the
+  // first click on Team Funds renders instantly like every other tab
+  loadTeamFundsData().catch(() => {});
   await ensureYearEndHolidayBlocks();
   renderDashboard();
   if (state.currentView === 'account-hub') renderAccountHub();
@@ -2859,24 +2870,23 @@ async function submitEditDates(e, entry) {
 function renderPendingPanel() {
   const showMine = state.pendingPanelTab === 'mine';
 
+  // Underline tab style — matches the Team Funds tabs for consistency
   const tabBtn = (key, label, isActive) => `
     <button type="button" class="pending-panel-tab" data-tab="${key}"
-      style="flex:1; padding:9px 10px; font-size:12.5px; font-weight:700; font-family:inherit; cursor:pointer;
-             border:1px solid var(--line); border-bottom:none;
-             border-radius:10px 10px 0 0;
-             background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
-             color:${isActive ? '#F7F3E8' : 'var(--ink-soft)'};
-             position:relative; ${isActive ? 'z-index:2;' : 'z-index:1; margin-top:3px;'}">
+      style="flex:1; padding:10px 10px; font-size:13px; font-weight:600; font-family:inherit; cursor:pointer;
+             border:none; background:none;
+             border-bottom:${isActive ? '3px solid var(--teal)' : '3px solid transparent'};
+             color:${isActive ? 'var(--teal)' : 'var(--ink-faint)'};
+             margin-bottom:-2px;">
       ${label}
     </button>
   `;
 
   const header = `
-    <div style="display:flex; gap:4px; margin:0 -20px; padding:0 20px;">
+    <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin:0 -20px 14px; padding:0 20px;">
       ${tabBtn('pending', 'Pending Requests', !showMine)}
       ${tabBtn('mine', 'My Requests', showMine)}
     </div>
-    <div style="border-bottom:1px solid var(--line); margin:0 -20px 14px; padding:0 20px;"></div>
   `;
 
   if (showMine) {
@@ -4385,24 +4395,23 @@ function renderLiRestriction() {
           <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">LinkedIn Verification</h3>
           <p class="faint" style="font-size:11px; margin:0 0 12px;">Account ID-verification status per agent.</p>
           ${(() => {
+            // Underline tab style — matches the Team Funds tabs
             const verifTabBtn = (key, label, isActive) => `
               <button type="button" class="li-verif-filter-btn" data-filter="${key}"
-                style="flex:1; padding:8px 6px; font-size:11.5px; font-weight:700; font-family:inherit; cursor:pointer;
-                       border:1px solid var(--line); border-bottom:none;
-                       border-radius:8px 8px 0 0;
-                       background:${isActive ? 'var(--teal)' : 'var(--line-soft)'};
-                       color:${isActive ? '#F7F3E8' : 'var(--ink-soft)'};
-                       position:relative; ${isActive ? 'z-index:2;' : 'z-index:1; margin-top:3px;'}">
+                style="flex:1; padding:9px 6px; font-size:12px; font-weight:600; font-family:inherit; cursor:pointer;
+                       border:none; background:none;
+                       border-bottom:${isActive ? '3px solid var(--teal)' : '3px solid transparent'};
+                       color:${isActive ? 'var(--teal)' : 'var(--ink-faint)'};
+                       margin-bottom:-2px;">
                 ${label}
               </button>
             `;
             return `
-              <div style="display:flex; gap:4px; margin:0 -20px; padding:0 20px;">
+              <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin:0 -20px 14px; padding:0 20px;">
                 ${verifTabBtn('all', 'All', state.liVerificationFilter === 'all')}
                 ${verifTabBtn('verified', 'Verified', state.liVerificationFilter === 'verified')}
                 ${verifTabBtn('unverified', 'Unverified', state.liVerificationFilter === 'unverified')}
               </div>
-              <div style="border-bottom:1px solid var(--line); margin:0 -20px 14px; padding:0 20px;"></div>
             `;
           })()}
           <div class="li-verification-scroll" style="max-height:560px; overflow-y:auto;">
@@ -6158,12 +6167,16 @@ async function renderTeamFunds() {
     </div>
   ` : '';
 
-  // Show loading only on the very first load when there's no cached data yet
+  // Show loading only on the very first load when there's no cached data yet.
+  // On re-entry, paint instantly from cache and refresh silently behind it.
   if (!state.teamFundsData) {
     el.innerHTML = '<div class="loading-row">Loading…</div>';
     await loadTeamFundsData();
+    renderTeamFundsView();
+  } else {
+    renderTeamFundsView();
+    loadTeamFundsData().then(renderTeamFundsView);
   }
-  renderTeamFundsView();
 }
 
 // Pure synchronous render — called both on initial load (after data is fetched)
@@ -6264,9 +6277,15 @@ function renderTeamFundsView() {
   // Tab 1: Transaction History with separate debit/credit columns + Recorded By filter
   const allRecordedBy = [...new Set(transactions.map(t => t.recorded_by).filter(Boolean))].sort();
   const activeFilter = state.teamFundsTxFilter || '';
-  const filteredTx = activeFilter ? transactions.filter(t => t.recorded_by === activeFilter) : transactions;
-  const filteredCredits = filteredTx.filter(t => t.type === 'credit').reduce((s,t) => s + Number(t.amount), 0);
-  const filteredDebits  = filteredTx.filter(t => t.type === 'debit').reduce((s,t) => s + Number(t.amount), 0);
+  const filteredTxAll = activeFilter ? transactions.filter(t => t.recorded_by === activeFilter) : transactions;
+  // Pagination — 15 entries per page
+  const TF_TX_PER_PAGE = 15;
+  const tfTotalPages = Math.max(1, Math.ceil(filteredTxAll.length / TF_TX_PER_PAGE));
+  if (state.tfTxPage > tfTotalPages) state.tfTxPage = tfTotalPages;
+  if (state.tfTxPage < 1) state.tfTxPage = 1;
+  const filteredTx = filteredTxAll.slice((state.tfTxPage - 1) * TF_TX_PER_PAGE, state.tfTxPage * TF_TX_PER_PAGE);
+  const filteredCredits = filteredTxAll.filter(t => t.type === 'credit').reduce((s,t) => s + Number(t.amount), 0);
+  const filteredDebits  = filteredTxAll.filter(t => t.type === 'debit').reduce((s,t) => s + Number(t.amount), 0);
 
   const txTabHtml = `
     <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
@@ -6321,6 +6340,26 @@ function renderTeamFundsView() {
             </tr>
           </tbody>
         </table>
+        ${tfTotalPages > 1 ? `
+          <div style="display:flex; align-items:center; justify-content:center; gap:6px; margin-top:14px; flex-wrap:wrap;">
+            <button class="tf-tx-page-btn" data-page="${state.tfTxPage - 1}" ${state.tfTxPage === 1 ? 'disabled' : ''} style="
+              padding:5px 12px; font-size:12px; font-weight:600; font-family:inherit; cursor:${state.tfTxPage === 1 ? 'default' : 'pointer'};
+              border:1px solid var(--line); border-radius:8px; background:var(--paper);
+              color:var(--ink-soft); opacity:${state.tfTxPage === 1 ? '0.4' : '1'};">‹ Prev</button>
+            ${Array.from({length: tfTotalPages}, (_, i) => i + 1).map(p => `
+              <button class="tf-tx-page-btn" data-page="${p}" style="
+                min-width:30px; padding:5px 8px; font-size:12px; font-weight:600; font-family:inherit; cursor:pointer;
+                border:1px solid ${p === state.tfTxPage ? 'var(--teal)' : 'var(--line)'}; border-radius:8px;
+                background:${p === state.tfTxPage ? 'var(--teal)' : 'var(--paper)'};
+                color:${p === state.tfTxPage ? '#F7F3E8' : 'var(--ink-soft)'};">${p}</button>
+            `).join('')}
+            <button class="tf-tx-page-btn" data-page="${state.tfTxPage + 1}" ${state.tfTxPage === tfTotalPages ? 'disabled' : ''} style="
+              padding:5px 12px; font-size:12px; font-weight:600; font-family:inherit; cursor:${state.tfTxPage === tfTotalPages ? 'default' : 'pointer'};
+              border:1px solid var(--line); border-radius:8px; background:var(--paper);
+              color:var(--ink-soft); opacity:${state.tfTxPage === tfTotalPages ? '0.4' : '1'};">Next ›</button>
+          </div>
+          <div class="faint" style="text-align:center; font-size:11.5px; margin-top:6px;">Page ${state.tfTxPage} of ${tfTotalPages} · ${filteredTxAll.length} entries</div>
+        ` : ''}
       ` : `<p class="muted" style="margin:0;">No transactions match the current filter.</p>`}
     </div>
   `;
@@ -6510,10 +6549,21 @@ function renderTeamFundsView() {
     openTfReport({ transactions, loans, repayments, openingBalance, totalCredits, totalDebits, totalLoaned, totalRepaid, loanOutstanding, currentBalance });
   });
 
-  // Recorded By filter
+  // Recorded By filter — reset to page 1 whenever the filter changes
   document.getElementById('tf-recorded-by-filter')?.addEventListener('change', (e) => {
     state.teamFundsTxFilter = e.target.value;
+    state.tfTxPage = 1;
     loadTeamFundsData().then(renderTeamFundsView);
+  });
+
+  // Transaction history pagination
+  document.querySelectorAll('.tf-tx-page-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const p = Number(btn.dataset.page);
+      if (!p || p === state.tfTxPage) return;
+      state.tfTxPage = p;
+      renderTeamFundsView();
+    });
   });
 
   // Tab click — no re-fetch, just flip state and re-render
