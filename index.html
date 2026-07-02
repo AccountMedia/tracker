@@ -882,10 +882,13 @@ async function ensureYearEndHolidayBlocks() {
   const activeEmployees = state.employees.filter(emp => emp.active !== false);
   if (!activeEmployees.length) return;
 
+  // Guard against duplicates using ALL existing entries for each
+  // employee/date — not just marker-tagged ones. This makes generation
+  // idempotent even if rows were inserted manually, by SQL fixes, or by
+  // a concurrent tab racing this function: if ANY entry already exists
+  // for that employee on that date, we never insert another.
   const existingSystemHolidayDates = new Set(
-    state.leaveEntries
-      .filter(e => e.requested_by === SYSTEM_HOLIDAY_MARKER)
-      .map(e => `${e.employee_id}|${e.leave_date}`)
+    state.leaveEntries.map(e => `${e.employee_id}|${e.leave_date}`)
   );
 
   const rowsToInsert = [];
