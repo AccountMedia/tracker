@@ -1583,7 +1583,7 @@ function renderLeaveTracker() {
       .tracker-col-main > *{ width:100%; }
       .tracker-col-pending{ width:300px; flex-shrink:0; display:flex; flex-direction:column; height:100%; }
       .tracker-col-pending > .card{ flex:1; min-height:0; }
-      .tracker-col-credits{ width:300px; flex-shrink:0; display:flex; flex-direction:column; height:100%; }
+      .tracker-col-credits{ width:330px; flex-shrink:0; display:flex; flex-direction:column; height:100%; }
       .tracker-col-credits > .card{ flex:1; min-height:0; }
       @media (max-width: 1100px){
         .tracker-grid{ flex-wrap:wrap; height:auto; }
@@ -3458,7 +3458,7 @@ function renderCreditTableCard() {
 
       if (editMode) {
         return `
-          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; margin:0 -8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#DCEFEA;' : ''}">
+          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#DCEFEA;' : ''}">
             <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
             <span style="display:flex; gap:6px; flex-shrink:0; align-items:center;">
               <span title="Vacation credits" style="display:flex; align-items:center; gap:3px;">
@@ -3476,7 +3476,7 @@ function renderCreditTableCard() {
       }
 
       return `
-        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; margin:0 -8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#DCEFEA;' : ''}">
+        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#DCEFEA;' : ''}">
           <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
           <span style="display:flex; gap:10px; align-items:center; flex-shrink:0;">
             <span class="faint" title="Vacation credits">VL ${vl}</span>
