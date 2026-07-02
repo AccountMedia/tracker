@@ -8176,6 +8176,26 @@ document.addEventListener('focusin', (e) => {
 
 checkExistingSession();
 
+// Sync the floating calculator's visibility once the FULL page is parsed —
+// on refresh, session restore can switch to Team Funds before the parser
+// reaches the calculator markup at the end of <body>, so earlier show
+// attempts find nothing. This runs after parsing is guaranteed complete.
+function syncTfCalcVisibility() {
+  const wrap = document.getElementById('tf-calc-wrap');
+  if (!wrap) return;
+  const onTeamFunds = state.currentView === 'team-funds';
+  wrap.style.display = onTeamFunds ? 'flex' : 'none';
+  if (onTeamFunds) initTfCalculator();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', syncTfCalcVisibility);
+} else {
+  syncTfCalcVisibility();
+}
+// Also re-sync shortly after load in case session restore resolves late
+setTimeout(syncTfCalcVisibility, 1500);
+setTimeout(syncTfCalcVisibility, 4000);
+
 </script>
 
 <!-- Portal dropdown for Team Funds ⋯ menus — lives outside all tables
