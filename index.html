@@ -842,7 +842,7 @@ function switchView(viewName) {
 // =====================================================================
 
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries(), loadLeaveNotifications()]);
   // Warm the Team Funds cache in the background (not awaited) so the
   // first click on Team Funds renders instantly like every other tab
   loadTeamFundsData().catch(() => {});
@@ -4180,7 +4180,9 @@ function startLeaveTrackerPolling() {
   state.leaveTrackerPollHandle = setInterval(async () => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('credit-input')) return;
-    await Promise.all([loadLeaveEntries(), loadEmployees()]);
+    const loads = [loadLeaveEntries(), loadEmployees()];
+    if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
+    await Promise.all(loads);
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }, 4000);
 }
@@ -8136,28 +8138,49 @@ async function saveTmNote(completionId, note) {
 // LEAVE TRACKER NOTIFICATIONS
 // =====================================================================
 
-function saveLeaveNotifications() {
-  try { localStorage.setItem('registry_leave_notifs', JSON.stringify(state.leaveNotifications)); } catch {}
-}
-function loadLeaveNotifications() {
-  try {
-    const raw = localStorage.getItem('registry_leave_notifs');
-    if (raw) state.leaveNotifications = JSON.parse(raw) || [];
-  } catch {}
+// Notifications live in the leave_notifications table in Supabase as a
+// single SHARED list for all admins. An approval made while an admin is
+// logged out is still waiting for them later. ONLY the notification
+// owner (Jeinna) can dismiss/clear them — other admins (e.g. Kristina)
+// can view but never delete, and their reading doesn't mark anything as
+// read. When the owner deletes one, it's removed from Supabase for
+// everyone (single row, no duplicates).
+
+const NOTIFICATION_OWNER_NAME = 'Jeinna Louise Perez';
+function canManageNotifications() {
+  return !!state.profile && state.profile.display_name === NOTIFICATION_OWNER_NAME;
 }
 
-function pushLeaveNotification(text) {
-  state.leaveNotifications.unshift({
-    id: Date.now() + Math.random(),
-    text,
-    time: new Date().toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
-    read: false,
-  });
-  if (state.leaveNotifications.length > 50) state.leaveNotifications.length = 50;
-  saveLeaveNotifications();
-  // Re-render just the bell slot to update the badge count
-  if (state.currentView === 'leave-tracker') {
-    renderLeaveTracker();
+async function loadLeaveNotifications() {
+  if (!state.profile || !isAdmin()) { state.leaveNotifications = []; return; }
+  const { data, error } = await sb
+    .from('leave_notifications')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) { console.error('Could not load notifications:', error); return; }
+  state.leaveNotifications = (data || []).map(n => ({
+    id: n.id,
+    text: n.text,
+    read: n.read,
+    time: new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+  }));
+}
+
+// Inserts ONE shared notification row per approval — every admin sees
+// the same list, and dismissing it removes it for everyone (no
+// duplicate rows in Supabase).
+async function pushLeaveNotification(text) {
+  const { error } = await sb.from('leave_notifications').insert({ text, read: false });
+  if (error) {
+    console.error('Could not save notification:', error);
+    showToast('Approved, but the notification could not be saved — run leave_notifications_schema.sql in Supabase.', true);
+    return;
+  }
+  // Refresh my own list so the badge updates immediately for the approver
+  await loadLeaveNotifications();
+  if (state.currentView === 'account-hub' && state.accountHubTab === 'leave-tracker') {
+    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }
 }
 
@@ -8165,14 +8188,24 @@ function toggleLeaveNotifPanel() {
   state.leaveNotifPanelOpen = !state.leaveNotifPanelOpen;
   if (state.leaveNotifPanelOpen) {
     showLeaveNotifPanel();
-    // Mark all as read (they stay in the list until dismissed with ✕)
-    state.leaveNotifications.forEach(n => { n.read = true; });
-    saveLeaveNotifications();
-    // Update bell badge immediately (no full re-render needed)
-    const bellBtn = document.getElementById('btn-leave-notif');
-    if (bellBtn) {
-      const badge = bellBtn.querySelector('span');
-      if (badge) badge.remove();
+    // Only the OWNER'S opening marks notifications as read — another
+    // admin viewing the panel must not clear the owner's unread badge,
+    // or the owner would never know an approval happened while away.
+    if (canManageNotifications()) {
+      const hadUnread = state.leaveNotifications.some(n => !n.read);
+      state.leaveNotifications.forEach(n => { n.read = true; });
+      if (hadUnread) {
+        sb.from('leave_notifications')
+          .update({ read: true })
+          .eq('read', false)
+          .then(({ error }) => { if (error) console.error('Could not mark notifications read:', error); });
+      }
+      // Update bell badge immediately (no full re-render needed)
+      const bellBtn = document.getElementById('btn-leave-notif');
+      if (bellBtn) {
+        const badge = bellBtn.querySelector('span');
+        if (badge) badge.remove();
+      }
     }
   } else {
     hideLeaveNotifPanel();
@@ -8190,10 +8223,11 @@ function showLeaveNotifPanel() {
   }
 
   const notifs = state.leaveNotifications;
+  const canManage = canManageNotifications();
   panel.innerHTML = `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line-soft); flex-shrink:0;">
       <span style="font-weight:700; font-size:14px;">Notifications</span>
-      ${notifs.length ? `<button id="notif-clear-all" style="font-size:11px; color:var(--ink-faint); background:none; border:none; cursor:pointer; font-family:inherit; padding:0;">Clear all</button>` : ''}
+      ${notifs.length && canManage ? `<button id="notif-clear-all" style="font-size:11px; color:var(--ink-faint); background:none; border:none; cursor:pointer; font-family:inherit; padding:0;">Clear all</button>` : ''}
     </div>
     <div style="overflow-y:auto; flex:1; max-height:400px;">
       ${notifs.length ? notifs.map((n, i) => `
@@ -8203,7 +8237,7 @@ function showLeaveNotifPanel() {
             <div style="font-size:12.5px; line-height:1.5; color:var(--ink);">${escapeHtml(n.text)}</div>
             <div class="faint" style="font-size:11px; margin-top:3px;">${n.time}</div>
           </div>
-          <button class="notif-dismiss-btn" data-index="${i}" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>
+          ${canManage ? `<button class="notif-dismiss-btn" data-id="${n.id}" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>` : ''}
         </div>
       `).join('') : `
         <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
@@ -8218,19 +8252,25 @@ function showLeaveNotifPanel() {
   panel.style.display = 'flex';
   panel.style.flexDirection = 'column';
 
-  panel.querySelector('#notif-clear-all')?.addEventListener('click', () => {
+  panel.querySelector('#notif-clear-all')?.addEventListener('click', async () => {
+    if (!canManageNotifications()) { showToast('Only Jeinna can clear notifications.', true); return; }
     state.leaveNotifications = [];
-    saveLeaveNotifications();
     state.leaveNotifPanelOpen = false;
     hideLeaveNotifPanel();
     renderLeaveTracker();
+    // Shared list: clearing removes the notifications for every admin
+    const { error } = await sb.from('leave_notifications').delete().gte('created_at', '1900-01-01');
+    if (error) console.error('Could not clear notifications:', error);
   });
   panel.querySelectorAll('.notif-dismiss-btn').forEach(btn => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      state.leaveNotifications.splice(Number(btn.dataset.index), 1);
-      saveLeaveNotifications();
+      if (!canManageNotifications()) { showToast('Only Jeinna can dismiss notifications.', true); return; }
+      const id = btn.dataset.id;
+      state.leaveNotifications = state.leaveNotifications.filter(n => String(n.id) !== String(id));
       showLeaveNotifPanel(); // re-render panel in place
+      const { error } = await sb.from('leave_notifications').delete().eq('id', id);
+      if (error) console.error('Could not dismiss notification:', error);
     });
   });
 
@@ -8305,7 +8345,6 @@ document.addEventListener('focusin', (e) => {
   }
 });
 
-loadLeaveNotifications();
 checkExistingSession();
 
 // Sync the floating calculator's visibility once the FULL page is parsed —
