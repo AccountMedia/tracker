@@ -744,6 +744,8 @@ function logout() {
   stopOtFilingPolling();
   stopTeamFundsPolling();
   stopDashboardPolling();
+  const pnWrap = document.getElementById('pn-wrap');
+  if (pnWrap) pnWrap.style.display = 'none';
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -832,6 +834,7 @@ function switchView(viewName) {
     calcWrap.style.display = viewName === 'team-funds' ? 'flex' : 'none';
     if (viewName === 'team-funds') initTfCalculator();
   }
+  syncPersonalNotesVisibility();
 
   if (viewName === 'dashboard') startDashboardPolling();
   else stopDashboardPolling();
@@ -841,27 +844,54 @@ function switchView(viewName) {
 // DATA LOADING
 // =====================================================================
 
+// Re-renders whichever view is currently on screen, so staged data
+// loading can paint the visible tab as soon as its data arrives.
+function renderCurrentView() {
+  const v = state.currentView;
+  if (v === 'dashboard') renderDashboard();
+  else if (v === 'account-hub') renderAccountHub();
+  else if (v === 'payroll-confirmation') renderPayrollConfirmation();
+  else if (v === 'priolist') renderPrioList();
+  else if (v === 'li-restriction') renderLiRestriction();
+  else if (v === 'ot-filing') renderOtFiling();
+  else if (v === 'team-funds') renderTeamFunds();
+}
+
 async function loadAllData() {
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPayrollConfirmations(), loadPriolistEntries(), loadLiVerificationStatus(), loadLiRestrictionEntries(), loadOtFilingDates(), loadOtHoursEntries(), loadLeaveNotifications()]);
-  // Warm the Team Funds cache in the background (not awaited) so the
-  // first click on Team Funds renders instantly like every other tab
+  // PHASE 1 — the two datasets nearly every view depends on. Await only
+  // these, then paint the screen immediately: refresh feels ~4x faster
+  // because the page no longer waits for all 9 tables (plus the
+  // year-end holiday generator) before showing anything.
+  await Promise.all([loadEmployees(), loadLeaveEntries()]);
+  renderCurrentView();
+
+  // PHASE 2 — everything else in the background; repaint when done so
+  // views that need these datasets (dashboard counts, payroll, OT,
+  // LI, notifications) fill in seconds later without blocking phase 1.
+  Promise.all([
+    loadPayrollConfirmations(),
+    loadPriolistEntries(),
+    loadLiVerificationStatus(),
+    loadLiRestrictionEntries(),
+    loadOtFilingDates(),
+    loadOtHoursEntries(),
+    loadLeaveNotifications(),
+  ]).then(() => {
+    renderCurrentView();
+    if (state.currentView !== 'dashboard') renderDashboard(); // keep dashboard warm
+  }).catch(err => console.error('Background data load failed:', err));
+
+  // Warm the Team Funds cache (not awaited) so its first open is instant
   loadTeamFundsData().catch(() => {});
-  await ensureYearEndHolidayBlocks();
-  renderDashboard();
-  if (state.currentView === 'account-hub') renderAccountHub();
-  renderPayrollConfirmation();
-  renderPrioList();
-  renderLiRestriction();
-  renderOtFiling();
-  // Employee Management loads its own data (loadAppUsers) separately and
-  // isn't part of the Promise.all above, but if it happens to be the
-  // view active at load time (e.g. a hard refresh while sitting on this
-  // tab), the initial switchView() call already ran against an empty
-  // state.employees before this finished — re-render it now that real
-  // data exists, or it's stuck showing "No employees yet" indefinitely.
-  if (state.currentView === 'account-hub' && canManageEmployees()) {
-    renderAccountHub();
-  }
+
+  // PHASE 3 — the year-end holiday generator. Usually a no-op after the
+  // first run of the day, but when it DOES insert/convert rows it makes
+  // several sequential DB round-trips — never worth blocking login for.
+  // If it changed anything, loadLeaveEntries re-ran inside it, so just
+  // repaint to reflect the new rows.
+  ensureYearEndHolidayBlocks()
+    .then(() => renderCurrentView())
+    .catch(err => console.error('Holiday block generation failed:', err));
 }
 
 // Marker used in `requested_by` to identify auto-generated company-wide
@@ -7646,6 +7676,112 @@ function openTfAccountModal(existing) {
 }
 
 // =====================================================================
+// PERSONAL NOTES BUBBLE — Jeinna only, all tabs except Team Funds
+// =====================================================================
+
+const PERSONAL_NOTES_OWNER = 'Jeinna Louise Perez';
+function canUsePersonalNotes() {
+  return !!state.profile && state.profile.display_name === PERSONAL_NOTES_OWNER;
+}
+
+let pnNotes = [];
+let pnLoaded = false;
+
+// Shows/hides the bubble based on who's logged in and which tab is
+// active. Called from switchView and on load, same pattern as the
+// Team Funds calculator (which owns that corner on the TF tab).
+function syncPersonalNotesVisibility() {
+  const wrap = document.getElementById('pn-wrap');
+  if (!wrap) return;
+  const show = canUsePersonalNotes() && state.currentView !== 'team-funds' && state.profile;
+  wrap.style.display = show ? 'flex' : 'none';
+  if (show) {
+    initPersonalNotes();
+    if (!pnLoaded) loadPersonalNotes();
+  }
+}
+
+async function loadPersonalNotes() {
+  const { data, error } = await sb
+    .from('personal_notes')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) { console.error('Could not load personal notes:', error); return; }
+  pnNotes = data || [];
+  pnLoaded = true;
+  renderPersonalNotesList();
+}
+
+function renderPersonalNotesList() {
+  const list = document.getElementById('pn-list');
+  if (!list) return;
+  if (!pnNotes.length) {
+    list.innerHTML = `<div style="padding:22px 14px; text-align:center; color:var(--ink-faint); font-size:12.5px;">No notes yet.</div>`;
+    return;
+  }
+  list.innerHTML = pnNotes.map(n => `
+    <div style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:8px; align-items:flex-start;">
+      <div style="flex:1; min-width:0;">
+        <div style="font-size:12.5px; line-height:1.5; color:var(--ink); white-space:pre-wrap; word-break:break-word;">${escapeHtml(n.note)}</div>
+        <div class="faint" style="font-size:10.5px; margin-top:3px;">${new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+      </div>
+      <button class="pn-delete-btn" data-id="${n.id}" title="Delete note" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>
+    </div>
+  `).join('');
+  list.querySelectorAll('.pn-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Delete this note? This cannot be undone.')) return;
+      const id = btn.dataset.id;
+      pnNotes = pnNotes.filter(n => n.id !== id);
+      renderPersonalNotesList();
+      const { error } = await sb.from('personal_notes').delete().eq('id', id);
+      if (error) { showToast('Could not delete the note.', true); loadPersonalNotes(); }
+    });
+  });
+}
+
+function initPersonalNotes() {
+  if (window._pnInit) return;
+  window._pnInit = true;
+
+  document.getElementById('pn-toggle').addEventListener('click', () => {
+    const panel = document.getElementById('pn-panel');
+    const opening = panel.style.display === 'none';
+    panel.style.display = opening ? 'block' : 'none';
+    if (opening) {
+      loadPersonalNotes(); // refresh in case notes were added on another device
+      setTimeout(() => document.getElementById('pn-input')?.focus(), 50);
+    }
+  });
+
+  document.getElementById('pn-add-btn').addEventListener('click', async () => {
+    const input = document.getElementById('pn-input');
+    const note = input.value.trim();
+    if (!note) return;
+    const btn = document.getElementById('pn-add-btn');
+    btn.disabled = true;
+    const { data, error } = await sb.from('personal_notes').insert({ note }).select().single();
+    btn.disabled = false;
+    if (error) {
+      console.error('Could not save note:', error);
+      showToast('Could not save the note — run personal_notes_schema.sql in Supabase.', true);
+      return;
+    }
+    input.value = '';
+    pnNotes.unshift(data);
+    renderPersonalNotesList();
+  });
+
+  // Ctrl+Enter / Cmd+Enter inside the textarea also adds the note
+  document.getElementById('pn-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      document.getElementById('pn-add-btn').click();
+    }
+  });
+}
+
+// =====================================================================
 // TASK MANAGER — restricted to Kristina Mutia and Jeinna Louise Perez
 // =====================================================================
 
@@ -8382,6 +8518,7 @@ function syncTfCalcVisibility() {
   const onTeamFunds = state.currentView === 'team-funds';
   wrap.style.display = onTeamFunds ? 'flex' : 'none';
   if (onTeamFunds) initTfCalculator();
+  syncPersonalNotesVisibility();
 }
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', syncTfCalcVisibility);
@@ -8400,6 +8537,21 @@ setTimeout(syncTfCalcVisibility, 4000);
 
 <!-- Leave Tracker notification panel — fixed portal outside the page flow -->
 <div id="leave-notif-panel" style="display:none; position:fixed; top:0; right:0; background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow-md); z-index:1001; width:360px; max-height:480px; display:none; flex-direction:column; overflow:hidden;"></div>
+
+<!-- Floating personal notes — Jeinna only, every tab EXCEPT Team Funds -->
+<div id="pn-wrap" style="display:none; position:fixed; right:24px; bottom:24px; z-index:1002; flex-direction:column; align-items:flex-end; gap:10px;">
+  <div id="pn-panel" style="display:none; width:300px; background:var(--paper-raised); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-md); font-family:inherit; overflow:hidden;">
+    <div style="padding:12px 14px 10px; border-bottom:1px solid var(--line-soft); font-weight:700; font-size:13.5px; color:var(--teal);">My Notes</div>
+    <div style="padding:10px 12px; border-bottom:1px solid var(--line-soft);">
+      <textarea id="pn-input" rows="2" placeholder="Write a note…" style="width:100%; padding:8px 9px; border-radius:8px; border:1px solid var(--line); font-family:inherit; font-size:12.5px; resize:vertical; box-sizing:border-box;"></textarea>
+      <button id="pn-add-btn" class="btn btn-primary btn-sm" style="width:100%; justify-content:center; margin-top:6px;">Add note</button>
+    </div>
+    <div id="pn-list" style="max-height:280px; overflow-y:auto;"></div>
+  </div>
+  <button id="pn-toggle" title="My Notes" style="width:52px; height:52px; border-radius:50%; border:1px solid var(--line); background:var(--teal); color:#F7F3E8; cursor:pointer; box-shadow:var(--shadow-md); display:flex; align-items:center; justify-content:center;">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+  </button>
+</div>
 
 <!-- Floating calculator — visible only on Team Funds -->
 <div id="tf-calc-wrap" style="display:none; position:fixed; right:24px; bottom:24px; z-index:1002; flex-direction:column; align-items:flex-end; gap:10px;">
