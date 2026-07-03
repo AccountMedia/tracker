@@ -1457,7 +1457,7 @@ function renderAccountHub() {
     // Bell icon
     const bellSlot = document.getElementById('leave-tracker-bell');
     if (bellSlot && isAdmin()) {
-      const unread = state.leaveNotifications.filter(n => !n.read).length;
+      const unread = unreadNotifCount();
       bellSlot.innerHTML = `
         <button id="btn-leave-notif" title="Leave approval notifications" style="
           position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
@@ -1538,7 +1538,7 @@ function renderLeaveTracker() {
   // Render the bell icon in the page head slot beside "Leave Tracker"
   const bellSlot = document.getElementById('leave-tracker-bell');
   if (bellSlot && isAdmin()) {
-    const unread = state.leaveNotifications.filter(n => !n.read).length;
+    const unread = unreadNotifCount();
     bellSlot.innerHTML = `
       <button id="btn-leave-notif" title="Leave approval notifications" style="
         position:relative; background:none; border:none; padding:4px 6px;
@@ -8147,6 +8147,26 @@ async function saveTmNote(completionId, note) {
 // everyone (single row, no duplicates).
 
 const NOTIFICATION_OWNER_NAME = 'Jeinna Louise Perez';
+// Unread count for the badge. The DB `read` flag belongs to the OWNER
+// only. Other admins get a device-local "last seen" timestamp instead,
+// so opening the panel clears THEIR badge without touching the owner's.
+function notifLastSeenKey() {
+  return 'registry_notif_seen_' + (state.profile ? state.profile.username : '');
+}
+function unreadNotifCount() {
+  if (canManageNotifications()) {
+    return state.leaveNotifications.filter(n => !n.read).length;
+  }
+  let seen = '';
+  try { seen = localStorage.getItem(notifLastSeenKey()) || ''; } catch {}
+  return state.leaveNotifications.filter(n => (n.created_at || '') > seen).length;
+}
+function markNotifsSeenLocally() {
+  const newest = state.leaveNotifications.reduce((m, n) => (n.created_at || '') > m ? n.created_at : m, '');
+  if (!newest) return;
+  try { localStorage.setItem(notifLastSeenKey(), newest); } catch {}
+}
+
 function canManageNotifications() {
   return !!state.profile && state.profile.display_name === NOTIFICATION_OWNER_NAME;
 }
@@ -8163,6 +8183,7 @@ async function loadLeaveNotifications() {
     id: n.id,
     text: n.text,
     read: n.read,
+    created_at: n.created_at,
     time: new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
   }));
 }
@@ -8200,12 +8221,16 @@ function toggleLeaveNotifPanel() {
           .eq('read', false)
           .then(({ error }) => { if (error) console.error('Could not mark notifications read:', error); });
       }
-      // Update bell badge immediately (no full re-render needed)
-      const bellBtn = document.getElementById('btn-leave-notif');
-      if (bellBtn) {
-        const badge = bellBtn.querySelector('span');
-        if (badge) badge.remove();
-      }
+    } else {
+      // Other admins: remember "seen up to now" ONLY on this device —
+      // the owner's unread badge in the database is never touched.
+      markNotifsSeenLocally();
+    }
+    // Update bell badge immediately (no full re-render needed)
+    const bellBtn = document.getElementById('btn-leave-notif');
+    if (bellBtn) {
+      const badge = bellBtn.querySelector('span');
+      if (badge) badge.remove();
     }
   } else {
     hideLeaveNotifPanel();
