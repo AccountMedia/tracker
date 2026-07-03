@@ -7712,6 +7712,9 @@ async function loadPersonalNotes() {
   renderPersonalNotesList();
 }
 
+// The id of the note currently being edited inline (null = none)
+let pnEditingId = null;
+
 function renderPersonalNotesList() {
   const list = document.getElementById('pn-list');
   if (!list) return;
@@ -7719,20 +7722,78 @@ function renderPersonalNotesList() {
     list.innerHTML = `<div style="padding:22px 14px; text-align:center; color:var(--ink-faint); font-size:12.5px;">No notes yet.</div>`;
     return;
   }
-  list.innerHTML = pnNotes.map(n => `
-    <div style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:8px; align-items:flex-start;">
-      <div style="flex:1; min-width:0;">
-        <div style="font-size:12.5px; line-height:1.5; color:var(--ink); white-space:pre-wrap; word-break:break-word;">${escapeHtml(n.note)}</div>
-        <div class="faint" style="font-size:10.5px; margin-top:3px;">${new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+  list.innerHTML = pnNotes.map(n => {
+    if (pnEditingId === n.id) {
+      // Inline edit mode for this note
+      return `
+        <div style="padding:10px 14px; border-bottom:1px solid var(--line-soft); background:var(--teal-wash);">
+          <textarea class="pn-edit-input" data-id="${n.id}" rows="3" style="width:100%; padding:8px 9px; border-radius:8px; border:1px solid var(--gold-line); font-family:inherit; font-size:12.5px; resize:vertical; box-sizing:border-box;">${escapeHtml(n.note)}</textarea>
+          <div style="display:flex; gap:6px; margin-top:6px;">
+            <button class="btn btn-primary btn-sm pn-save-edit-btn" data-id="${n.id}" style="flex:1; justify-content:center; font-size:11.5px; padding:5px 10px;">Save</button>
+            <button class="btn btn-ghost btn-sm pn-cancel-edit-btn" style="flex:1; justify-content:center; font-size:11.5px; padding:5px 10px;">Cancel</button>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:8px; align-items:flex-start;">
+        <div style="flex:1; min-width:0;">
+          <div style="font-size:12.5px; line-height:1.5; color:var(--ink); white-space:pre-wrap; word-break:break-word;">${escapeHtml(n.note)}</div>
+          <div class="faint" style="font-size:10.5px; margin-top:3px;">${new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${n.updated_at ? ' · edited' : ''}</div>
+        </div>
+        <button class="pn-edit-btn" data-id="${n.id}" title="Edit note" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0 2px; flex-shrink:0; line-height:1; margin-top:1px;">✎</button>
+        <button class="pn-delete-btn" data-id="${n.id}" title="Delete note" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>
       </div>
-      <button class="pn-delete-btn" data-id="${n.id}" title="Delete note" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>
-    </div>
-  `).join('');
+    `;
+  }).join('');
+
+  list.querySelectorAll('.pn-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pnEditingId = btn.dataset.id;
+      renderPersonalNotesList();
+      const ta = list.querySelector('.pn-edit-input');
+      if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
+    });
+  });
+  list.querySelectorAll('.pn-cancel-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      pnEditingId = null;
+      renderPersonalNotesList();
+    });
+  });
+  list.querySelectorAll('.pn-save-edit-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.id;
+      const ta = list.querySelector(`.pn-edit-input[data-id="${id}"]`);
+      const newText = ta ? ta.value.trim() : '';
+      if (!newText) { showToast('A note cannot be empty — use ✕ to delete it instead.', true); return; }
+      btn.disabled = true;
+      const { error } = await sb.from('personal_notes').update({ note: newText, updated_at: new Date().toISOString() }).eq('id', id);
+      btn.disabled = false;
+      if (error) { console.error('Could not save the edit:', error); showToast('Could not save the edit.', true); return; }
+      const n = pnNotes.find(x => x.id === id);
+      if (n) { n.note = newText; n.updated_at = new Date().toISOString(); }
+      pnEditingId = null;
+      renderPersonalNotesList();
+      showToast('Note updated.');
+    });
+  });
+  // Ctrl+Enter saves while editing
+  list.querySelectorAll('.pn-edit-input').forEach(ta => {
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        list.querySelector(`.pn-save-edit-btn[data-id="${ta.dataset.id}"]`)?.click();
+      }
+      if (e.key === 'Escape') { pnEditingId = null; renderPersonalNotesList(); }
+    });
+  });
   list.querySelectorAll('.pn-delete-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (!confirm('Delete this note? This cannot be undone.')) return;
       const id = btn.dataset.id;
       pnNotes = pnNotes.filter(n => n.id !== id);
+      if (pnEditingId === id) pnEditingId = null;
       renderPersonalNotesList();
       const { error } = await sb.from('personal_notes').delete().eq('id', id);
       if (error) { showToast('Could not delete the note.', true); loadPersonalNotes(); }
