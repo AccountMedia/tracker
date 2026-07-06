@@ -1875,12 +1875,36 @@ async function approveCancellation(id) {
     return;
   }
 
+  // Capture credits BEFORE deleting — a leave awaiting cancellation
+  // still counts against the balance, so this is the pre-restore figure.
+  const empForNotif = state.employees.find(e => e.id === entry.employee_id);
+  const fyNum = fiscalYearForDate(isoDate(new Date()));
+  const vlBefore = empForNotif ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
+  const slBefore = empForNotif ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
+
   const query = sb.from('leave_entries').delete();
   const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
 
   if (error) { showToast('Could not approve the cancellation.', true); return; }
   showToast(groupCount > 1 ? `Cancellation approved — ${groupCount} days removed.` : 'Cancellation approved — leave removed.');
   await loadLeaveEntries();
+
+  // Notify all admins — same bell as leave approvals, with the credits
+  // restored by the cancellation (if the leave type drew on credits).
+  if (empForNotif && vlBefore !== null) {
+    const vlAfter = round2(fiscalPoolBalance(empForNotif, 'vl', fyNum));
+    const slAfter = round2(fiscalPoolBalance(empForNotif, 'sl', fyNum));
+    const firstName = empForNotif.display_name.split(' ')[0];
+    const dayLabel = groupCount > 1 ? `${groupCount} days of leave` : 'leave';
+    const cancelDates = groupRows.map(e => e.leave_date).sort();
+    const cancelDateLabel = cancelDates.length ? ` (${formatDateRange(cancelDates[0], cancelDates[cancelDates.length - 1])})` : '';
+    const changed = vlAfter !== vlBefore || slAfter !== slBefore;
+    const notifText = changed
+      ? `${firstName}'s ${dayLabel}${cancelDateLabel} cancellation has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
+      : `${firstName}'s ${dayLabel}${cancelDateLabel} cancellation has been approved.`;
+    pushLeaveNotification(notifText);
+  }
+
   renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
 }
@@ -3417,6 +3441,12 @@ async function decideRequest(id, decision) {
     const empForNotif = notifEmployeeId ? state.employees.find(e => e.id === notifEmployeeId) : null;
     const vlBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
     const slBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
+    // Dates of the approved leave, for the notification text
+    const notifDates = (groupId
+      ? state.leaveEntries.filter(e => e.request_group_id === groupId)
+      : state.leaveEntries.filter(e => e.id === id)
+    ).map(e => e.leave_date).sort();
+    const notifDateLabel = notifDates.length ? formatDateRange(notifDates[0], notifDates[notifDates.length - 1]) : '';
 
     // Re-fetch so the Leave-Without-Pay check runs against the database's
     // own freshly-approved rows and current stored balance, then apply
@@ -3454,9 +3484,10 @@ async function decideRequest(id, decision) {
           const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
+          const dateBit = notifDateLabel ? ` (${notifDateLabel})` : '';
           const notifText = changed
-            ? `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
-            : `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
+            ? `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
+            : `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
           pushLeaveNotification(notifText);
         }
       }
@@ -3470,9 +3501,10 @@ async function decideRequest(id, decision) {
           const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
+          const dateBit = notifDateLabel ? ` (${notifDateLabel})` : '';
           const notifText = changed
-            ? `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
-            : `${firstName}'s leave has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
+            ? `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
+            : `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
           pushLeaveNotification(notifText);
         }
       }
