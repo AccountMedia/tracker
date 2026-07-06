@@ -865,7 +865,11 @@ function switchView(viewName) {
 function updateLeaveNavBadge() {
   const badge = document.getElementById('nav-lt-badge');
   if (!badge) return;
-  if (!state.profile || !isAdmin()) { badge.style.display = 'none'; return; }
+  if (!state.profile || !isAdmin()) {
+    badge.style.display = 'none';
+    updateBrowserTabBadge(0);
+    return;
+  }
   const pendingCount = state.leaveEntries.filter(e =>
     e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING
   ).length;
@@ -876,6 +880,77 @@ function updateLeaveNavBadge() {
   } else {
     badge.style.display = 'none';
   }
+  updateBrowserTabBadge(count);
+}
+
+// ---------------------------------------------------------------------
+// Browser-tab badge: prefixes the tab title with the count, e.g.
+// "(3) Account Media — Team Hub", and paints a red dot onto the favicon
+// so the alert is visible even when working in a different browser
+// window entirely.
+// ---------------------------------------------------------------------
+const BASE_TAB_TITLE = 'Account Media — Team Hub';
+let _favBaseImg = null;   // the original amlogo.png, loaded once
+let _favLastState = null; // avoid redrawing the same state every 4s
+
+function updateBrowserTabBadge(count) {
+  // Only decorate the browser tab while the user is AWAY from it —
+  // when TeamHub is the active tab, the sidebar badge is enough.
+  const effective = document.hidden ? count : 0;
+  document.title = effective > 0 ? `(${effective > 99 ? '99+' : effective}) ${BASE_TAB_TITLE}` : BASE_TAB_TITLE;
+
+  const stateKey = effective > 0 ? 'dot' : 'plain';
+  if (_favLastState === stateKey) return;
+
+  const link = document.querySelector('link[rel="icon"]');
+  if (!link) return;
+
+  const draw = () => {
+    try {
+      const size = 64;
+      const canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (_favBaseImg) ctx.drawImage(_favBaseImg, 0, 0, size, size);
+      if (effective > 0) {
+        ctx.beginPath();
+        ctx.arc(size - 15, 15, 13, 0, Math.PI * 2);
+        ctx.fillStyle = '#C0392B';
+        ctx.fill();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+      }
+      link.href = canvas.toDataURL('image/png');
+      _favLastState = stateKey;
+    } catch (err) {
+      // Canvas tainted or unavailable — fall back to the plain icon
+      link.href = 'amlogo.png';
+      _favLastState = 'plain';
+    }
+  };
+
+  if (_favBaseImg) { draw(); return; }
+  const img = new Image();
+  img.onload = () => { _favBaseImg = img; draw(); };
+  img.onerror = () => {
+    // Logo missing — draw the dot on a blank icon anyway so the badge
+    // still shows, or restore nothing if the count is zero.
+    _favBaseImg = null;
+    if (effective > 0) {
+      const size = 64;
+      const canvas = document.createElement('canvas');
+      canvas.width = size; canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, 22, 0, Math.PI * 2);
+      ctx.fillStyle = '#C0392B';
+      ctx.fill();
+      link.href = canvas.toDataURL('image/png');
+      _favLastState = 'dot';
+    }
+  };
+  img.src = 'amlogo.png';
 }
 
 // Global poll (every 4s, matching the Leave Tracker tab's own poll) so
@@ -884,12 +959,16 @@ function updateLeaveNavBadge() {
 // hidden to save Supabase bandwidth.
 function startNavBadgePolling() {
   if (state.navBadgePollHandle) return;
+  let tick = 0;
   state.navBadgePollHandle = setInterval(async () => {
     if (!state.profile || !isAdmin()) return;
-    if (document.hidden) return; // don't poll from background tabs
+    tick++;
+    // Hidden/minimized tab: keep the browser-tab badge alive but poll
+    // gently — every 8th tick (~32s) instead of every 4s.
+    if (document.hidden && tick % 8 !== 0) return;
     const onLeaveTracker = state.currentView === 'account-hub';
     try {
-      if (!onLeaveTracker) {
+      if (!onLeaveTracker || document.hidden) {
         const loads = [loadLeaveEntries()];
         if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
         await Promise.all(loads);
@@ -897,6 +976,25 @@ function startNavBadgePolling() {
       updateLeaveNavBadge();
     } catch (err) { console.error('Nav badge poll failed:', err); }
   }, 4000);
+  // The instant the tab becomes visible again, refresh immediately
+  if (!window._navBadgeVisHook) {
+    window._navBadgeVisHook = true;
+    document.addEventListener('visibilitychange', () => {
+      if (!state.profile || !isAdmin()) return;
+      if (document.hidden) {
+        // Just left the tab — paint the tab-title/favicon badge right
+        // away with the latest known count (polling keeps it fresh).
+        updateLeaveNavBadge();
+      } else {
+        // Back on the tab — the tab badge clears (sidebar takes over)
+        // and the data refreshes immediately.
+        updateLeaveNavBadge();
+        Promise.all([loadLeaveEntries(), state.leaveNotifPanelOpen ? Promise.resolve() : loadLeaveNotifications()])
+          .then(updateLeaveNavBadge)
+          .catch(() => {});
+      }
+    });
+  }
 }
 
 // Re-renders whichever view is currently on screen, so staged data
