@@ -381,7 +381,7 @@
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
-      <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds</a>
+      <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
       <div class="nav-section-label">Coming soon</div>
       <a class="nav-item disabled"><span class="dot"></span>IPS (Individual Performance Score)</a>
     </nav>
@@ -518,7 +518,7 @@
       <div class="page-head">
         <div>
           <span class="eyebrow">PH Team</span>
-          <h1>Team Funds</h1>
+          <h1 style="display:flex; align-items:center; gap:6px;">Team Funds <span id="team-funds-bell"></span></h1>
           <p class="lede">Real-time tracking of team fund movements, balances, and treasurer account details.</p>
         </div>
         <div id="team-funds-actions"></div>
@@ -612,7 +612,9 @@ const state = {
   teamFundsTxFilter: '',     // filter value for "Recorded by" in Transaction History
   tfTxPage: 1,               // current page of Transaction History (15 per page)
   teamFundsData: null,       // cached data from last fetch { settings, transactions, accounts, loans, repayments }
-  leaveNotifications: [],    // { id, text, time, read } — session-only, cleared on logout
+  leaveNotifications: [],
+  tfNotifications: [], // Team Funds notification stream (separate bell)
+  notifPanelKind: null, // which bell's panel is open: 'leave' | 'team_funds' | null    // { id, text, time, read } — session-only, cleared on logout
   leaveNotifPanelOpen: false,
   accountHubTab: 'leave-tracker', // active tab in Account Hub
   otFilingDates: [],   // open OT filing dates (admin-managed)
@@ -756,6 +758,8 @@ function logout() {
   if (pnWrap) pnWrap.style.display = 'none';
   const ltBadge = document.getElementById('nav-lt-badge');
   if (ltBadge) ltBadge.style.display = 'none';
+  const tfNavBadge = document.getElementById('nav-tf-badge');
+  if (tfNavBadge) tfNavBadge.style.display = 'none';
   if (state.navBadgePollHandle) { clearInterval(state.navBadgePollHandle); state.navBadgePollHandle = null; }
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
@@ -867,20 +871,36 @@ function updateLeaveNavBadge() {
   if (!badge) return;
   if (!state.profile || !isAdmin()) {
     badge.style.display = 'none';
+    const tfB = document.getElementById('nav-tf-badge');
+    if (tfB) tfB.style.display = 'none';
     updateBrowserTabBadge(0);
     return;
   }
   const pendingCount = state.leaveEntries.filter(e =>
     e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING
   ).length;
-  const count = pendingCount + unreadNotifCount();
+  const count = pendingCount + unreadNotifCount('leave');
   if (count > 0) {
     badge.textContent = count > 99 ? '99+' : String(count);
     badge.style.display = 'inline-flex';
   } else {
     badge.style.display = 'none';
   }
-  updateBrowserTabBadge(count);
+  // Team Funds gets its own sidebar badge (its unread stream only)
+  const tfBadge = document.getElementById('nav-tf-badge');
+  const tfCount = unreadNotifCount('team_funds');
+  if (tfBadge) {
+    if (tfCount > 0) {
+      tfBadge.textContent = tfCount > 99 ? '99+' : String(tfCount);
+      tfBadge.style.display = 'inline-flex';
+    } else {
+      tfBadge.style.display = 'none';
+    }
+  }
+  // Keep the Team Funds bell badge fresh if that view is on screen
+  if (state.currentView === 'team-funds' && !state.leaveNotifPanelOpen) renderTfBell();
+  // Browser tab shows the combined total of both streams
+  updateBrowserTabBadge(count + tfCount);
 }
 
 // ---------------------------------------------------------------------
@@ -6414,7 +6434,34 @@ async function renderTeamFunds() {
 // Pure synchronous render — called both on initial load (after data is fetched)
 // and by the polling loop (after a silent background re-fetch), so it never
 // shows a loading state or causes a visible flash during auto-refresh.
+// Bell in the Team Funds page header — its own stream, own badge.
+function renderTfBell() {
+  const slot = document.getElementById('team-funds-bell');
+  if (!slot) return;
+  if (!state.profile || !isAdmin()) { slot.innerHTML = ''; return; }
+  const unread = unreadNotifCount('team_funds');
+  slot.innerHTML = `
+    <button id="btn-tf-notif" title="Team Funds notifications" style="
+      position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
+      color:var(--ink-faint); display:flex; align-items:center; border-radius:8px;
+      transition:color 0.12s, background 0.12s;"
+      onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
+      onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      ${unread > 0 ? `<span style="position:absolute;top:0;right:0;background:var(--coral);color:#fff;font-size:9px;font-weight:700;border-radius:999px;min-width:14px;height:14px;display:flex;align-items:center;justify-content:center;padding:0 2px;font-family:inherit;line-height:1;border:1.5px solid var(--paper);">${unread > 9 ? '9+' : unread}</span>` : ''}
+    </button>
+  `;
+  document.getElementById('btn-tf-notif')?.addEventListener('click', (e) => {
+    e.stopPropagation(); toggleTfNotifPanel();
+  });
+}
+
 function renderTeamFundsView() {
+  renderTfBell();
   const el = document.getElementById('team-funds-content');
   if (!el || !state.teamFundsData) return;
   const canEdit = canEditTeamFunds();
@@ -8563,21 +8610,22 @@ const NOTIFICATION_OWNER_NAME = 'Jeinna Louise Perez';
 // Unread count for the badge. The DB `read` flag belongs to the OWNER
 // only. Other admins get a device-local "last seen" timestamp instead,
 // so opening the panel clears THEIR badge without touching the owner's.
-function notifLastSeenKey() {
-  return 'registry_notif_seen_' + (state.profile ? state.profile.username : '');
+function notifLastSeenKey(kind = 'leave') {
+  return 'registry_notif_seen_' + kind + '_' + (state.profile ? state.profile.username : '');
 }
-function unreadNotifCount() {
+function unreadNotifCount(kind = 'leave') {
+  const list = notifListFor(kind);
   if (canManageNotifications()) {
-    return state.leaveNotifications.filter(n => !n.read).length;
+    return list.filter(n => !n.read).length;
   }
   let seen = '';
-  try { seen = localStorage.getItem(notifLastSeenKey()) || ''; } catch {}
-  return state.leaveNotifications.filter(n => (n.created_at || '') > seen).length;
+  try { seen = localStorage.getItem(notifLastSeenKey(kind)) || ''; } catch {}
+  return list.filter(n => (n.created_at || '') > seen).length;
 }
-function markNotifsSeenLocally() {
-  const newest = state.leaveNotifications.reduce((m, n) => (n.created_at || '') > m ? n.created_at : m, '');
+function markNotifsSeenLocally(kind = 'leave') {
+  const newest = notifListFor(kind).reduce((m, n) => (n.created_at || '') > m ? n.created_at : m, '');
   if (!newest) return;
-  try { localStorage.setItem(notifLastSeenKey(), newest); } catch {}
+  try { localStorage.setItem(notifLastSeenKey(kind), newest); } catch {}
 }
 
 function canManageNotifications() {
@@ -8590,31 +8638,41 @@ async function loadLeaveNotifications() {
     .from('leave_notifications')
     .select('*')
     .order('created_at', { ascending: false })
-    .limit(50);
+    .limit(100);
   if (error) { console.error('Could not load notifications:', error); return; }
-  state.leaveNotifications = (data || []).map(n => ({
+  const all = (data || []).map(n => ({
     id: n.id,
     text: n.text,
     read: n.read,
+    kind: n.kind || 'leave',
     created_at: n.created_at,
     time: new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
   }));
+  // Two fully separate streams: the Leave Tracker bell never shows Team
+  // Funds items and vice versa.
+  state.leaveNotifications = all.filter(n => n.kind !== 'team_funds');
+  state.tfNotifications = all.filter(n => n.kind === 'team_funds');
+}
+
+// Convenience: the notification list for a given kind
+function notifListFor(kind) {
+  return kind === 'team_funds' ? (state.tfNotifications || []) : state.leaveNotifications;
 }
 
 // Inserts ONE shared notification row per approval — every admin sees
 // the same list, and dismissing it removes it for everyone (no
 // duplicate rows in Supabase).
-async function pushLeaveNotification(text) {
+async function pushLeaveNotification(text, kind = 'leave') {
   // If the approver is NOT the notification owner (e.g. Kristina), her
   // own action shouldn't light up her own badge — she obviously knows.
   // Note whether she was already fully caught up before this insert.
   const approverIsOwner = canManageNotifications();
-  const wasCaughtUp = !approverIsOwner && unreadNotifCount() === 0;
+  const wasCaughtUp = !approverIsOwner && unreadNotifCount(kind) === 0;
 
   // If the OWNER performed the action, insert already-read: her own
   // action shouldn't light her own badges (Kristina still sees it in
   // the shared list, and her unseen state is local anyway).
-  const { error } = await sb.from('leave_notifications').insert({ text, read: approverIsOwner });
+  const { error } = await sb.from('leave_notifications').insert({ text, read: approverIsOwner, kind });
   if (error) {
     console.error('Could not save notification:', error);
     showToast('Approved, but the notification could not be saved — run leave_notifications_schema.sql in Supabase.', true);
@@ -8627,68 +8685,81 @@ async function pushLeaveNotification(text) {
   // OTHER unseen notifications, the badge stays — those weren't hers.)
   // The owner's (Jeinna's) unread state in the DB is untouched either
   // way, so her badge still lights up as intended.
-  if (wasCaughtUp) markNotifsSeenLocally();
+  if (wasCaughtUp) markNotifsSeenLocally(kind);
   updateLeaveNavBadge();
-  if (state.currentView === 'account-hub' && state.accountHubTab === 'leave-tracker') {
+  if (kind === 'leave' && state.currentView === 'account-hub' && state.accountHubTab === 'leave-tracker') {
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }
+  if (kind === 'team_funds') renderTfBell();
 }
-// Team Funds change notifications ride the same bell/badge pipeline —
-// prefixed so they're distinguishable from leave notifications.
+// Team Funds notifications: their OWN stream and OWN bell in the Team
+// Funds tab — completely separate from the Leave Tracker bell.
 function pushTeamFundsNotification(text) {
   const who = state.profile ? state.profile.display_name.split(' ')[0] : 'Someone';
-  return pushLeaveNotification(`[Team Funds] ${who} ${text}`);
+  return pushLeaveNotification(`${who} ${text}`, 'team_funds');
 }
 
 
-function toggleLeaveNotifPanel() {
-  state.leaveNotifPanelOpen = !state.leaveNotifPanelOpen;
-  if (state.leaveNotifPanelOpen) {
-    showLeaveNotifPanel();
-    // Only the OWNER'S opening marks notifications as read — another
-    // admin viewing the panel must not clear the owner's unread badge,
-    // or the owner would never know an approval happened while away.
-    if (canManageNotifications()) {
-      const hadUnread = state.leaveNotifications.some(n => !n.read);
-      state.leaveNotifications.forEach(n => { n.read = true; });
-      if (hadUnread) {
-        sb.from('leave_notifications')
-          .update({ read: true })
-          .eq('read', false)
-          .then(({ error }) => { if (error) console.error('Could not mark notifications read:', error); });
-      }
-    } else {
-      // Other admins: remember "seen up to now" ONLY on this device —
-      // the owner's unread badge in the database is never touched.
-      markNotifsSeenLocally();
-    }
-    updateLeaveNavBadge();
-    // Update bell badge immediately (no full re-render needed)
-    const bellBtn = document.getElementById('btn-leave-notif');
-    if (bellBtn) {
-      const badge = bellBtn.querySelector('span');
-      if (badge) badge.remove();
+function toggleLeaveNotifPanel() { toggleNotifPanel('leave'); }
+function toggleTfNotifPanel() { toggleNotifPanel('team_funds'); }
+
+function toggleNotifPanel(kind) {
+  // Clicking the same bell again closes; clicking the other bell
+  // switches the panel over to that stream.
+  if (state.leaveNotifPanelOpen && state.notifPanelKind === kind) {
+    state.leaveNotifPanelOpen = false;
+    state.notifPanelKind = null;
+    hideLeaveNotifPanel();
+    return;
+  }
+  state.leaveNotifPanelOpen = true;
+  state.notifPanelKind = kind;
+  showNotifPanel(kind);
+  // Only the OWNER'S opening marks notifications as read — another
+  // admin viewing the panel must not clear the owner's unread badge,
+  // or the owner would never know a change happened while away.
+  if (canManageNotifications()) {
+    const list = notifListFor(kind);
+    const hadUnread = list.some(n => !n.read);
+    list.forEach(n => { n.read = true; });
+    if (hadUnread) {
+      sb.from('leave_notifications')
+        .update({ read: true })
+        .eq('read', false)
+        .eq('kind', kind)
+        .then(({ error }) => { if (error) console.error('Could not mark notifications read:', error); });
     }
   } else {
-    hideLeaveNotifPanel();
+    // Other admins: remember "seen up to now" ONLY on this device —
+    // the owner's unread badge in the database is never touched.
+    markNotifsSeenLocally(kind);
+  }
+  updateLeaveNavBadge();
+  // Update this bell's badge immediately (no full re-render needed)
+  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : 'btn-leave-notif');
+  if (bellBtn) {
+    const badge = bellBtn.querySelector('span');
+    if (badge) badge.remove();
   }
 }
 
-function showLeaveNotifPanel() {
+function showLeaveNotifPanel() { showNotifPanel('leave'); }
+
+function showNotifPanel(kind) {
   const panel = document.getElementById('leave-notif-panel');
   if (!panel) return;
-  const bellBtn = document.getElementById('btn-leave-notif');
+  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : 'btn-leave-notif');
   if (bellBtn) {
     const rect = bellBtn.getBoundingClientRect();
     panel.style.top  = (rect.bottom + 8) + 'px';
-    panel.style.right = (window.innerWidth - rect.right) + 'px';
+    panel.style.right = Math.max(12, window.innerWidth - rect.right - 150) + 'px';
   }
 
-  const notifs = state.leaveNotifications;
+  const notifs = notifListFor(kind);
   const canManage = canManageNotifications();
   panel.innerHTML = `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line-soft); flex-shrink:0;">
-      <span style="font-weight:700; font-size:14px;">Notifications</span>
+      <span style="font-weight:700; font-size:14px;">${kind === 'team_funds' ? 'Team Funds notifications' : 'Notifications'}</span>
       ${notifs.length && canManage ? `<button id="notif-clear-all" style="font-size:11px; color:var(--ink-faint); background:none; border:none; cursor:pointer; font-family:inherit; padding:0;">Clear all</button>` : ''}
     </div>
     <div style="overflow-y:auto; flex:1; max-height:400px;">
@@ -8705,7 +8776,7 @@ function showLeaveNotifPanel() {
         <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
           <div style="font-size:28px; margin-bottom:8px;">🔔</div>
           <div style="font-size:13px;">No notifications yet.</div>
-          <div style="font-size:12px; margin-top:4px;">Leave approvals will appear here.</div>
+          <div style="font-size:12px; margin-top:4px;">${kind === 'team_funds' ? 'Team Funds changes will appear here.' : 'Leave approvals will appear here.'}</div>
         </div>
       `}
     </div>
@@ -8716,12 +8787,15 @@ function showLeaveNotifPanel() {
 
   panel.querySelector('#notif-clear-all')?.addEventListener('click', async () => {
     if (!canManageNotifications()) { showToast('Only Jeinna can clear notifications.', true); return; }
-    state.leaveNotifications = [];
+    if (kind === 'team_funds') state.tfNotifications = []; else state.leaveNotifications = [];
     state.leaveNotifPanelOpen = false;
+    state.notifPanelKind = null;
     hideLeaveNotifPanel();
-    renderLeaveTracker();
-    // Shared list: clearing removes the notifications for every admin
-    const { error } = await sb.from('leave_notifications').delete().gte('created_at', '1900-01-01');
+    if (kind === 'team_funds') renderTfBell(); else renderLeaveTracker();
+    updateLeaveNavBadge();
+    // Shared stream: clearing removes THIS KIND's notifications for
+    // every admin — the other bell's stream is untouched.
+    const { error } = await sb.from('leave_notifications').delete().eq('kind', kind);
     if (error) console.error('Could not clear notifications:', error);
   });
   panel.querySelectorAll('.notif-dismiss-btn').forEach(btn => {
@@ -8729,8 +8803,10 @@ function showLeaveNotifPanel() {
       e.stopPropagation();
       if (!canManageNotifications()) { showToast('Only Jeinna can dismiss notifications.', true); return; }
       const id = btn.dataset.id;
-      state.leaveNotifications = state.leaveNotifications.filter(n => String(n.id) !== String(id));
-      showLeaveNotifPanel(); // re-render panel in place
+      if (kind === 'team_funds') state.tfNotifications = state.tfNotifications.filter(n => String(n.id) !== String(id));
+      else state.leaveNotifications = state.leaveNotifications.filter(n => String(n.id) !== String(id));
+      showNotifPanel(kind); // re-render panel in place
+      updateLeaveNavBadge();
       const { error } = await sb.from('leave_notifications').delete().eq('id', id);
       if (error) console.error('Could not dismiss notification:', error);
     });
@@ -8741,11 +8817,15 @@ function showLeaveNotifPanel() {
     window._notifOutsideClickBound = true;
     document.addEventListener('click', (e) => {
       const panel = document.getElementById('leave-notif-panel');
-      const bell = document.getElementById('btn-leave-notif');
+      const bellLeave = document.getElementById('btn-leave-notif');
+      const bellTf = document.getElementById('btn-tf-notif');
       if (!panel || panel.style.display === 'none') return;
-      if (panel.contains(e.target) || (bell && bell.contains(e.target))) return;
+      if (panel.contains(e.target)) return;
+      if (bellLeave && bellLeave.contains(e.target)) return;
+      if (bellTf && bellTf.contains(e.target)) return;
       hideLeaveNotifPanel();
       state.leaveNotifPanelOpen = false;
+      state.notifPanelKind = null;
     });
   }
 }
