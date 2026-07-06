@@ -7193,6 +7193,7 @@ function openTfTbBudgetModal() {
       transaction_date: date, recorded_by: state.profile.display_name,
     });
     closeModal(); showToast('Team Building balance set.'); loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(`set the Team Building beginning balance to ${TF_FMT(amount)} (from ${treasurer}'s funds).`);
   });
 }
 
@@ -7259,6 +7260,9 @@ function openTfTbTransactionModal(type) {
     });
     if (error) { showToast('Could not save the transaction.', true); return; }
     closeModal(); showToast(isCredit ? 'Budget added.' : 'Expense recorded.'); loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(isCredit
+      ? `added ${TF_FMT(amount)} Team Building budget${treasurer && treasurer !== 'Other' ? ` (from ${treasurer})` : ''} — ${finalNote}.`
+      : `recorded a ${TF_FMT(amount)} Team Building expense — ${finalNote}.`);
   });
 }
 
@@ -7470,6 +7474,9 @@ function openTfTransactionModal(type) {
     closeModal();
     showToast(isCredit ? 'Inflow recorded.' : 'Expense recorded.');
     loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(isCredit
+      ? `recorded a ${TF_FMT(amount)} inflow to ${treasurer}'s funds — ${note}.`
+      : `recorded a ${TF_FMT(amount)} expense from ${treasurer}'s funds — ${note}.`);
   });
 }
 
@@ -7630,6 +7637,7 @@ function openTfLoanModal() {
     closeModal();
     showToast('Loan recorded. Balance will reflect this once saved.');
     loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(`recorded a ${TF_FMT(amount)} loan to ${empName} (from ${treasurer}'s funds) — ${note}.`);
   });
 }
 
@@ -7669,6 +7677,7 @@ function openTfRepaymentModal(loanId, loanName) {
     closeModal();
     showToast('Repayment recorded.');
     loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(`recorded a ${TF_FMT(amount)} loan repayment from ${loanName} (to ${treasurer}).`);
   });
 }
 
@@ -7738,14 +7747,19 @@ function openTfEditTransactionModal(tx) {
     const { error } = await sb.from('team_fund_transactions').update({ transaction_date: date, amount, note }).eq('id', tx.id);
     if (error) { showToast('Could not save the changes.', true); return; }
     closeModal(); showToast('Transaction updated.'); loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(`edited a ${tx.type === 'credit' ? 'inflow' : 'expense'} transaction — now ${TF_FMT(amount)}, "${note}".`);
   });
 }
 
 async function deleteTfTransaction(id) {
   if (!confirm('Permanently delete this transaction? This cannot be undone.')) return;
+  const tx = (state.teamFundsData?.transactions || []).find(t => t.id === id);
   const { error } = await sb.from('team_fund_transactions').delete().eq('id', id);
   if (error) { showToast('Could not delete the transaction.', true); return; }
   showToast('Transaction deleted.'); loadTeamFundsData().then(renderTeamFundsView);
+  pushTeamFundsNotification(tx
+    ? `deleted a ${tx.type === 'credit' ? TF_FMT(tx.amount) + ' inflow' : TF_FMT(tx.amount) + ' expense'} transaction — "${tx.note}".`
+    : 'deleted a transaction.');
 }
 
 function openTfEditLoanModal(loan) {
@@ -7792,6 +7806,7 @@ function openTfEditLoanModal(loan) {
     }).eq('id', loan.id);
     if (error) { showToast('Could not save the changes.', true); return; }
     closeModal(); showToast('Loan updated.'); loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(`edited ${empName}'s loan — now ${TF_FMT(amount)}.`);
   });
 }
 
@@ -7802,6 +7817,7 @@ async function deleteTfLoan(id, name) {
   const { error } = await sb.from('employee_loans').delete().eq('id', id);
   if (error) { showToast('Could not delete the loan.', true); return; }
   showToast('Loan and all repayments deleted.'); loadTeamFundsData().then(renderTeamFundsView);
+  pushTeamFundsNotification(`deleted ${name}'s loan record (including its repayments).`);
 }
 
 function openTfAccountModal(existing) {
@@ -8595,7 +8611,10 @@ async function pushLeaveNotification(text) {
   const approverIsOwner = canManageNotifications();
   const wasCaughtUp = !approverIsOwner && unreadNotifCount() === 0;
 
-  const { error } = await sb.from('leave_notifications').insert({ text, read: false });
+  // If the OWNER performed the action, insert already-read: her own
+  // action shouldn't light her own badges (Kristina still sees it in
+  // the shared list, and her unseen state is local anyway).
+  const { error } = await sb.from('leave_notifications').insert({ text, read: approverIsOwner });
   if (error) {
     console.error('Could not save notification:', error);
     showToast('Approved, but the notification could not be saved — run leave_notifications_schema.sql in Supabase.', true);
@@ -8614,6 +8633,13 @@ async function pushLeaveNotification(text) {
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }
 }
+// Team Funds change notifications ride the same bell/badge pipeline —
+// prefixed so they're distinguishable from leave notifications.
+function pushTeamFundsNotification(text) {
+  const who = state.profile ? state.profile.display_name.split(' ')[0] : 'Someone';
+  return pushLeaveNotification(`[Team Funds] ${who} ${text}`);
+}
+
 
 function toggleLeaveNotifPanel() {
   state.leaveNotifPanelOpen = !state.leaveNotifPanelOpen;
