@@ -133,6 +133,11 @@
     cursor: default;
   }
   .nav-item.disabled:hover{ background: none; color:#5E7470; }
+  .nav-badge{
+    margin-left:auto; background:#C0392B; color:#fff; font-size:10.5px; font-weight:700;
+    min-width:18px; height:18px; padding:0 5px; border-radius:9px;
+    display:inline-flex; align-items:center; justify-content:center; line-height:1;
+  }
   .nav-section-label{
     font-size: 10.5px;
     letter-spacing: 0.12em;
@@ -371,7 +376,7 @@
     </div>
     <nav class="nav">
       <a class="nav-item" data-view="dashboard"><span class="dot"></span>Dashboard</a>
-      <a class="nav-item" data-view="account-hub" id="nav-account-hub"><span class="dot"></span>Leave Tracker</a>
+      <a class="nav-item" data-view="account-hub" id="nav-account-hub"><span class="dot"></span>Leave Tracker<span id="nav-lt-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
@@ -597,6 +602,7 @@ const state = {
   payrollPollHandle: null, // setInterval handle for auto-refresh while viewing Payroll Confirmation
   otFilingPollHandle: null, // setInterval handle for auto-refresh while viewing OT Hours Filing
   dashboardPollHandle: null, // setInterval handle for auto-refresh while viewing the Dashboard
+  navBadgePollHandle: null, // setInterval handle for the sidebar Leave Tracker badge (all tabs)
   appUsers: [], // every login account (username/role/employee_id) — only loaded for Employee Management, not needed elsewhere
   employeeManagementOpenMenuId: null, // employee id whose row-actions dropdown is currently open
   teamFundsTab: 'transactions', // active tab in Team Funds: 'transactions' | 'loans' | 'team-building' | 'accounts'
@@ -748,6 +754,9 @@ function logout() {
   stopDashboardPolling();
   const pnWrap = document.getElementById('pn-wrap');
   if (pnWrap) pnWrap.style.display = 'none';
+  const ltBadge = document.getElementById('nav-lt-badge');
+  if (ltBadge) ltBadge.style.display = 'none';
+  if (state.navBadgePollHandle) { clearInterval(state.navBadgePollHandle); state.navBadgePollHandle = null; }
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -846,6 +855,50 @@ function switchView(viewName) {
 // DATA LOADING
 // =====================================================================
 
+// ---------------------------------------------------------------------
+// Sidebar badge on "Leave Tracker" — shows admins how many items need
+// their attention no matter which tab they're on:
+//   pending leave requests + pending cancellations + unread bell
+//   notifications (so when Kristina approves something, Jeinna's
+//   sidebar lights up too, and vice versa).
+// ---------------------------------------------------------------------
+function updateLeaveNavBadge() {
+  const badge = document.getElementById('nav-lt-badge');
+  if (!badge) return;
+  if (!state.profile || !isAdmin()) { badge.style.display = 'none'; return; }
+  const pendingCount = state.leaveEntries.filter(e =>
+    e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING
+  ).length;
+  const count = pendingCount + unreadNotifCount();
+  if (count > 0) {
+    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+// Global poll (every 4s, matching the Leave Tracker tab's own poll) so
+// the badge stays live on EVERY tab. Skips while the Leave Tracker view
+// is open to avoid duplicate requests, and while the browser tab is
+// hidden to save Supabase bandwidth.
+function startNavBadgePolling() {
+  if (state.navBadgePollHandle) return;
+  state.navBadgePollHandle = setInterval(async () => {
+    if (!state.profile || !isAdmin()) return;
+    if (document.hidden) return; // don't poll from background tabs
+    const onLeaveTracker = state.currentView === 'account-hub';
+    try {
+      if (!onLeaveTracker) {
+        const loads = [loadLeaveEntries()];
+        if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
+        await Promise.all(loads);
+      }
+      updateLeaveNavBadge();
+    } catch (err) { console.error('Nav badge poll failed:', err); }
+  }, 4000);
+}
+
 // Re-renders whichever view is currently on screen, so staged data
 // loading can paint the visible tab as soon as its data arrives.
 function renderCurrentView() {
@@ -866,6 +919,8 @@ async function loadAllData() {
   // year-end holiday generator) before showing anything.
   await Promise.all([loadEmployees(), loadLeaveEntries()]);
   renderCurrentView();
+  updateLeaveNavBadge();
+  startNavBadgePolling();
 
   // PHASE 2 — everything else in the background; repaint when done so
   // views that need these datasets (dashboard counts, payroll, OT,
@@ -881,6 +936,7 @@ async function loadAllData() {
   ]).then(() => {
     renderCurrentView();
     if (state.currentView !== 'dashboard') renderDashboard(); // keep dashboard warm
+    updateLeaveNavBadge(); // notifications just loaded — include unread in the badge
   }).catch(err => console.error('Background data load failed:', err));
 
   // Warm the Team Funds cache (not awaited) so its first open is instant
@@ -1907,6 +1963,7 @@ async function approveCancellation(id) {
 
   renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
+  updateLeaveNavBadge();
 }
 
 // Admin action: declines a pending cancellation request, reverting the
@@ -4250,6 +4307,7 @@ function startLeaveTrackerPolling() {
     if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
     await Promise.all(loads);
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
+    updateLeaveNavBadge();
   }, 4000);
 }
 
@@ -8433,6 +8491,12 @@ async function loadLeaveNotifications() {
 // the same list, and dismissing it removes it for everyone (no
 // duplicate rows in Supabase).
 async function pushLeaveNotification(text) {
+  // If the approver is NOT the notification owner (e.g. Kristina), her
+  // own action shouldn't light up her own badge — she obviously knows.
+  // Note whether she was already fully caught up before this insert.
+  const approverIsOwner = canManageNotifications();
+  const wasCaughtUp = !approverIsOwner && unreadNotifCount() === 0;
+
   const { error } = await sb.from('leave_notifications').insert({ text, read: false });
   if (error) {
     console.error('Could not save notification:', error);
@@ -8441,6 +8505,13 @@ async function pushLeaveNotification(text) {
   }
   // Refresh my own list so the badge updates immediately for the approver
   await loadLeaveNotifications();
+  // A non-owner approver who was caught up stays caught up: mark the
+  // notification she just generated as seen on her device. (If she had
+  // OTHER unseen notifications, the badge stays — those weren't hers.)
+  // The owner's (Jeinna's) unread state in the DB is untouched either
+  // way, so her badge still lights up as intended.
+  if (wasCaughtUp) markNotifsSeenLocally();
+  updateLeaveNavBadge();
   if (state.currentView === 'account-hub' && state.accountHubTab === 'leave-tracker') {
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }
@@ -8467,6 +8538,7 @@ function toggleLeaveNotifPanel() {
       // the owner's unread badge in the database is never touched.
       markNotifsSeenLocally();
     }
+    updateLeaveNavBadge();
     // Update bell badge immediately (no full re-render needed)
     const bellBtn = document.getElementById('btn-leave-notif');
     if (bellBtn) {
