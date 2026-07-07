@@ -41,6 +41,12 @@
 
   *{ box-sizing: border-box; }
   html, body{ margin:0; padding:0; }
+
+  /* No spinner arrows on ANY number field, app-wide — values are always
+     typed manually. */
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:0; }
+  input[type=number]{ -moz-appearance: textfield; appearance: textfield; }
   body{
     background: var(--paper);
     color: var(--ink);
@@ -806,6 +812,7 @@ function logout() {
 function initNav() {
   document.querySelectorAll('.nav-item[data-view]').forEach(item => {
     item.addEventListener('click', () => {
+      if (item.classList.contains('disabled')) return; // e.g. IPS while in "Coming soon"
       const view = item.getAttribute('data-view');
       switchView(view);
     });
@@ -824,12 +831,20 @@ function initNav() {
     employeeManagementNavItem.style.display = canManageEmployees() ? '' : 'none';
   }
 
-  // IPS preview: nav item and "Coming soon" label only visible to Jeinna
+  // IPS preview: the "Coming soon" label + IPS item are visible to
+  // EVERYONE, but the item is only actually clickable for Jeinna while
+  // it's in development — everyone else sees it grayed out.
   const ipsNavItem = document.getElementById('nav-ips');
   const comingSoonLabel = document.getElementById('nav-coming-soon-label');
-  const showIps = canAccessIpsPreview();
-  if (ipsNavItem) ipsNavItem.style.display = showIps ? '' : 'none';
-  if (comingSoonLabel) comingSoonLabel.style.display = showIps ? '' : 'none';
+  if (comingSoonLabel) comingSoonLabel.style.display = '';
+  if (ipsNavItem) {
+    ipsNavItem.style.display = '';
+    if (canAccessIpsPreview()) {
+      ipsNavItem.classList.remove('disabled');
+    } else {
+      ipsNavItem.classList.add('disabled');
+    }
+  }
 
   const savedView = sessionStorage.getItem('registry_active_view');
   const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips'];
@@ -8265,11 +8280,15 @@ function openTfAccountModal(existing) {
 // =====================================================================
 
 const ipsState = {
-  month: '2026-06-01',
-  tab: 'lq',                 // 'lq' | 'md' | 'ec' | 'po' | 'qa' | 'score'
+  // Defaults to the CURRENT month; use the ← arrows to go back to any
+  // earlier month (e.g. June for sampling) — everything stays editable.
+  month: (() => { const n = new Date(); return isoDate(new Date(n.getFullYear(), n.getMonth(), 1)); })(),
+  day: null,                 // the ISO date shown in the Daily Entry tab (defaults per month)
+  tab: 'daily',              // 'daily' | 'ec' | 'po' | 'qa' | 'score'
   dailyEntries: [],
   monthlyData: [],
   monthSettings: null,
+  monthlyEditMode: false,   // Edit/Done toggle for Error Correction + QA Accuracy fields
   loaded: false,
 };
 
@@ -8293,7 +8312,7 @@ async function loadIpsData() {
 
   if (dailyRes.error || monthlyRes.error) {
     console.error('IPS load failed:', dailyRes.error || monthlyRes.error);
-    showToast('Could not load IPS data — run ips_schema.sql in Supabase first.', true);
+    showToast(/row-level security/i.test((dailyRes.error || monthlyRes.error)?.message || '') ? 'Could not load IPS data — RLS is blocking reads. Run ips_rls_fix.sql in Supabase.' : 'Could not load IPS data — run ips_schema.sql in Supabase first.', true);
     return;
   }
   ipsState.dailyEntries = dailyRes.data || [];
@@ -8363,6 +8382,7 @@ function renderIps() {
 
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:10px;">
+      ${canManageIps() ? `<button class="btn btn-ghost" id="ips-download-report">Download report</button>` : ''}
       <button class="btn btn-ghost btn-sm" id="ips-prev-month">←</button>
       <span style="font-weight:600; min-width:110px; text-align:center;">${ipsMonthLabel(ipsState.month)}</span>
       <button class="btn btn-ghost btn-sm" id="ips-next-month">→</button>
@@ -8370,18 +8390,43 @@ function renderIps() {
   `;
   document.getElementById('ips-prev-month').addEventListener('click', () => shiftIpsMonth(-1));
   document.getElementById('ips-next-month').addEventListener('click', () => shiftIpsMonth(1));
+  document.getElementById('ips-download-report')?.addEventListener('click', downloadIpsReport);
 
   if (!state.employees.length) { el.innerHTML = '<div class="loading-row">Loading…</div>'; return; }
 
-  el.innerHTML = '<div class="loading-row">Loading…</div>';
-  loadIpsData().then(renderIpsTables);
+  // Cache-first: paint instantly if this month is already loaded, then
+  // refresh silently — same no-flicker pattern as Red Files/Team Funds.
+  if (ipsState.loaded && ipsState._loadedMonth === ipsState.month) {
+    renderIpsTables();
+    loadIpsData().then(() => { ipsState._loadedMonth = ipsState.month; renderIpsTables(); });
+  } else {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    loadIpsData().then(() => { ipsState._loadedMonth = ipsState.month; renderIpsTables(); });
+  }
 }
 
 function shiftIpsMonth(delta) {
   const [y, m] = ipsState.month.split('-').map(Number);
   const d = new Date(y, m - 1 + delta, 1);
   ipsState.month = isoDate(d);
+  ipsState.day = null; // re-derive a sensible default day for the new month
   renderIps();
+}
+
+// The IPS roster: everyone active except the manager, alphabetical.
+function ipsRoster() {
+  return state.employees
+    .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+}
+
+// Default day for the Daily Entry tab: today if it's a workday inside
+// the active month, otherwise the last workday of that month.
+function ipsDefaultDay(dates) {
+  const today = isoDate(new Date());
+  if (dates.includes(today)) return today;
+  const past = dates.filter(d => d <= today);
+  return past.length ? past[past.length - 1] : dates[0];
 }
 
 function renderIpsTables() {
@@ -8389,63 +8434,97 @@ function renderIpsTables() {
   if (!el) return;
 
   const dates = ipsDatesForMonth(ipsState.month);
-  // Manager (Kristina) is not part of the IPS roster.
-  const roster = state.employees
-    .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
-    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  if (!ipsState.day || !dates.includes(ipsState.day)) ipsState.day = ipsDefaultDay(dates);
+  const roster = ipsRoster();
   const admin = canManageIps();
   const workingDays = ipsState.monthSettings ? ipsState.monthSettings.working_days : '';
-
-  function dayHeaderCells() {
-    return dates.map(d => `<th style="padding:6px 4px; text-align:center; font-size:10.5px; font-weight:600; color:var(--ink-faint); min-width:52px; position:sticky; top:0; background:var(--paper-raised); z-index:3;">${formatMonthDay(d).replace(' ', '<br>')}</th>`).join('');
-  }
-
-  function editableCell(emp, dateIso, field) {
-    const entry = ipsDailyFor(emp.id, dateIso);
-    const val = entry ? entry[field] : '';
-    const canEdit = canEditIpsRow(emp.id);
-    if (!canEdit) {
-      return `<td style="padding:4px; text-align:center; font-size:12px; color:var(--ink-soft);">${val != null && val !== '' ? val : ''}</td>`;
-    }
-    return `<td style="padding:2px;">
-      <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${dateIso}" data-field="${field}" value="${val != null ? val : ''}"
-        style="width:100%; min-width:48px; padding:4px 3px; text-align:center; border-radius:5px; border:1px solid var(--line); font-family:inherit; font-size:11.5px; background:${emp.id === state.profile.employee_id ? '#fff' : 'var(--paper)'};">
-    </td>`;
-  }
 
   function rosterRowStyle(emp) {
     return emp.id === state.profile.employee_id ? 'background:#DCEFEA;' : '';
   }
 
-  function nameCell(emp) {
-    const isMe = emp.id === state.profile.employee_id;
-    return `<td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap; position:sticky; left:0; background:${isMe ? '#DCEFEA' : 'var(--paper-raised)'}; z-index:2; border-right:1px solid var(--line-soft);">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>`;
-  }
+  // ── Daily Entry tab: one day at a time ───────────────────────────
+  function buildDailySection() {
+    const day = ipsState.day;
+    const dayIdx = dates.indexOf(day);
+    const isFirst = dayIdx === 0, isLast = dayIdx === dates.length - 1;
 
-  // ── Section builders (one per sub-tab) ─────────────────────────
+    // Team totals for the day
+    let teamLq = 0, teamMd = 0, loggedCount = 0;
+    roster.forEach(emp => {
+      const e = ipsDailyFor(emp.id, day);
+      if (e && (e.lq_value != null || e.md_value != null)) loggedCount++;
+      teamLq += e && e.lq_value != null ? Number(e.lq_value) : 0;
+      teamMd += e && e.md_value != null ? Number(e.md_value) : 0;
+    });
 
-  function buildDailyGrid(field, aggLabel, aggFn) {
-    const rows = roster.map(emp => `
-      <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
-        ${nameCell(emp)}
-        ${dates.map(d => editableCell(emp, d, field)).join('')}
-        <td style="padding:8px 10px; text-align:center; font-weight:700; background:var(--teal-wash); position:sticky; right:0; z-index:2;">${aggFn(emp.id) ?? '—'}</td>
-      </tr>
-    `).join('');
+    const rows = roster.map(emp => {
+      const e = ipsDailyFor(emp.id, day);
+      const lq = e && e.lq_value != null ? e.lq_value : '';
+      const md = e && e.md_value != null ? e.md_value : '';
+      const total = (lq === '' ? 0 : Number(lq)) + (md === '' ? 0 : Number(md));
+      const ratio = total > 0 ? (total / 800) * 100 : null;
+      const canEdit = canEditIpsRow(emp.id);
+      const isMe = emp.id === state.profile.employee_id;
+      const barColor = ratio == null ? 'var(--line)' : ratio >= 100 ? 'var(--green)' : ratio >= 90 ? 'var(--amber)' : 'var(--coral)';
+
+      const numCell = (field, val) => canEdit
+        ? `<td style="padding:4px; text-align:center;">
+            <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
+              style="width:90px; padding:6px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px; background:${isMe ? '#fff' : 'var(--paper)'};">
+          </td>`
+        : `<td style="padding:8px; text-align:center; color:var(--ink-soft);">${val !== '' ? val : '—'}</td>`;
+
+      return `
+        <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
+          <td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap;">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>
+          ${numCell('lq_value', lq)}
+          ${numCell('md_value', md)}
+          <td style="padding:8px; text-align:center; font-weight:700;">${total || '—'}</td>
+          <td style="padding:8px 10px; min-width:140px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden;">
+                <div style="width:${ratio != null ? Math.max(0, Math.min(100, ratio)) : 0}%; height:100%; background:${barColor}; border-radius:999px;"></div>
+              </div>
+              <span style="font-weight:700; min-width:52px; text-align:right; font-size:12px;">${ratio != null ? ratio.toFixed(1) + '%' : '—'}</span>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
     return `
-      <div style="overflow:auto; max-height:65vh; border:1px solid var(--line-soft); border-radius:10px;">
-        <table style="border-collapse:collapse; width:100%; min-width:1500px;">
-          <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-            <th style="padding:6px 10px; text-align:left; position:sticky; left:0; top:0; background:var(--paper-raised); z-index:4;">Agent</th>${dayHeaderCells()}<th style="padding:6px 10px; position:sticky; right:0; top:0; background:var(--teal-wash); z-index:4;">${aggLabel}</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <button class="btn btn-ghost btn-sm" id="ips-day-prev" ${isFirst ? 'disabled' : ''}>←</button>
+          <div style="text-align:center; min-width:170px;">
+            <div style="font-family:var(--font-display); font-size:17px; font-weight:600; color:var(--teal);">${formatPrettyDate(day)}</div>
+            <div class="faint" style="font-size:10.5px;">Workday ${dayIdx + 1} of ${dates.length}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="ips-day-next" ${isLast ? 'disabled' : ''}>→</button>
+        </div>
+        <div style="display:flex; gap:16px; font-size:12px;" class="muted">
+          <span>Logged: <strong>${loggedCount}/${roster.length}</strong></span>
+          <span>Team LQ: <strong>${round2(teamLq)}</strong></span>
+          <span>Team MD: <strong>${round2(teamMd)}</strong></span>
+        </div>
       </div>
-      <p class="faint" style="font-size:11px; margin:10px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation will appear when editing someone else.' : ''} Changes save automatically when you leave a cell.</p>
+      <table style="border-collapse:collapse; width:100%;">
+        <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
+          <th style="padding:6px 10px; text-align:left;">Agent</th>
+          <th style="padding:6px 10px;">Lead Qualification</th>
+          <th style="padding:6px 10px;">Missing Data Task</th>
+          <th style="padding:6px 10px;">Day Total</th>
+          <th style="padding:6px 10px; text-align:left;">vs 800 target</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else.' : ''} Changes save automatically. Use ← → to move between workdays; monthly averages and totals live in the other tabs and the downloadable report.</p>
     `;
   }
 
   function buildEcSection() {
+    const editable = admin && ipsState.monthlyEditMode;
     const rows = roster.map(emp => {
       const m = ipsMonthlyFor(emp.id);
       const errors = m ? (m.errors ?? '') : '';
@@ -8456,9 +8535,9 @@ function renderIpsTables() {
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
           <td style="padding:4px; text-align:center;">
-            ${admin
-              ? `<input type="number" min="0" step="1" class="ips-error-input" data-emp-id="${emp.id}" value="${errors}" style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">`
-              : `<span>${errors}</span>`}
+            ${editable
+              ? `<input type="number" min="0" step="1" class="ips-error-input" data-emp-id="${emp.id}" value="${errors}" style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--gold-line); font-family:inherit; font-size:12px;">`
+              : `<span>${errors !== '' ? errors : '—'}</span>`}
           </td>
           <td style="padding:8px 10px; text-align:center;">${workingDays || '—'}</td>
           <td style="padding:8px 10px;">
@@ -8473,6 +8552,7 @@ function renderIpsTables() {
       `;
     }).join('');
     return `
+      ${admin ? ipsEditToggleHtml() : ''}
       ${admin ? `
         <div class="card" style="padding:14px 16px; margin-bottom:16px; display:flex; align-items:center; gap:12px; background:var(--amber-wash); border-color:var(--amber-wash);">
           <span style="font-size:18px;">📅</span>
@@ -8523,6 +8603,7 @@ function renderIpsTables() {
   }
 
   function buildQaSection() {
+    const editable = admin && ipsState.monthlyEditMode;
     const rows = roster.map(emp => {
       const m = ipsMonthlyFor(emp.id);
       const qa = m && m.qa_percent != null ? m.qa_percent : '';
@@ -8534,28 +8615,29 @@ function renderIpsTables() {
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
           <td style="padding:4px; text-align:center;">
-            <input type="number" min="0" max="100" step="0.1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="qa_percent" value="${qa}" ${admin ? '' : 'disabled'}
-              style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; ${admin ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
+            <input type="number" min="0" max="100" step="0.1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="qa_percent" value="${qa}" ${editable ? '' : 'disabled'}
+              style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; ${editable ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
           </td>
           <td style="padding:4px; text-align:center;">
-            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="major_count" value="${major}" ${admin ? '' : 'disabled'}
-              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; ${admin ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
+            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="major_count" value="${major}" ${editable ? '' : 'disabled'}
+              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; ${editable ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
           </td>
           <td style="padding:4px; text-align:center;">
-            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="minor_count" value="${minor}" ${admin ? '' : 'disabled'}
-              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; ${admin ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
+            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="minor_count" value="${minor}" ${editable ? '' : 'disabled'}
+              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; ${editable ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
           </td>
           <td style="padding:6px;">
-            ${admin ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="major" style="font-size:11px; padding:3px 8px;">${majorNotes.length} note${majorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${majorNotes.length} note${majorNotes.length===1?'':'s'}</span>`}
+            ${editable ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="major" style="font-size:11px; padding:3px 8px;">${majorNotes.length} note${majorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${majorNotes.length} note${majorNotes.length===1?'':'s'}</span>`}
           </td>
           <td style="padding:6px;">
-            ${admin ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="minor" style="font-size:11px; padding:3px 8px;">${minorNotes.length} note${minorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${minorNotes.length} note${minorNotes.length===1?'':'s'}</span>`}
+            ${editable ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="minor" style="font-size:11px; padding:3px 8px;">${minorNotes.length} note${minorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${minorNotes.length} note${minorNotes.length===1?'':'s'}</span>`}
           </td>
         </tr>
       `;
     }).join('');
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">${admin ? 'Editable by admins and IPS only.' : 'View only — admins and IPS manage this section.'}</p>
+      ${admin ? ipsEditToggleHtml() : ''}
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">${admin ? (ipsState.monthlyEditMode ? 'Edit mode is ON — every field below is unlocked. Click "Done" when finished.' : 'Click "Edit" to unlock all fields at once.') : 'View only — admins and IPS manage this section.'}</p>
       <table style="border-collapse:collapse; width:100%; min-width:640px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Major notes</th><th style="padding:6px 10px;">Minor notes</th>
@@ -8566,7 +8648,6 @@ function renderIpsTables() {
   }
 
   function buildScoreSection() {
-    // Ranked leaderboard-style score view
     const scored = roster.map(emp => ({ emp, s: ipsMonthlyScore(emp.id, dates) }))
       .sort((a, b) => b.s.total - a.s.total);
     const rows = scored.map(({ emp, s }, i) => {
@@ -8593,7 +8674,7 @@ function renderIpsTables() {
     `;
   }
 
-  // ── Personal snapshot cards for the logged-in employee ─────────
+  // ── Personal snapshot cards ─────────────────────────────────────
   const me = roster.find(e => e.id === state.profile.employee_id);
   let snapshotHtml = '';
   if (me) {
@@ -8618,8 +8699,7 @@ function renderIpsTables() {
   }
 
   const tabs = [
-    { id: 'lq',    label: 'Lead Qualification' },
-    { id: 'md',    label: 'Missing Data Task' },
+    { id: 'daily', label: 'Daily Entry' },
     { id: 'ec',    label: 'Error Correction' },
     { id: 'po',    label: 'PO Average' },
     { id: 'qa',    label: 'QA Accuracy' },
@@ -8628,8 +8708,7 @@ function renderIpsTables() {
   const active = ipsState.tab;
 
   const body =
-    active === 'lq' ? buildDailyGrid('lq_value', 'Average', id => ipsLqAverage(id, dates)) :
-    active === 'md' ? buildDailyGrid('md_value', 'Total', id => ipsMdSum(id, dates)) :
+    active === 'daily' ? buildDailySection() :
     active === 'ec' ? buildEcSection() :
     active === 'po' ? buildPoSection() :
     active === 'qa' ? buildQaSection() :
@@ -8659,11 +8738,210 @@ function renderIpsTables() {
       renderIpsTables();
     });
   });
+  document.getElementById('ips-day-prev')?.addEventListener('click', () => shiftIpsDay(-1));
+  document.getElementById('ips-day-next')?.addEventListener('click', () => shiftIpsDay(1));
 
   attachIpsHandlers();
 }
 
+function shiftIpsDay(delta) {
+  const dates = ipsDatesForMonth(ipsState.month);
+  const idx = dates.indexOf(ipsState.day);
+  const next = dates[idx + delta];
+  if (!next) return;
+  ipsState.day = next;
+  renderIpsTables();
+}
+
+// Full-month spread report: opens in a new tab with a Download-as-CSV
+// button, using the same openReportInNewTab plumbing as every other
+// report in the app.
+function downloadIpsReport() {
+  if (!canManageIps()) { showToast('Only admins and IPS can download this report.', true); return; }
+
+  const dates = ipsDatesForMonth(ipsState.month);
+  const roster = ipsRoster();
+  const monthLabel = ipsMonthLabel(ipsState.month);
+  const workingDays = ipsState.monthSettings ? ipsState.monthSettings.working_days : '';
+  const dateHeaders = dates.map(d => formatMonthDay(d));
+
+  // Each section = one tab in the report window AND one block in the CSV.
+  const sections = [];
+
+  sections.push({
+    title: 'Lead Qualification',
+    header: ['Agent', ...dateHeaders, 'Average'],
+    rows: roster.map(emp => [
+      emp.display_name,
+      ...dates.map(d => { const e = ipsDailyFor(emp.id, d); return e && e.lq_value != null ? e.lq_value : ''; }),
+      ipsLqAverage(emp.id, dates) ?? '',
+    ]),
+    wide: true,
+  });
+
+  sections.push({
+    title: 'Missing Data Task',
+    header: ['Agent', ...dateHeaders, 'Total'],
+    rows: roster.map(emp => [
+      emp.display_name,
+      ...dates.map(d => { const e = ipsDailyFor(emp.id, d); return e && e.md_value != null ? e.md_value : ''; }),
+      ipsMdSum(emp.id, dates),
+    ]),
+    wide: true,
+  });
+
+  sections.push({
+    title: 'Error Correction',
+    header: ['Agent', 'Errors', 'Working Days', 'EC %'],
+    rows: roster.map(emp => {
+      const m = ipsMonthlyFor(emp.id);
+      const ec = ipsErrorCorrectionPct(emp.id);
+      return [emp.display_name, m ? (m.errors ?? '') : '', workingDays || '', ec != null ? (ec * 100).toFixed(1) + '%' : ''];
+    }),
+  });
+
+  sections.push({
+    title: 'PO Average',
+    header: ['Agent', 'PO Total (avg × 800)', 'PO Ratio Average'],
+    rows: roster.map(emp => [emp.display_name, ipsPoTotal(emp.id, dates), (ipsPoRatioAverage(emp.id, dates) * 100).toFixed(1) + '%']),
+  });
+
+  sections.push({
+    title: 'QA Accuracy',
+    header: ['Agent', 'QA %', 'Major', 'Minor', 'Major Notes', 'Minor Notes'],
+    rows: roster.map(emp => {
+      const m = ipsMonthlyFor(emp.id);
+      const majorNotes = m && Array.isArray(m.major_notes) ? m.major_notes.filter(Boolean).join(' | ') : '';
+      const minorNotes = m && Array.isArray(m.minor_notes) ? m.minor_notes.filter(Boolean).join(' | ') : '';
+      return [emp.display_name, m && m.qa_percent != null ? m.qa_percent : '', m ? (m.major_count ?? 0) : 0, m ? (m.minor_count ?? 0) : 0, majorNotes, minorNotes];
+    }),
+  });
+
+  sections.push({
+    title: 'Monthly Score',
+    header: ['Rank', 'Agent', 'QA (50%)', 'PO (30%)', 'EC (20%)', 'Total Score'],
+    rows: roster.map(emp => ({ emp, s: ipsMonthlyScore(emp.id, dates) }))
+      .sort((a, b) => b.s.total - a.s.total)
+      .map(({ emp, s }, i) => [i + 1, emp.display_name, s.aoScore.toFixed(2), s.apScore.toFixed(2), s.aqScore.toFixed(2), s.total.toFixed(2)]),
+  });
+
+  openIpsTabbedReport(monthLabel, sections);
+}
+
+// A tabbed report window: one tab per section (no long scroll), with a
+// single "Download as CSV" button that exports the COMPLETE spread —
+// every section — in one file, same CSV conventions as the app's other
+// reports.
+function openIpsTabbedReport(monthLabel, sections) {
+  const win = window.open('', '_blank');
+  if (!win) { showToast('Could not open a new tab — your browser may have blocked the pop-up.', true); return; }
+
+  // Full-spread CSV rows (all sections stacked), reusing the standard shape
+  const csvRows = [[`IPS — Productivity Output Report — ${monthLabel}`]];
+  sections.forEach(sec => {
+    csvRows.push([]);
+    csvRows.push([sec.title]);
+    csvRows.push(sec.header);
+    sec.rows.forEach(r => csvRows.push(r));
+  });
+  const csvJson = JSON.stringify(csvRows).replace(/</g, '\\u003c');
+
+  const tabsHtml = sections.map((sec, i) => `
+    <button class="rpt-tab" data-idx="${i}">${escapeHtml(sec.title)}</button>
+  `).join('');
+
+  const panelsHtml = sections.map((sec, i) => `
+    <div class="rpt-panel" data-idx="${i}" style="display:${i === 0 ? 'block' : 'none'};">
+      <div class="${sec.wide ? 'rpt-scroll' : ''}">
+        <table>
+          <thead><tr>${sec.header.map(h => `<th>${escapeHtml(String(h))}</th>`).join('')}</tr></thead>
+          <tbody>
+            ${sec.rows.length
+              ? sec.rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('')}</tr>`).join('')
+              : `<tr><td colspan="${sec.header.length}" style="text-align:center; color:#A8A39A; padding:30px;">No data yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `).join('');
+
+  win.document.write(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>IPS Report — ${escapeHtml(monthLabel)}</title>
+      <style>
+        body{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif; background:#FAF7F1; color:#3A3A38; margin:0; padding:32px 40px 60px; }
+        h1{ font-size:20px; font-weight:700; color:#1F3D3A; margin:0 0 4px; }
+        .sub{ font-size:13px; color:#A8A39A; margin:0 0 20px; }
+        .toolbar{ display:flex; justify-content:flex-end; margin-bottom:16px; }
+        .toolbar button{ font-family:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:999px; border:1px solid #1F3D3A; background:#1F3D3A; color:#F7F3E8; cursor:pointer; }
+        .toolbar button:hover{ background:#2A4F4B; }
+        .rpt-tabs{ display:flex; gap:0; border-bottom:2px solid #E4DECF; margin-bottom:20px; overflow-x:auto; }
+        .rpt-tab{ padding:10px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; font-family:inherit; white-space:nowrap; color:#A8A39A; border-bottom:3px solid transparent; margin-bottom:-2px; }
+        .rpt-tab.active{ color:#1F3D3A; border-bottom-color:#1F3D3A; }
+        .rpt-scroll{ overflow-x:auto; }
+        table{ border-collapse:collapse; width:100%; background:#fff; border:1px solid #E4DECF; border-radius:10px; overflow:hidden; }
+        th{ text-align:left; padding:8px 12px; font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:#A8A39A; border-bottom:2px solid #E4DECF; white-space:nowrap; position:sticky; top:0; background:#fff; }
+        td{ padding:8px 12px; font-size:13px; border-bottom:1px solid #EDE8DA; white-space:nowrap; }
+        tr:last-child td{ border-bottom:none; }
+        td:first-child, th:first-child{ position:sticky; left:0; background:#fff; }
+      </style>
+    </head>
+    <body>
+      <h1>IPS — Productivity Output Report</h1>
+      <p class="sub">${escapeHtml(monthLabel)}</p>
+      <div class="toolbar"><button id="dl-btn">Download as CSV (full spread)</button></div>
+      <div class="rpt-tabs">${tabsHtml}</div>
+      ${panelsHtml}
+      <script>
+        const tabs = document.querySelectorAll('.rpt-tab');
+        const panels = document.querySelectorAll('.rpt-panel');
+        function activate(idx) {
+          tabs.forEach(t => t.classList.toggle('active', t.dataset.idx === String(idx)));
+          panels.forEach(p => { p.style.display = p.dataset.idx === String(idx) ? 'block' : 'none'; });
+        }
+        tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.idx)));
+        activate(0);
+
+        const ROWS = ${csvJson};
+        function esc(v){ const s=String(v??''); return /[",\\r\\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+        document.getElementById('dl-btn').addEventListener('click', () => {
+          const csv = ROWS.map(r => r.map(esc).join(',')).join('\\r\\n');
+          const blob = new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = ${JSON.stringify(`IPS Report - ${monthLabel}.csv`)};
+          document.body.appendChild(a); a.click();
+          document.body.removeChild(a); URL.revokeObjectURL(url);
+        });
+      <\/script>
+    </body>
+    </html>
+  `);
+  win.document.close();
+}
+
+// The single Edit/Done toggle shared by Error Correction and QA
+// Accuracy — one click unlocks EVERY employee's fields in those two
+// tabs at once, with no per-edit prompts. Admin/IPS only.
+function ipsEditToggleHtml() {
+  const on = ipsState.monthlyEditMode;
+  return `
+    <div style="display:flex; justify-content:flex-end; margin-bottom:12px;">
+      <button class="btn ${on ? 'btn-primary' : 'btn-ghost'} btn-sm" id="ips-monthly-edit-toggle" style="padding:6px 16px;">
+        ${on ? '✓ Done' : 'Edit'}
+      </button>
+    </div>
+  `;
+}
+
 function attachIpsHandlers() {
+  document.getElementById('ips-monthly-edit-toggle')?.addEventListener('click', () => {
+    ipsState.monthlyEditMode = !ipsState.monthlyEditMode;
+    renderIpsTables();
+  });
   document.querySelectorAll('.ips-daily-input').forEach(input => {
     input.addEventListener('change', () => saveIpsDailyEntry(input));
   });
@@ -8677,6 +8955,14 @@ function attachIpsHandlers() {
   document.querySelectorAll('.ips-edit-notes-btn').forEach(btn => {
     btn.addEventListener('click', () => openIpsNotesModal(btn.dataset.empId, btn.dataset.kind));
   });
+}
+
+// Turns a Supabase error into an actionable toast for the IPS tables.
+function ipsSaveErrorMsg(error) {
+  const msg = error?.message || '';
+  if (/row-level security/i.test(msg)) return 'Could not save — RLS is blocking writes. Run ips_rls_fix.sql in Supabase.';
+  if (/relation .* does not exist/i.test(msg)) return 'Could not save — the IPS tables are missing. Run ips_schema.sql in Supabase.';
+  return `Could not save: ${msg || 'unknown error'}`;
 }
 
 function ipsConfirmIfEditingOthers(employeeId) {
@@ -8700,14 +8986,14 @@ async function saveIpsDailyEntry(input) {
   payload[field] = value;
 
   const { error } = await sb.from('ips_daily_entries').upsert(payload, { onConflict: 'employee_id,entry_date' });
-  if (error) { console.error(error); showToast('Could not save — check ips_schema.sql has been run.', true); return; }
+  if (error) { console.error(error); showToast(ipsSaveErrorMsg(error), true); return; }
   await loadIpsData();
   renderIpsTables();
 }
 
 async function saveIpsMonthlyField(employeeId, field, rawValue) {
   if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
-  if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
+  if (!ipsState.monthlyEditMode) { showToast('Click "Edit" first to unlock these fields.', true); renderIpsTables(); return; }
 
   const value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
@@ -8725,7 +9011,7 @@ async function saveIpsMonthlyField(employeeId, field, rawValue) {
   }
 
   const { error } = await sb.from('ips_monthly_data').upsert(payload, { onConflict: 'employee_id,month' });
-  if (error) { console.error(error); showToast('Could not save — check ips_schema.sql has been run.', true); return; }
+  if (error) { console.error(error); showToast(ipsSaveErrorMsg(error), true); return; }
   await loadIpsData();
   renderIpsTables();
 }
@@ -8740,7 +9026,7 @@ async function saveIpsWorkingDays() {
     month: ipsState.month, working_days: value,
     updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
   }, { onConflict: 'month' });
-  if (error) { console.error(error); showToast('Could not save — check ips_schema.sql has been run.', true); return; }
+  if (error) { console.error(error); showToast(ipsSaveErrorMsg(error), true); return; }
   showToast('Working days updated for everyone.');
   await loadIpsData();
   renderIpsTables();
