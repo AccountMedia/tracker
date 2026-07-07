@@ -4168,6 +4168,7 @@ function renderPrioList() {
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:8px;">
       ${!onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset PrioList</button>` : ''}
+      ${onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="red-files-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset Red Files</button>` : ''}
       <div style="display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden;">
         <button type="button" class="priolist-view-tab" data-tab="priolist" style="
           padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit; border:none; cursor:pointer; line-height:1; white-space:nowrap;
@@ -4187,6 +4188,7 @@ function renderPrioList() {
   });
   const resetBtn = document.getElementById('priolist-reset-btn');
   if (resetBtn) resetBtn.addEventListener('click', resetAllPriolistOutput);
+  document.getElementById('red-files-reset-btn')?.addEventListener('click', resetRedFiles);
 
   if (onRedFiles) { renderRedFiles(); return; }
 
@@ -4480,7 +4482,15 @@ function renderRedFilesView() {
   if (!el || state.priolistTab !== 'red-files') return;
   const admin = isAdmin();
 
-  const activeFiles = state.redFiles.filter(f => f.status === 'open' || f.status === 'claimed');
+  const activeFiles = state.redFiles
+    .filter(f => f.status === 'open' || f.status === 'claimed')
+    .sort((a, b) => {
+      // Your own claimed files float to the top, then everything else
+      // keeps its newest-first order from the query.
+      const aMine = a.claimed_by === state.profile.employee_id ? 0 : 1;
+      const bMine = b.claimed_by === state.profile.employee_id ? 0 : 1;
+      return aMine - bMine;
+    });
   const doneFiles = state.redFiles.filter(f => f.status === 'done' || f.status === 'av');
 
   function claimedName(f) {
@@ -4493,13 +4503,20 @@ function renderRedFilesView() {
     const isMine = f.claimed_by === state.profile.employee_id;
     const canFinish = f.status === 'claimed' && (isMine || admin);
     return `
-      <div class="card" style="padding:14px 16px; display:flex; align-items:center; gap:14px; border-left:4px solid ${isOpen ? 'var(--coral)' : 'var(--amber)'};">
+      <div class="card" style="padding:14px 16px; display:flex; align-items:center; gap:14px;
+        border-left:4px solid ${isMine ? 'var(--teal)' : isOpen ? 'var(--coral)' : 'var(--amber)'};
+        ${isMine ? 'background:#DCEFEA; border-color:var(--teal); box-shadow:0 0 0 1px var(--teal-wash);' : ''}">
         <div style="flex:1; min-width:0;">
-          <div style="font-family:var(--font-mono); font-weight:700; font-size:14px;">${escapeHtml(f.camp_id)}</div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-family:var(--font-mono); font-weight:700; font-size:14px;">${escapeHtml(f.camp_id)}</span>
+            ${isMine ? `<span style="font-size:10px; font-weight:700; padding:2px 9px; border-radius:999px; background:var(--teal); color:#F7F3E8; letter-spacing:0.04em;">YOURS</span>` : ''}
+          </div>
           <div class="faint" style="font-size:11.5px; margin-top:2px;">
             ${isOpen
               ? 'Unclaimed — pick this up to start working on it.'
-              : `Claimed by <strong style="color:var(--ink);">${escapeHtml(claimedName(f))}</strong>${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`}
+              : isMine
+                ? `You claimed this${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`
+                : `Claimed by <strong style="color:var(--ink);">${escapeHtml(claimedName(f))}</strong>${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`}
           </div>
         </div>
         ${isOpen ? `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}">Claim</button>` : ''}
@@ -4654,6 +4671,21 @@ async function deleteRedFile(id) {
   const { error } = await sb.from('priolist_red_files').delete().eq('id', id);
   if (error) { showToast('Could not delete the CampID.', true); return; }
   showToast('CampID deleted.');
+  await loadRedFiles();
+  renderRedFilesView();
+}
+
+async function resetRedFiles() {
+  if (!isAdmin()) { showToast('Only admins can reset Red Files.', true); return; }
+  if (!confirm('Reset Red Files? EVERY CampID — open, claimed, and completed — will be permanently deleted for the whole team. This cannot be undone.')) return;
+
+  const { error } = await sb
+    .from('priolist_red_files')
+    .delete()
+    .gte('created_at', '1900-01-01'); // matches all rows; Supabase requires a filter on delete-all
+
+  if (error) { console.error(error); showToast('Could not reset Red Files.', true); return; }
+  showToast('Red Files reset.');
   await loadRedFiles();
   renderRedFilesView();
 }
