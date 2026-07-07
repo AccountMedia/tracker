@@ -382,8 +382,8 @@
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
-      <div class="nav-section-label">Coming soon</div>
-      <a class="nav-item disabled"><span class="dot"></span>IPS (Individual Performance Score)</a>
+      <div class="nav-section-label" id="nav-coming-soon-label">Coming soon</div>
+      <a class="nav-item" data-view="ips" id="nav-ips" style="display:none;"><span class="dot"></span>IPS (Individual Performance Score)</a>
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
@@ -526,7 +526,20 @@
       <div id="team-funds-content"></div>
     </section>
 
+    <section class="view" id="view-ips">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>IPS — Individual Performance Score</h1>
+          <p class="lede">Productivity Output — Lead Qualification, Missing Data Task, Error Correction, and QA scoring.</p>
+        </div>
+        <div id="ips-actions"></div>
+      </div>
+      <div id="ips-content"></div>
+    </section>
+
   </main>
+
 </div>
 
 <div id="toast"></div>
@@ -592,6 +605,8 @@ const state = {
   priolistEntries: [],    // PrioList rows
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
+  priolistTab: 'priolist',  // 'priolist' | 'red-files'
+  redFiles: [],             // priolist_red_files rows
   liVerificationStatus: [], // LinkedIn verification status per employee
   liRestrictionEntries: [], // LI restriction log entries
   liRestrictionDate: isoDate(new Date()), // which day's log is currently shown
@@ -718,6 +733,25 @@ function canManageEmployees() {
 function canViewTeamFunds() {
   return !!state.profile;
 }
+
+// IPS is still in development — the whole tab is visible and usable
+// ONLY by Jeinna while it's being built.
+const IPS_PREVIEW_ALLOWED_NAME = 'Jeinna Louise Perez';
+function canAccessIpsPreview() {
+  return !!state.profile && state.profile.display_name === IPS_PREVIEW_ALLOWED_NAME;
+}
+
+// IPS: admins and the 'ips' role can edit everyone's entries (with a
+// confirmation prompt); everyone else can only edit their own row.
+function canManageIps() {
+  if (!state.profile) return false;
+  return isAdmin() || state.profile.role === 'ips';
+}
+function canEditIpsRow(employeeId) {
+  if (!state.profile) return false;
+  if (state.profile.employee_id === employeeId) return true;
+  return canManageIps();
+}
 function canEditTeamFunds() {
   if (!state.profile) return false;
   if (EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name)) return true;
@@ -790,8 +824,15 @@ function initNav() {
     employeeManagementNavItem.style.display = canManageEmployees() ? '' : 'none';
   }
 
+  // IPS preview: nav item and "Coming soon" label only visible to Jeinna
+  const ipsNavItem = document.getElementById('nav-ips');
+  const comingSoonLabel = document.getElementById('nav-coming-soon-label');
+  const showIps = canAccessIpsPreview();
+  if (ipsNavItem) ipsNavItem.style.display = showIps ? '' : 'none';
+  if (comingSoonLabel) comingSoonLabel.style.display = showIps ? '' : 'none';
+
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds'];
+  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips'];
   // Redirect any saved view that has moved into Account Hub
   const hubViews = ['leave-tracker', 'employee-management'];
   const startView = hubViews.includes(savedView) ? 'account-hub'
@@ -806,6 +847,10 @@ function switchView(viewName) {
   // calling switchView from the console), access is re-checked here
   // every time, and silently redirected to the dashboard if denied.
   if (viewName === 'employee-management' && !canManageEmployees()) {
+    viewName = 'dashboard';
+  }
+  // IPS preview is restricted to Jeinna — same hard boundary pattern.
+  if (viewName === 'ips' && !canAccessIpsPreview()) {
     viewName = 'dashboard';
   }
 
@@ -825,6 +870,7 @@ function switchView(viewName) {
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
   if (viewName === 'team-funds') renderTeamFunds();
+  if (viewName === 'ips') renderIps();
 
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
@@ -1028,6 +1074,7 @@ function renderCurrentView() {
   else if (v === 'li-restriction') renderLiRestriction();
   else if (v === 'ot-filing') renderOtFiling();
   else if (v === 'team-funds') renderTeamFunds();
+  else if (v === 'ips') renderIps();
 }
 
 async function loadAllData() {
@@ -4094,6 +4141,12 @@ function startPriolistPolling() {
     // Don't yank the list out from under someone mid-keystroke.
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return;
+    if (state.priolistTab === 'red-files') {
+      if (active && active.classList && active.classList.contains('red-file-entry-cell') && active.value) return; // mid-typing a CampID
+      await loadRedFiles();
+      renderRedFilesView();
+      return;
+    }
     await loadPriolistEntries();
     renderPrioList();
   }, 5000);
@@ -4108,11 +4161,31 @@ function stopPriolistPolling() {
 
 function renderPrioList() {
   const actionsEl = document.getElementById('priolist-actions');
-  actionsEl.innerHTML = isAdmin()
-    ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset PrioList</button>`
-    : '';
+  const onRedFiles = state.priolistTab === 'red-files';
+  actionsEl.innerHTML = `
+    <div style="display:flex; align-items:center; gap:8px;">
+      <div style="display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden;">
+        <button type="button" class="priolist-view-tab" data-tab="priolist" style="
+          padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit; border:none; cursor:pointer; line-height:1; white-space:nowrap;
+          background:${!onRedFiles ? 'var(--teal)' : 'transparent'}; color:${!onRedFiles ? '#F7F3E8' : 'var(--ink-soft)'};">PrioList</button>
+        <span style="width:1px; background:var(--line); align-self:stretch;"></span>
+        <button type="button" class="priolist-view-tab" data-tab="red-files" style="
+          padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit; border:none; cursor:pointer; line-height:1; white-space:nowrap;
+          background:${onRedFiles ? 'var(--coral)' : 'transparent'}; color:${onRedFiles ? '#F7F3E8' : 'var(--ink-soft)'};">Red Files</button>
+      </div>
+      ${!onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset PrioList</button>` : ''}
+    </div>
+  `;
+  document.querySelectorAll('.priolist-view-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.priolistTab = btn.dataset.tab;
+      renderPrioList();
+    });
+  });
   const resetBtn = document.getElementById('priolist-reset-btn');
   if (resetBtn) resetBtn.addEventListener('click', resetAllPriolistOutput);
+
+  if (onRedFiles) { renderRedFiles(); return; }
 
   const el = document.getElementById('priolist-content');
   if (!state.employees.length) {
@@ -4368,6 +4441,209 @@ async function resetAllPriolistOutput() {
   showToast('PrioList reset.');
   await loadPriolistEntries();
   renderPrioList();
+}
+
+// =====================================================================
+// PRIOLIST — RED FILES
+// =====================================================================
+
+async function loadRedFiles() {
+  const { data, error } = await sb.from('priolist_red_files').select('*').order('created_at', { ascending: false });
+  if (error) {
+    console.error('Red files load failed:', error);
+    showToast('Could not load Red Files — run red_files_schema.sql in Supabase first.', true);
+    return;
+  }
+  state.redFiles = data || [];
+}
+
+function renderRedFiles() {
+  const el = document.getElementById('priolist-content');
+  el.innerHTML = '<div class="loading-row">Loading…</div>';
+  loadRedFiles().then(renderRedFilesView);
+}
+
+function renderRedFilesView() {
+  const el = document.getElementById('priolist-content');
+  if (!el || state.priolistTab !== 'red-files') return;
+  const admin = isAdmin();
+
+  const activeFiles = state.redFiles.filter(f => f.status === 'open' || f.status === 'claimed');
+  const doneFiles = state.redFiles.filter(f => f.status === 'done' || f.status === 'av');
+
+  function claimedName(f) {
+    const emp = state.employees.find(e => e.id === f.claimed_by);
+    return emp ? emp.display_name : '—';
+  }
+
+  function fileCard(f) {
+    const isOpen = f.status === 'open';
+    const isMine = f.claimed_by === state.profile.employee_id;
+    const canFinish = f.status === 'claimed' && (isMine || admin);
+    return `
+      <div class="card" style="padding:14px 16px; display:flex; align-items:center; gap:14px; border-left:4px solid ${isOpen ? 'var(--coral)' : 'var(--amber)'};">
+        <div style="flex:1; min-width:0;">
+          <div style="font-family:var(--font-mono); font-weight:700; font-size:14px;">${escapeHtml(f.camp_id)}</div>
+          <div class="faint" style="font-size:11.5px; margin-top:2px;">
+            ${isOpen
+              ? 'Unclaimed — pick this up to start working on it.'
+              : `Claimed by <strong style="color:var(--ink);">${escapeHtml(claimedName(f))}</strong>${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`}
+          </div>
+        </div>
+        ${isOpen ? `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}">Claim</button>` : ''}
+        ${canFinish ? `
+          <button class="btn btn-sm red-file-finish-btn" data-id="${f.id}" data-status="done" style="background:var(--green); color:#F7F3E8;">Done</button>
+          <button class="btn btn-ghost btn-sm red-file-finish-btn" data-id="${f.id}" data-status="av">AV</button>
+        ` : ''}
+        ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:4px 8px;">✕</button>` : ''}
+      </div>
+    `;
+  }
+
+  const doneRows = doneFiles.map(f => `
+    <div style="display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+      <span style="font-family:var(--font-mono); font-weight:700;">${escapeHtml(f.camp_id)}</span>
+      <span style="font-size:10.5px; font-weight:700; padding:2px 10px; border-radius:999px;
+        background:${f.status === 'done' ? 'var(--green-wash)' : 'var(--amber-wash)'};
+        color:${f.status === 'done' ? 'var(--green)' : 'var(--amber)'};">${f.status === 'done' ? '✓ Done' : 'AV'}</span>
+      <span class="faint">by ${escapeHtml(claimedName(f))}</span>
+      <span class="faint" style="margin-left:auto;">${f.completed_at ? formatDateTime(f.completed_at) : ''}</span>
+      ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:2px 8px; font-size:11px;">✕</button>` : ''}
+    </div>
+  `).join('');
+
+  el.innerHTML = `
+    <div class="card" style="padding:20px; margin-bottom:20px;">
+      <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Add CampIDs</h3>
+      <p class="faint" style="font-size:11.5px; margin:0 0 12px;">Type a CampID and press Enter — it's added instantly and a fresh cell opens below. Everyone can add at the same time; the list updates live for the whole team.</p>
+      <div id="red-file-entry-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
+        ${Array.from({ length: 4 }).map((_, i) => `
+          <input type="text" class="red-file-entry-cell" placeholder="CampID…" autocomplete="off"
+            style="padding:9px 10px; border-radius:8px; border:1.5px dashed var(--line); font-family:var(--font-mono); font-size:13px; background:var(--paper);">
+        `).join('')}
+      </div>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:24px;">
+      ${activeFiles.length ? activeFiles.map(fileCard).join('') : `
+        <div class="card" style="padding:30px; text-align:center;">
+          <p class="muted" style="margin:0;">No red files right now.</p>
+          <p class="faint" style="font-size:12px; margin-top:6px;">Type a CampID in a cell above to add one.</p>
+        </div>
+      `}
+    </div>
+    ${doneFiles.length ? `
+      <div class="card" style="padding:20px;">
+        <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Completed</h3>
+        ${doneRows}
+      </div>
+    ` : ''}
+  `;
+
+  document.querySelectorAll('.red-file-claim-btn').forEach(btn => {
+    btn.addEventListener('click', () => claimRedFile(btn.dataset.id));
+  });
+  document.querySelectorAll('.red-file-finish-btn').forEach(btn => {
+    btn.addEventListener('click', () => finishRedFile(btn.dataset.id, btn.dataset.status));
+  });
+  document.querySelectorAll('.red-file-delete-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteRedFile(btn.dataset.id));
+  });
+  attachRedFileEntryCells();
+}
+
+// Spreadsheet-style entry cells: typing a CampID and pressing Enter (or
+// clicking away) inserts it immediately, clears the cell, and keeps
+// focus flowing so several IDs can be punched in back-to-back. Multiple
+// people can type at once — each add is an independent insert, and the
+// live poll merges everyone's additions into the shared list.
+function attachRedFileEntryCells() {
+  document.querySelectorAll('.red-file-entry-cell').forEach(cell => {
+    cell.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submitRedFileCell(cell, true); }
+    });
+    cell.addEventListener('blur', () => submitRedFileCell(cell, false));
+  });
+}
+
+async function submitRedFileCell(cell, refocus) {
+  const camp_id = cell.value.trim();
+  if (!camp_id) return;
+
+  // Duplicate guard against anything currently loaded (open, claimed, or completed)
+  if (state.redFiles.some(f => f.camp_id.toLowerCase() === camp_id.toLowerCase())) {
+    showToast(`${camp_id} is already in the list.`, true);
+    cell.select();
+    return;
+  }
+
+  cell.value = '';
+  cell.disabled = true;
+  const { error } = await sb.from('priolist_red_files').insert({
+    camp_id, status: 'open', added_by: state.profile.display_name,
+  });
+  cell.disabled = false;
+  if (error) {
+    console.error(error);
+    cell.value = camp_id; // give their typing back so nothing is lost
+    const msg = /row-level security/i.test(error.message || '')
+      ? 'Could not add — RLS is blocking writes. Run red_files_rls_fix.sql in Supabase.'
+      : `Could not add: ${error.message || 'unknown error'}`;
+    showToast(msg, true);
+    return;
+  }
+  showToast(`${camp_id} added.`);
+  await loadRedFiles();
+  renderRedFilesView();
+  if (refocus) {
+    // Put the cursor into the first empty entry cell of the fresh render
+    const next = document.querySelector('.red-file-entry-cell');
+    if (next) next.focus();
+  }
+}
+
+async function claimRedFile(id) {
+  if (!state.profile.employee_id) { showToast('Your account is not linked to an employee record.', true); return; }
+  const f = state.redFiles.find(x => x.id === id);
+  if (!f || f.status !== 'open') { showToast('This CampID has already been claimed.', true); await loadRedFiles(); renderRedFilesView(); return; }
+
+  // Only claim if it's still open — protects against two people
+  // clicking Claim at nearly the same moment.
+  const { data, error } = await sb.from('priolist_red_files')
+    .update({ status: 'claimed', claimed_by: state.profile.employee_id, claimed_at: new Date().toISOString() })
+    .eq('id', id).eq('status', 'open').select();
+
+  if (error) { showToast('Could not claim this CampID.', true); return; }
+  if (!data || !data.length) { showToast('Someone else claimed it first.', true); }
+  else showToast(`You claimed ${f.camp_id}.`);
+  await loadRedFiles();
+  renderRedFilesView();
+}
+
+async function finishRedFile(id, status) {
+  const f = state.redFiles.find(x => x.id === id);
+  if (!f) return;
+  if (f.claimed_by !== state.profile.employee_id && !isAdmin()) {
+    showToast('Only the person who claimed this can finish it.', true);
+    return;
+  }
+  const { error } = await sb.from('priolist_red_files')
+    .update({ status, completed_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) { showToast('Could not update the CampID.', true); return; }
+  showToast(status === 'done' ? `${f.camp_id} marked Done.` : `${f.camp_id} marked AV.`);
+  await loadRedFiles();
+  renderRedFilesView();
+}
+
+async function deleteRedFile(id) {
+  if (!isAdmin()) { showToast('Only admins can delete CampIDs.', true); return; }
+  const f = state.redFiles.find(x => x.id === id);
+  if (!confirm(`Delete CampID ${f ? f.camp_id : ''}? This cannot be undone.`)) return;
+  const { error } = await sb.from('priolist_red_files').delete().eq('id', id);
+  if (error) { showToast('Could not delete the CampID.', true); return; }
+  showToast('CampID deleted.');
+  await loadRedFiles();
+  renderRedFilesView();
 }
 
 // =====================================================================
@@ -5682,6 +5958,7 @@ function openAddEmployeeModal() {
             <option value="staff" selected>Staff</option>
             <option value="admin">Admin</option>
             <option value="treasurer">Treasurer</option>
+            <option value="ips">IPS</option>
           </select>
         </div>
       </div>
@@ -5771,6 +6048,7 @@ function openEditRoleModal(employeeId) {
           <option value="staff" ${account.role === 'staff' ? 'selected' : ''}>Staff</option>
           <option value="admin" ${account.role === 'admin' ? 'selected' : ''}>Admin</option>
           <option value="treasurer" ${account.role === 'treasurer' ? 'selected' : ''}>Treasurer</option>
+          <option value="ips" ${account.role === 'ips' ? 'selected' : ''}>IPS</option>
         </select>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Save role</button>
@@ -7936,6 +8214,544 @@ function openTfAccountModal(existing) {
     if (error) { showToast('Could not save the account details.', true); return; }
     closeModal(); showToast(existing ? 'Account updated.' : 'Account added.'); loadTeamFundsData().then(renderTeamFundsView);
   });
+}
+
+// =====================================================================
+// IPS — Individual Performance Score — Productivity Output tab
+// =====================================================================
+
+const ipsState = {
+  month: '2026-06-01',
+  tab: 'lq',                 // 'lq' | 'md' | 'ec' | 'po' | 'qa' | 'score'
+  dailyEntries: [],
+  monthlyData: [],
+  monthSettings: null,
+  loaded: false,
+};
+
+function ipsDatesForMonth(monthIso) {
+  const [y, m] = monthIso.split('-').map(Number);
+  const start = isoDate(new Date(y, m - 1, 1));
+  const end = isoDate(new Date(y, m, 0));
+  return datesInRange(start, end, { skipWeekends: true });
+}
+
+async function loadIpsData() {
+  const monthStart = ipsState.month;
+  const [y, m] = monthStart.split('-').map(Number);
+  const monthEnd = isoDate(new Date(y, m, 0));
+
+  const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+    sb.from('ips_daily_entries').select('*').gte('entry_date', monthStart).lte('entry_date', monthEnd),
+    sb.from('ips_monthly_data').select('*').eq('month', monthStart),
+    sb.from('ips_month_settings').select('*').eq('month', monthStart).maybeSingle(),
+  ]);
+
+  if (dailyRes.error || monthlyRes.error) {
+    console.error('IPS load failed:', dailyRes.error || monthlyRes.error);
+    showToast('Could not load IPS data — run ips_schema.sql in Supabase first.', true);
+    return;
+  }
+  ipsState.dailyEntries = dailyRes.data || [];
+  ipsState.monthlyData = monthlyRes.data || [];
+  ipsState.monthSettings = settingsRes.data || null;
+  ipsState.loaded = true;
+}
+
+function ipsDailyFor(employeeId, dateIso) {
+  return ipsState.dailyEntries.find(e => e.employee_id === employeeId && e.entry_date === dateIso);
+}
+function ipsMonthlyFor(employeeId) {
+  return ipsState.monthlyData.find(m => m.employee_id === employeeId);
+}
+
+function ipsLqAverage(employeeId, dates) {
+  const vals = dates.map(d => ipsDailyFor(employeeId, d)?.lq_value).filter(v => v != null && v !== '');
+  if (!vals.length) return null;
+  return round2(vals.reduce((s, v) => s + Number(v), 0) / vals.length);
+}
+function ipsMdSum(employeeId, dates) {
+  const vals = dates.map(d => ipsDailyFor(employeeId, d)?.md_value).filter(v => v != null && v !== '');
+  if (!vals.length) return 0;
+  return round2(vals.reduce((s, v) => s + Number(v), 0));
+}
+function ipsPoRatioAverage(employeeId, dates) {
+  const ratios = dates.map(d => {
+    const e = ipsDailyFor(employeeId, d);
+    const lq = e && e.lq_value != null ? Number(e.lq_value) : 0;
+    const md = e && e.md_value != null ? Number(e.md_value) : 0;
+    const total = lq + md;
+    return total > 0 ? total / 800 : null;
+  }).filter(r => r != null);
+  if (!ratios.length) return 0;
+  return ratios.reduce((s, r) => s + r, 0) / ratios.length;
+}
+function ipsPoTotal(employeeId, dates) {
+  return round2(ipsPoRatioAverage(employeeId, dates) * 800);
+}
+function ipsErrorCorrectionPct(employeeId) {
+  const m = ipsMonthlyFor(employeeId);
+  const errors = m ? Number(m.errors || 0) : 0;
+  const workingDays = ipsState.monthSettings ? Number(ipsState.monthSettings.working_days || 0) : 0;
+  if (!workingDays) return null;
+  return round2((1 - (errors / workingDays)) * 1);
+}
+function ipsMonthlyScore(employeeId, dates) {
+  const m = ipsMonthlyFor(employeeId);
+  const qa = m && m.qa_percent != null ? Number(m.qa_percent) : 0;
+  const poRatioAvg = ipsPoRatioAverage(employeeId, dates);
+  const ec = ipsErrorCorrectionPct(employeeId);
+  const aoScore = qa * 0.5;
+  const apScore = poRatioAvg * 0.3;
+  const aqScore = (ec != null ? ec : 0) * 0.2;
+  return { qa, poRatioAvg, ec, aoScore, apScore, aqScore, total: round2(aoScore + apScore + aqScore) };
+}
+
+function ipsMonthLabel(monthIso) {
+  const [y, m] = monthIso.split('-').map(Number);
+  return `${MONTH_NAMES[m - 1]} ${y}`;
+}
+
+function renderIps() {
+  const actionsEl = document.getElementById('ips-actions');
+  const el = document.getElementById('ips-content');
+  if (!el) return;
+
+  actionsEl.innerHTML = `
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button class="btn btn-ghost btn-sm" id="ips-prev-month">←</button>
+      <span style="font-weight:600; min-width:110px; text-align:center;">${ipsMonthLabel(ipsState.month)}</span>
+      <button class="btn btn-ghost btn-sm" id="ips-next-month">→</button>
+    </div>
+  `;
+  document.getElementById('ips-prev-month').addEventListener('click', () => shiftIpsMonth(-1));
+  document.getElementById('ips-next-month').addEventListener('click', () => shiftIpsMonth(1));
+
+  if (!state.employees.length) { el.innerHTML = '<div class="loading-row">Loading…</div>'; return; }
+
+  el.innerHTML = '<div class="loading-row">Loading…</div>';
+  loadIpsData().then(renderIpsTables);
+}
+
+function shiftIpsMonth(delta) {
+  const [y, m] = ipsState.month.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  ipsState.month = isoDate(d);
+  renderIps();
+}
+
+function renderIpsTables() {
+  const el = document.getElementById('ips-content');
+  if (!el) return;
+
+  const dates = ipsDatesForMonth(ipsState.month);
+  // Manager (Kristina) is not part of the IPS roster.
+  const roster = state.employees
+    .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  const admin = canManageIps();
+  const workingDays = ipsState.monthSettings ? ipsState.monthSettings.working_days : '';
+
+  function dayHeaderCells() {
+    return dates.map(d => `<th style="padding:6px 4px; text-align:center; font-size:10.5px; font-weight:600; color:var(--ink-faint); min-width:52px; position:sticky; top:0; background:var(--paper-raised); z-index:3;">${formatMonthDay(d).replace(' ', '<br>')}</th>`).join('');
+  }
+
+  function editableCell(emp, dateIso, field) {
+    const entry = ipsDailyFor(emp.id, dateIso);
+    const val = entry ? entry[field] : '';
+    const canEdit = canEditIpsRow(emp.id);
+    if (!canEdit) {
+      return `<td style="padding:4px; text-align:center; font-size:12px; color:var(--ink-soft);">${val != null && val !== '' ? val : ''}</td>`;
+    }
+    return `<td style="padding:2px;">
+      <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${dateIso}" data-field="${field}" value="${val != null ? val : ''}"
+        style="width:100%; min-width:48px; padding:4px 3px; text-align:center; border-radius:5px; border:1px solid var(--line); font-family:inherit; font-size:11.5px; background:${emp.id === state.profile.employee_id ? '#fff' : 'var(--paper)'};">
+    </td>`;
+  }
+
+  function rosterRowStyle(emp) {
+    return emp.id === state.profile.employee_id ? 'background:#DCEFEA;' : '';
+  }
+
+  function nameCell(emp) {
+    const isMe = emp.id === state.profile.employee_id;
+    return `<td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap; position:sticky; left:0; background:${isMe ? '#DCEFEA' : 'var(--paper-raised)'}; z-index:2; border-right:1px solid var(--line-soft);">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>`;
+  }
+
+  // ── Section builders (one per sub-tab) ─────────────────────────
+
+  function buildDailyGrid(field, aggLabel, aggFn) {
+    const rows = roster.map(emp => `
+      <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
+        ${nameCell(emp)}
+        ${dates.map(d => editableCell(emp, d, field)).join('')}
+        <td style="padding:8px 10px; text-align:center; font-weight:700; background:var(--teal-wash); position:sticky; right:0; z-index:2;">${aggFn(emp.id) ?? '—'}</td>
+      </tr>
+    `).join('');
+    return `
+      <div style="overflow:auto; max-height:65vh; border:1px solid var(--line-soft); border-radius:10px;">
+        <table style="border-collapse:collapse; width:100%; min-width:1500px;">
+          <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
+            <th style="padding:6px 10px; text-align:left; position:sticky; left:0; top:0; background:var(--paper-raised); z-index:4;">Agent</th>${dayHeaderCells()}<th style="padding:6px 10px; position:sticky; right:0; top:0; background:var(--teal-wash); z-index:4;">${aggLabel}</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <p class="faint" style="font-size:11px; margin:10px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation will appear when editing someone else.' : ''} Changes save automatically when you leave a cell.</p>
+    `;
+  }
+
+  function buildEcSection() {
+    const rows = roster.map(emp => {
+      const m = ipsMonthlyFor(emp.id);
+      const errors = m ? (m.errors ?? '') : '';
+      const ec = ipsErrorCorrectionPct(emp.id);
+      const pct = ec != null ? ec * 100 : null;
+      const barColor = pct == null ? 'var(--line)' : pct >= 95 ? 'var(--green)' : pct >= 85 ? 'var(--amber)' : 'var(--coral)';
+      return `
+        <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
+          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
+          <td style="padding:4px; text-align:center;">
+            ${admin
+              ? `<input type="number" min="0" step="1" class="ips-error-input" data-emp-id="${emp.id}" value="${errors}" style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">`
+              : `<span>${errors}</span>`}
+          </td>
+          <td style="padding:8px 10px; text-align:center;">${workingDays || '—'}</td>
+          <td style="padding:8px 10px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden; min-width:80px;">
+                <div style="width:${pct != null ? Math.max(0, Math.min(100, pct)) : 0}%; height:100%; background:${barColor}; border-radius:999px;"></div>
+              </div>
+              <span style="font-weight:700; min-width:52px; text-align:right;">${pct != null ? pct.toFixed(1) + '%' : '—'}</span>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      ${admin ? `
+        <div class="card" style="padding:14px 16px; margin-bottom:16px; display:flex; align-items:center; gap:12px; background:var(--amber-wash); border-color:var(--amber-wash);">
+          <span style="font-size:18px;">📅</span>
+          <label style="font-size:12.5px; font-weight:600;">Working days this month (applies to everyone):</label>
+          <input type="number" min="0" step="1" id="ips-working-days-input" value="${workingDays}" style="width:80px; padding:6px 8px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+          <button class="btn btn-primary btn-sm" id="ips-save-working-days">Save</button>
+        </div>
+      ` : ''}
+      <table style="border-collapse:collapse; width:100%;">
+        <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">Errors</th><th style="padding:6px 10px;">Working Days</th><th style="padding:6px 10px; text-align:left;">EC Score</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  function buildPoSection() {
+    const rows = roster.map(emp => {
+      const ratioAvg = ipsPoRatioAverage(emp.id, dates);
+      const poTotal = ipsPoTotal(emp.id, dates);
+      const pct = ratioAvg * 100;
+      const barColor = pct >= 100 ? 'var(--green)' : pct >= 90 ? 'var(--amber)' : 'var(--coral)';
+      return `
+        <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
+          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
+          <td style="padding:8px 10px; text-align:center; font-weight:700;">${poTotal}</td>
+          <td style="padding:8px 10px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden; min-width:80px;">
+                <div style="width:${Math.max(0, Math.min(100, pct))}%; height:100%; background:${barColor}; border-radius:999px;"></div>
+              </div>
+              <span style="font-weight:700; min-width:52px; text-align:right;">${pct.toFixed(1)}%</span>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Computed automatically per day as (Lead Qualification + Missing Data) ÷ 800, with zero days excluded from the average. PO Total = average × 800.</p>
+      <table style="border-collapse:collapse; width:100%;">
+        <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">PO Total (avg × 800)</th><th style="padding:6px 10px; text-align:left;">PO Ratio Average</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  function buildQaSection() {
+    const rows = roster.map(emp => {
+      const m = ipsMonthlyFor(emp.id);
+      const qa = m && m.qa_percent != null ? m.qa_percent : '';
+      const major = m ? (m.major_count ?? 0) : 0;
+      const minor = m ? (m.minor_count ?? 0) : 0;
+      const majorNotes = m && Array.isArray(m.major_notes) ? m.major_notes : [];
+      const minorNotes = m && Array.isArray(m.minor_notes) ? m.minor_notes : [];
+      return `
+        <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
+          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
+          <td style="padding:4px; text-align:center;">
+            <input type="number" min="0" max="100" step="0.1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="qa_percent" value="${qa}" ${admin ? '' : 'disabled'}
+              style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; ${admin ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
+          </td>
+          <td style="padding:4px; text-align:center;">
+            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="major_count" value="${major}" ${admin ? '' : 'disabled'}
+              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; ${admin ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
+          </td>
+          <td style="padding:4px; text-align:center;">
+            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="minor_count" value="${minor}" ${admin ? '' : 'disabled'}
+              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px; ${admin ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
+          </td>
+          <td style="padding:6px;">
+            ${admin ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="major" style="font-size:11px; padding:3px 8px;">${majorNotes.length} note${majorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${majorNotes.length} note${majorNotes.length===1?'':'s'}</span>`}
+          </td>
+          <td style="padding:6px;">
+            ${admin ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="minor" style="font-size:11px; padding:3px 8px;">${minorNotes.length} note${minorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${minorNotes.length} note${minorNotes.length===1?'':'s'}</span>`}
+          </td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">${admin ? 'Editable by admins and IPS only.' : 'View only — admins and IPS manage this section.'}</p>
+      <table style="border-collapse:collapse; width:100%; min-width:640px;">
+        <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Major notes</th><th style="padding:6px 10px;">Minor notes</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  function buildScoreSection() {
+    // Ranked leaderboard-style score view
+    const scored = roster.map(emp => ({ emp, s: ipsMonthlyScore(emp.id, dates) }))
+      .sort((a, b) => b.s.total - a.s.total);
+    const rows = scored.map(({ emp, s }, i) => {
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
+      return `
+        <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
+          <td style="padding:8px 10px; text-align:center; font-weight:700; width:44px;">${medal}</td>
+          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
+          <td style="padding:8px 10px; text-align:center;">${(s.qa || 0).toFixed(1)}<span class="faint" style="font-size:11px;"> → ${s.aoScore.toFixed(2)}</span></td>
+          <td style="padding:8px 10px; text-align:center;">${(s.poRatioAvg*100).toFixed(1)}%<span class="faint" style="font-size:11px;"> → ${s.apScore.toFixed(2)}</span></td>
+          <td style="padding:8px 10px; text-align:center;">${s.ec != null ? (s.ec*100).toFixed(1)+'%' : '—'}<span class="faint" style="font-size:11px;"> → ${s.aqScore.toFixed(2)}</span></td>
+          <td style="padding:8px 10px; text-align:center; font-weight:700; font-family:var(--font-display); font-size:16px; color:var(--teal);">${s.total.toFixed(2)}</td>
+        </tr>
+      `;
+    }).join('');
+    return `
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Total Monthly Score = QA×50% + PO×30% + EC×20%, ranked highest first.</p>
+      <table style="border-collapse:collapse; width:100%;">
+        <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
+          <th style="padding:6px 10px;">Rank</th><th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA (50%)</th><th style="padding:6px 10px;">PO (30%)</th><th style="padding:6px 10px;">EC (20%)</th><th style="padding:6px 10px;">Total Score</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  // ── Personal snapshot cards for the logged-in employee ─────────
+  const me = roster.find(e => e.id === state.profile.employee_id);
+  let snapshotHtml = '';
+  if (me) {
+    const s = ipsMonthlyScore(me.id, dates);
+    const lqAvg = ipsLqAverage(me.id, dates);
+    const mdTot = ipsMdSum(me.id, dates);
+    snapshotHtml = `
+      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px;">
+        ${[
+          ['My LQ Average', lqAvg ?? '—'],
+          ['My MD Total', mdTot],
+          ['My PO Ratio', (s.poRatioAvg*100).toFixed(1) + '%'],
+          ['My Total Score', s.total.toFixed(2)],
+        ].map(([label, val]) => `
+          <div class="card" style="padding:14px 16px;">
+            <div class="faint" style="font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">${label}</div>
+            <div style="font-family:var(--font-display); font-size:24px; font-weight:700; color:var(--teal);">${val}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  const tabs = [
+    { id: 'lq',    label: 'Lead Qualification' },
+    { id: 'md',    label: 'Missing Data Task' },
+    { id: 'ec',    label: 'Error Correction' },
+    { id: 'po',    label: 'PO Average' },
+    { id: 'qa',    label: 'QA Accuracy' },
+    { id: 'score', label: 'Monthly Score' },
+  ];
+  const active = ipsState.tab;
+
+  const body =
+    active === 'lq' ? buildDailyGrid('lq_value', 'Average', id => ipsLqAverage(id, dates)) :
+    active === 'md' ? buildDailyGrid('md_value', 'Total', id => ipsMdSum(id, dates)) :
+    active === 'ec' ? buildEcSection() :
+    active === 'po' ? buildPoSection() :
+    active === 'qa' ? buildQaSection() :
+    buildScoreSection();
+
+  el.innerHTML = `
+    ${snapshotHtml}
+    <div class="card" style="padding:22px;">
+      <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin:0 0 20px; overflow-x:auto;">
+        ${tabs.map(t => `
+          <button class="ips-tab-btn" data-tab="${t.id}" style="
+            padding:10px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer;
+            border-bottom:${active === t.id ? '3px solid var(--teal)' : '3px solid transparent'};
+            color:${active === t.id ? 'var(--teal)' : 'var(--ink-faint)'};
+            margin-bottom:-2px; font-family:inherit; white-space:nowrap;">
+            ${t.label}
+          </button>
+        `).join('')}
+      </div>
+      ${body}
+    </div>
+  `;
+
+  document.querySelectorAll('.ips-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ipsState.tab = btn.dataset.tab;
+      renderIpsTables();
+    });
+  });
+
+  attachIpsHandlers();
+}
+
+function attachIpsHandlers() {
+  document.querySelectorAll('.ips-daily-input').forEach(input => {
+    input.addEventListener('change', () => saveIpsDailyEntry(input));
+  });
+  document.querySelectorAll('.ips-error-input').forEach(input => {
+    input.addEventListener('change', () => saveIpsMonthlyField(input.dataset.empId, 'errors', input.value));
+  });
+  document.querySelectorAll('.ips-qa-input').forEach(input => {
+    input.addEventListener('change', () => saveIpsMonthlyField(input.dataset.empId, input.dataset.field, input.value));
+  });
+  document.getElementById('ips-save-working-days')?.addEventListener('click', saveIpsWorkingDays);
+  document.querySelectorAll('.ips-edit-notes-btn').forEach(btn => {
+    btn.addEventListener('click', () => openIpsNotesModal(btn.dataset.empId, btn.dataset.kind));
+  });
+}
+
+function ipsConfirmIfEditingOthers(employeeId) {
+  if (employeeId === state.profile.employee_id) return true;
+  return confirm('Are you sure you want to edit this? You are editing another employee\'s entry.');
+}
+
+async function saveIpsDailyEntry(input) {
+  const employeeId = input.dataset.empId;
+  const dateIso = input.dataset.date;
+  const field = input.dataset.field;
+
+  if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); renderIpsTables(); return; }
+  if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
+
+  const raw = input.value;
+  const value = raw === '' ? null : parseFloat(raw);
+  if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
+
+  const payload = { employee_id: employeeId, entry_date: dateIso, updated_by: state.profile.display_name, updated_at: new Date().toISOString() };
+  payload[field] = value;
+
+  const { error } = await sb.from('ips_daily_entries').upsert(payload, { onConflict: 'employee_id,entry_date' });
+  if (error) { console.error(error); showToast('Could not save — check ips_schema.sql has been run.', true); return; }
+  await loadIpsData();
+  renderIpsTables();
+}
+
+async function saveIpsMonthlyField(employeeId, field, rawValue) {
+  if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
+  if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
+
+  const value = rawValue === '' ? null : parseFloat(rawValue);
+  if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
+
+  const existing = ipsMonthlyFor(employeeId);
+  const payload = {
+    employee_id: employeeId, month: ipsState.month,
+    updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
+  };
+  payload[field] = value;
+  if (existing) {
+    ['errors','qa_percent','major_count','minor_count','major_notes','minor_notes'].forEach(f => {
+      if (!(f in payload)) payload[f] = existing[f];
+    });
+  }
+
+  const { error } = await sb.from('ips_monthly_data').upsert(payload, { onConflict: 'employee_id,month' });
+  if (error) { console.error(error); showToast('Could not save — check ips_schema.sql has been run.', true); return; }
+  await loadIpsData();
+  renderIpsTables();
+}
+
+async function saveIpsWorkingDays() {
+  if (!canManageIps()) { showToast('Only admins and IPS can set working days.', true); return; }
+  const raw = document.getElementById('ips-working-days-input').value;
+  const value = raw === '' ? null : parseFloat(raw);
+  if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
+
+  const { error } = await sb.from('ips_month_settings').upsert({
+    month: ipsState.month, working_days: value,
+    updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
+  }, { onConflict: 'month' });
+  if (error) { console.error(error); showToast('Could not save — check ips_schema.sql has been run.', true); return; }
+  showToast('Working days updated for everyone.');
+  await loadIpsData();
+  renderIpsTables();
+}
+
+function openIpsNotesModal(employeeId, kind) {
+  if (!canManageIps()) return;
+  const emp = state.employees.find(e => e.id === employeeId);
+  const m = ipsMonthlyFor(employeeId);
+  const count = kind === 'major' ? (m?.major_count || 0) : (m?.minor_count || 0);
+  const existingNotes = (kind === 'major' ? m?.major_notes : m?.minor_notes) || [];
+
+  const rowsHtml = Array.from({ length: count }).map((_, i) => `
+    <div class="field">
+      <label>${kind === 'major' ? 'Major' : 'Minor'} error #${i + 1}</label>
+      <input type="text" class="ips-note-line" data-idx="${i}" value="${escapeHtml(existingNotes[i] || '')}"
+        style="width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+    </div>
+  `).join('');
+
+  openModal(`${kind === 'major' ? 'Major' : 'Minor'} error notes — ${emp ? emp.display_name : ''}`, `
+    ${count === 0 ? `<p class="muted" style="font-size:12.5px;">Set a ${kind} error count above first.</p>` : `
+      <form id="ips-notes-form" style="display:flex; flex-direction:column; gap:12px;">
+        ${rowsHtml}
+        <button type="submit" class="btn btn-primary" style="justify-content:center;">Save notes</button>
+      </form>
+    `}
+  `);
+
+  document.getElementById('ips-notes-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const notes = Array.from(document.querySelectorAll('.ips-note-line')).map(inp => inp.value.trim());
+    const field = kind === 'major' ? 'major_notes' : 'minor_notes';
+    await saveIpsNotes(employeeId, field, notes);
+  });
+}
+
+async function saveIpsNotes(employeeId, field, notes) {
+  const existing = ipsMonthlyFor(employeeId);
+  const payload = {
+    employee_id: employeeId, month: ipsState.month,
+    updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
+  };
+  payload[field] = notes;
+  if (existing) {
+    ['errors','qa_percent','major_count','minor_count','major_notes','minor_notes'].forEach(f => {
+      if (!(f in payload)) payload[f] = existing[f];
+    });
+  }
+  const { error } = await sb.from('ips_monthly_data').upsert(payload, { onConflict: 'employee_id,month' });
+  if (error) { console.error(error); showToast('Could not save the notes.', true); return; }
+  closeModal();
+  showToast('Notes saved.');
+  await loadIpsData();
+  renderIpsTables();
 }
 
 // =====================================================================
