@@ -1106,6 +1106,9 @@ async function loadAllData() {
 
   // Warm the Team Funds cache (not awaited) so its first open is instant
   loadTeamFundsData().catch(() => {});
+  // Warm the Red Files cache too, so the first PrioList → Red Files
+  // toggle paints instantly with no loading flash
+  loadRedFiles().then(() => { state._redFilesLoadedOnce = true; }).catch(() => {});
 
   // PHASE 3 — the year-end holiday generator. Usually a no-op after the
   // first run of the day, but when it DOES insert/convert rows it makes
@@ -4164,6 +4167,7 @@ function renderPrioList() {
   const onRedFiles = state.priolistTab === 'red-files';
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:8px;">
+      ${!onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset PrioList</button>` : ''}
       <div style="display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden;">
         <button type="button" class="priolist-view-tab" data-tab="priolist" style="
           padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit; border:none; cursor:pointer; line-height:1; white-space:nowrap;
@@ -4173,7 +4177,6 @@ function renderPrioList() {
           padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit; border:none; cursor:pointer; line-height:1; white-space:nowrap;
           background:${onRedFiles ? 'var(--coral)' : 'transparent'}; color:${onRedFiles ? '#F7F3E8' : 'var(--ink-soft)'};">Red Files</button>
       </div>
-      ${!onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset PrioList</button>` : ''}
     </div>
   `;
   document.querySelectorAll('.priolist-view-tab').forEach(btn => {
@@ -4459,8 +4462,17 @@ async function loadRedFiles() {
 
 function renderRedFiles() {
   const el = document.getElementById('priolist-content');
-  el.innerHTML = '<div class="loading-row">Loading…</div>';
-  loadRedFiles().then(renderRedFilesView);
+  // Cache-first: paint instantly from whatever was loaded before (no
+  // loading flash), then refresh silently in the background — the same
+  // pattern Team Funds and Employees use. The loading row only ever
+  // shows on the very first visit of a session.
+  if (state.redFiles.length || state._redFilesLoadedOnce) {
+    renderRedFilesView();
+    loadRedFiles().then(renderRedFilesView);
+  } else {
+    el.innerHTML = '<div class="loading-row">Loading…</div>';
+    loadRedFiles().then(() => { state._redFilesLoadedOnce = true; renderRedFilesView(); });
+  }
 }
 
 function renderRedFilesView() {
