@@ -808,7 +808,7 @@ function logout() {
   if (ltBadge) ltBadge.style.display = 'none';
   const tfNavBadge = document.getElementById('nav-tf-badge');
   if (tfNavBadge) tfNavBadge.style.display = 'none';
-  if (state.navBadgePollHandle) { clearInterval(state.navBadgePollHandle); state.navBadgePollHandle = null; }
+  stopNavBadgePolling();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
@@ -1032,37 +1032,32 @@ function updateBrowserTabBadge(count) {
 // the badge stays live on EVERY tab. Skips while the Leave Tracker view
 // is open to avoid duplicate requests, and while the browser tab is
 // hidden to save Supabase bandwidth.
+// Live-updates the sidebar badges (Leave Tracker pending count + both
+// notification streams) via Realtime — a new request, an approval from
+// Kristina, or a Team Funds change from a treasurer now updates the
+// badge the instant it's saved, regardless of which tab is open.
 function startNavBadgePolling() {
-  if (state.navBadgePollHandle) return;
-  let tick = 0;
-  state.navBadgePollHandle = setInterval(async () => {
+  if (!state.profile || !isAdmin()) return;
+  const rerender = debounceRealtime(async () => {
     if (!state.profile || !isAdmin()) return;
-    tick++;
-    // Hidden/minimized tab: no polling at all — the visibilitychange
-    // hook below refreshes the instant the tab is opened again.
-    if (document.hidden) return;
-    const onLeaveTracker = state.currentView === 'account-hub';
-    try {
-      if (!onLeaveTracker || document.hidden) {
-        const loads = [loadLeaveEntries()];
-        if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
-        await Promise.all(loads);
-      }
-      updateLeaveNavBadge();
-    } catch (err) { console.error('Nav badge poll failed:', err); }
-  }, 30000);
-  // The instant the tab becomes visible again, refresh immediately
+    const loads = [loadLeaveEntries()];
+    if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
+    await Promise.all(loads);
+    updateLeaveNavBadge();
+  }, 200); // short debounce — badges should feel instant
+  subscribeRealtime('badge_leave_entries', 'leave_entries', rerender);
+  subscribeRealtime('badge_leave_notifications', 'leave_notifications', rerender);
+
+  // The instant the tab becomes visible again (e.g. after being
+  // minimized, where some browsers throttle background JS/websockets),
+  // force a fresh read so the badge can't ever be stale for long.
   if (!window._navBadgeVisHook) {
     window._navBadgeVisHook = true;
     document.addEventListener('visibilitychange', () => {
       if (!state.profile || !isAdmin()) return;
       if (document.hidden) {
-        // Just left the tab — paint the tab-title/favicon badge right
-        // away with the latest known count (polling keeps it fresh).
-        updateLeaveNavBadge();
+        updateLeaveNavBadge(); // paint the tab-title/favicon badge with the latest known count
       } else {
-        // Back on the tab — the tab badge clears (sidebar takes over)
-        // and the data refreshes immediately.
         updateLeaveNavBadge();
         Promise.all([loadLeaveEntries(), state.leaveNotifPanelOpen ? Promise.resolve() : loadLeaveNotifications()])
           .then(updateLeaveNavBadge)
@@ -1070,6 +1065,11 @@ function startNavBadgePolling() {
       }
     });
   }
+}
+
+function stopNavBadgePolling() {
+  unsubscribeRealtime('badge_leave_entries');
+  unsubscribeRealtime('badge_leave_notifications');
 }
 
 // Re-renders whichever view is currently on screen, so staged data
