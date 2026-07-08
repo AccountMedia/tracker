@@ -416,11 +416,6 @@
 
   <main class="main">
 
-    <div id="egress-banner" style="display:none; align-items:center; gap:10px; background:var(--amber-wash); border:1px solid var(--amber-wash); color:var(--amber-dark,#9E6B00); border-radius:10px; padding:10px 16px; margin-bottom:16px; font-size:12.5px; font-weight:600;">
-      <span style="font-size:15px;">⏸</span>
-      <span></span>
-    </div>
-
     <!-- DASHBOARD VIEW -->
     <section class="view" id="view-dashboard">
       <div class="page-head">
@@ -806,6 +801,7 @@ function logout() {
   stopOtFilingPolling();
   stopTeamFundsPolling();
   stopDashboardPolling();
+  stopIpsRealtime();
   const pnWrap = document.getElementById('pn-wrap');
   if (pnWrap) pnWrap.style.display = 'none';
   const ltBadge = document.getElementById('nav-lt-badge');
@@ -910,6 +906,8 @@ function switchView(viewName) {
 
   if (viewName === 'dashboard') startDashboardPolling();
   else stopDashboardPolling();
+
+  if (viewName !== 'ips') stopIpsRealtime(); // startIpsRealtime() is called inside renderIps() itself
 }
 
 // =====================================================================
@@ -1108,81 +1106,6 @@ async function checkAppVersionAndReloadIfStale() {
   }
 }
 
-// =====================================================================
-// EGRESS BUDGET — approximate TEAM-WIDE daily usage tracking + soft cap
-// =====================================================================
-// This is a shared estimate stored in Supabase (egress_budget table) —
-// EVERY employee's browser contributes to and reads the SAME running
-// total for the day, not a private per-browser count. It's still an
-// ESTIMATE, not the authoritative figure Supabase bills against (the
-// browser can't see true metered egress, including protocol overhead),
-// but because it's centralized, the whole team shares one real number
-// instead of 32 separate private ones. Notifications are deliberately
-// NOT counted against the budget — they're tiny and must never be the
-// thing that gets cut.
-const IPS_EGRESS_DAILY_CAP_MB = 217;
-
-// In-memory cache of today's team-wide total, refreshed periodically —
-// avoids a network round-trip on every single poll tick just to check
-// the cap. Slight staleness (up to ~20s) is an acceptable trade-off for
-// a SOFT cap; being a few polls late to trip is fine.
-let _egressCache = { day: null, bytes: 0, fetchedAt: 0 };
-
-function egressTodayKey() {
-  return isoDate(new Date()); // the shared row keys off local calendar day
-}
-
-async function refreshEgressCache() {
-  const day = egressTodayKey();
-  try {
-    const { data, error } = await sb.from('egress_budget').select('bytes').eq('day', day).maybeSingle();
-    if (error) return; // table missing or offline — fail silently, non-fatal
-    _egressCache = { day, bytes: data ? Number(data.bytes) : 0, fetchedAt: Date.now() };
-    updateEgressBanner();
-  } catch (err) { /* non-fatal */ }
-}
-
-// Call this after any HEAVY background fetch (polling re-loads), NOT
-// after notification checks. Adds a rough byte estimate to the SHARED
-// team total via an atomic increment (so two people's simultaneous
-// polls both get correctly counted, never overwriting each other).
-async function recordEgress(rows) {
-  if (!rows) return;
-  let bytes;
-  try { bytes = new Blob([JSON.stringify(rows)]).size; } catch (err) { bytes = 0; }
-  if (!bytes) return;
-  try {
-    const { data, error } = await sb.rpc('increment_egress_budget', { p_day: egressTodayKey(), p_bytes: bytes });
-    if (!error && data != null) {
-      _egressCache = { day: egressTodayKey(), bytes: Number(data), fetchedAt: Date.now() };
-      updateEgressBanner();
-    }
-  } catch (err) { /* non-fatal — worst case the cap is a little late to trip today */ }
-}
-
-function egressCapReached() {
-  if (_egressCache.day !== egressTodayKey()) return false; // stale/no data yet this session — don't block on a guess
-  return _egressCache.bytes >= IPS_EGRESS_DAILY_CAP_MB * 1024 * 1024;
-}
-
-function egressUsedMB() {
-  return (_egressCache.bytes / (1024 * 1024)).toFixed(1);
-}
-
-// Small admin-only banner so the cap being hit is visible, not silent.
-function updateEgressBanner() {
-  const el = document.getElementById('egress-banner');
-  if (!el) return;
-  if (!state.profile || !isAdmin()) { el.style.display = 'none'; return; }
-  if (egressCapReached()) {
-    el.style.display = 'flex';
-    el.querySelector('span').textContent =
-      `Team-wide daily data budget reached (~${egressUsedMB()} / ${IPS_EGRESS_DAILY_CAP_MB} MB estimated, shared across everyone). Background auto-refresh is paused until tomorrow — notifications still work, and anything you open still loads fresh. Switch tabs or refresh manually to see the latest.`;
-  } else {
-    el.style.display = 'none';
-  }
-}
-
 async function loadAllData() {
   // PHASE 1 — the two datasets nearly every view depends on. Await only
   // these, then paint the screen immediately: refresh feels ~4x faster
@@ -1191,14 +1114,9 @@ async function loadAllData() {
   await Promise.all([loadEmployees(), loadLeaveEntries()]);
   renderCurrentView();
   updateLeaveNavBadge();
-  refreshEgressCache(); // pulls the TEAM's shared total, not a private one
   startNavBadgePolling();
   checkAppVersionAndReloadIfStale();
   setInterval(() => { if (!document.hidden) checkAppVersionAndReloadIfStale(); }, 60000);
-  // Keep the shared team total reasonably fresh even between this
-  // browser's own polls, so the banner reflects OTHER people's usage
-  // too, not just this tab's contribution.
-  setInterval(() => { if (!document.hidden) refreshEgressCache(); }, 20000);
 
   // PHASE 2 — everything else in the background; repaint when done so
   // views that need these datasets (dashboard counts, payroll, OT,
@@ -4293,32 +4211,30 @@ const PRIOLIST_STATUS_COLORS = {
   Inactive: '#7B4FA0', // purple
 };
 
-// Polls for changes made by other people while the PrioList tab is open,
-// so the list re-sorts live as MD Output / Leads come in from multiple
-// employees at once — without anyone needing to refresh the page.
+// Live-updates PrioList and Red Files via Realtime — MD Output/Leads
+// from other employees, and new/claimed/completed CampIDs, appear the
+// instant they're saved, so the list re-sorts live for everyone.
 function startPriolistPolling() {
   stopPriolistPolling();
-  state.priolistPollHandle = setInterval(async () => {
-    if (document.hidden) return;
-    // Don't yank the list out from under someone mid-keystroke.
+  const rerenderPriolist = debounceRealtime(async () => {
     const active = document.activeElement;
-    if (active && active.classList && active.classList.contains('priolist-input')) return;
-    if (state.priolistTab === 'red-files') {
-      if (active && active.classList && active.classList.contains('red-file-entry-cell') && active.value) return; // mid-typing a CampID
-      await loadRedFiles();
-      renderRedFilesView();
-      return;
-    }
+    if (active && active.classList && active.classList.contains('priolist-input')) return; // don't yank the list mid-keystroke
     await loadPriolistEntries();
     renderPrioList();
-  }, 15000);
+  });
+  const rerenderRedFiles = debounceRealtime(async () => {
+    const active = document.activeElement;
+    if (active && active.classList && active.classList.contains('red-file-entry-cell') && active.value) return; // mid-typing a CampID
+    await loadRedFiles();
+    renderRedFilesView();
+  });
+  subscribeRealtime('priolist_entries', 'priolist_entries', rerenderPriolist);
+  subscribeRealtime('priolist_red_files', 'priolist_red_files', rerenderRedFiles);
 }
 
 function stopPriolistPolling() {
-  if (state.priolistPollHandle) {
-    clearInterval(state.priolistPollHandle);
-    state.priolistPollHandle = null;
-  }
+  unsubscribeRealtime('priolist_entries');
+  unsubscribeRealtime('priolist_red_files');
 }
 
 function renderPrioList() {
@@ -4896,119 +4812,97 @@ function stopLiRestrictionTicker() {
   }
 }
 
-// Auto-refreshes the Leave Tracker every 4 seconds while it's open, so
-// new requests, approvals, and credit edits made by anyone else show up
-// without needing a manual page refresh. Skips a cycle while the admin
-// is actively editing a Leave Credits field, so a keystroke is never
-// interrupted mid-edit.
+// Live-updates the Leave Tracker via Realtime the instant anyone else's
+// request, approval, or credit edit is saved — no polling interval, no
+// egress while idle. A tiny notification poll still runs on its own
+// separate always-on cadence (see startNavBadgePolling) since that must
+// never be skipped for budget reasons.
 function startLeaveTrackerPolling() {
   stopLeaveTrackerPolling();
-  state.leaveTrackerPollHandle = setInterval(async () => {
-    if (document.hidden) return; // no egress while the tab is in the background
+  const rerender = debounceRealtime(async () => {
     const active = document.activeElement;
-    if (active && active.classList && active.classList.contains('credit-input')) return;
-    // Notifications are NEVER gated by the daily budget — only the heavy
-    // full-table re-fetch is. If the cap is hit, still check for
-    // notifications (cheap), just skip the expensive part.
-    if (!state.leaveNotifPanelOpen) await loadLeaveNotifications();
-    updateLeaveNavBadge();
-    if (egressCapReached()) return;
+    if (active && active.classList && active.classList.contains('credit-input')) return; // never yank a field mid-keystroke
     await Promise.all([loadLeaveEntries(), loadEmployees()]);
-    recordEgress(state.leaveEntries);
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
-  }, 15000);
+    updateLeaveNavBadge();
+  });
+  subscribeRealtime('leave_entries', 'leave_entries', rerender);
+  subscribeRealtime('employees_lt', 'employees', rerender);
 }
 
 function stopLeaveTrackerPolling() {
-  if (state.leaveTrackerPollHandle) {
-    clearInterval(state.leaveTrackerPollHandle);
-    state.leaveTrackerPollHandle = null;
-  }
+  unsubscribeRealtime('leave_entries');
+  unsubscribeRealtime('employees_lt');
 }
 
-// Auto-refreshes Payroll Confirmation every 4 seconds while it's open,
-// so a "Mark received" from another agent (or an admin's Reset) shows
-// up live. This tab has no text inputs to protect mid-keystroke, so no
-// typing guard is needed — only a check that no modal is open, so a
-// re-render doesn't visually disturb an admin mid-action elsewhere.
+// Live-updates Payroll Confirmation via Realtime — a "Mark received"
+// from another agent (or an admin's Reset) appears the instant it's
+// saved, no polling interval.
 function startPayrollPolling() {
   stopPayrollPolling();
-  state.payrollPollHandle = setInterval(async () => {
-    if (document.hidden) return;
-    if (egressCapReached()) return;
+  const rerender = debounceRealtime(async () => {
     const overlay = document.getElementById('modal-overlay');
-    if (overlay && overlay.style.display === 'flex') return;
+    if (overlay && overlay.style.display === 'flex') return; // don't yank the view out from under an open modal
     await loadPayrollConfirmations();
-    recordEgress(state.payrollConfirmations);
     renderPayrollConfirmation();
-  }, 20000);
+  });
+  subscribeRealtime('payroll_confirmations', 'payroll_confirmations', rerender);
 }
 
 function stopPayrollPolling() {
-  if (state.payrollPollHandle) {
-    clearInterval(state.payrollPollHandle);
-    state.payrollPollHandle = null;
-  }
+  unsubscribeRealtime('payroll_confirmations');
 }
 
-// Auto-refreshes OT Hours Filing every 4 seconds while it's open, so
-// hours logged or confirmed by other agents (and admin changes to
-// filing dates or Total Leads Available) show up live. Skips a cycle
-// while anyone is actively typing into one of its number fields.
+// Live-updates OT Hours Filing via Realtime — hours logged/confirmed by
+// other agents, and admin changes to filing dates or Total Leads
+// Available, appear instantly. Skips a re-render while anyone's
+// actively typing into one of its number fields.
 function startOtFilingPolling() {
   stopOtFilingPolling();
-  state.otFilingPollHandle = setInterval(async () => {
-    if (document.hidden) return;
-    if (egressCapReached()) return;
+  const rerender = debounceRealtime(async () => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return;
     await Promise.all([loadOtFilingDates(), loadOtHoursEntries()]);
-    recordEgress(state.otHoursEntries);
     renderOtFiling();
-  }, 20000);
+  });
+  subscribeRealtime('ot_filing_dates', 'ot_filing_dates', rerender);
+  subscribeRealtime('ot_hours_entries', 'ot_hours_entries', rerender);
 }
 
 function stopOtFilingPolling() {
-  if (state.otFilingPollHandle) {
-    clearInterval(state.otFilingPollHandle);
-    state.otFilingPollHandle = null;
-  }
+  unsubscribeRealtime('ot_filing_dates');
+  unsubscribeRealtime('ot_hours_entries');
 }
 
+// Live-updates Team Funds via Realtime across all its tables (ledger,
+// loans, repayments, treasurer cash) — a treasurer's edit or a
+// repayment appears the instant it's saved, anywhere on the team.
 function startTeamFundsPolling() {
   stopTeamFundsPolling();
-  state.teamFundsPollHandle = setInterval(async () => {
-    if (document.hidden) return;
-    if (egressCapReached()) return;
-    // Skip re-fetch if a dropdown menu is open to avoid yanking it away mid-interaction
+  const rerender = debounceRealtime(async () => {
+    // Skip re-fetch if a dropdown menu is open, to avoid yanking it away mid-interaction
     if (state.teamFundsTxMenuId !== null || state.teamFundsLoanMenuId !== null) return;
     await loadTeamFundsData();
-    recordEgress(state.teamFundsData);
     renderTeamFundsView(); // render without loading flash — same pattern as PrioList
-  }, 20000);
+  });
+  ['team_fund_transactions', 'employee_loans', 'loan_repayments', 'treasurer_cash', 'treasurer_accounts', 'team_funds_settings', 'team_building_settings']
+    .forEach(table => subscribeRealtime(`tf_${table}`, table, rerender));
 }
 
 function stopTeamFundsPolling() {
-  if (state.teamFundsPollHandle) {
-    clearInterval(state.teamFundsPollHandle);
-    state.teamFundsPollHandle = null;
-  }
+  ['team_fund_transactions', 'employee_loans', 'loan_repayments', 'treasurer_cash', 'treasurer_accounts', 'team_funds_settings', 'team_building_settings']
+    .forEach(table => unsubscribeRealtime(`tf_${table}`));
 }
 
-// Auto-refreshes the Dashboard every 4 seconds while it's open, so its
-// summary cards (pending requests, payroll confirmations, LinkedIn
-// restrictions, OT confirmations, Leave Without Pay) stay current
-// without a manual refresh. The Dashboard has no inputs of its own, so
-// no typing guard is needed — only a check that no modal is currently
-// open elsewhere in the app, since several of its numbers reflect
-// data that could be mid-edit in another tab's modal.
+// Live-updates the Dashboard via Realtime across every table its
+// summary cards read from — pending requests, payroll confirmations,
+// LinkedIn restrictions, OT confirmations, Leave Without Pay all
+// refresh the instant the underlying data changes, anywhere.
 function startDashboardPolling() {
   stopDashboardPolling();
-  state.dashboardPollHandle = setInterval(async () => {
-    if (document.hidden) return;
-    if (egressCapReached()) return;
+  const rerender = debounceRealtime(async () => {
     const overlay = document.getElementById('modal-overlay');
-    if (overlay && overlay.style.display === 'flex') return;
+    if (overlay && overlay.style.display === 'flex') return; // don't disturb an open modal elsewhere
     await Promise.all([
       loadEmployees(),
       loadLeaveEntries(),
@@ -5017,16 +4911,15 @@ function startDashboardPolling() {
       loadOtFilingDates(),
       loadOtHoursEntries(),
     ]);
-    recordEgress([state.employees, state.leaveEntries, state.payrollConfirmations, state.liRestrictionEntries, state.otFilingDates, state.otHoursEntries]);
     renderDashboard();
-  }, 30000);
+  });
+  ['employees', 'leave_entries', 'payroll_confirmations', 'li_restriction_entries', 'ot_filing_dates', 'ot_hours_entries']
+    .forEach(table => subscribeRealtime(`dash_${table}`, table, rerender));
 }
 
 function stopDashboardPolling() {
-  if (state.dashboardPollHandle) {
-    clearInterval(state.dashboardPollHandle);
-    state.dashboardPollHandle = null;
-  }
+  ['employees', 'leave_entries', 'payroll_confirmations', 'li_restriction_entries', 'ot_filing_dates', 'ot_hours_entries']
+    .forEach(table => unsubscribeRealtime(`dash_${table}`));
 }
 
 function renderLiRestriction() {
@@ -8812,10 +8705,41 @@ function ipsMonthLabel(monthIso) {
   return `${MONTH_NAMES[m - 1]} ${y}`;
 }
 
+// Live-updates IPS via Realtime — a teammate's Daily Entry, Errors,
+// working-days change, or QA edit appears the instant it's saved,
+// across every IPS tab (Daily Entry, PO & EC Score, QA, Monthly Score).
+function startIpsRealtime() {
+  stopIpsRealtime();
+  const rerender = debounceRealtime(async () => {
+    const active = document.activeElement;
+    // Don't yank a field out from under someone mid-keystroke on any of
+    // the IPS input classes.
+    if (active && active.classList && (
+      active.classList.contains('ips-daily-input') ||
+      active.classList.contains('ips-qa-input') ||
+      active.id === 'ips-working-days-input'
+    )) return;
+    await loadIpsData();
+    ipsState._loadedMonth = ipsState.month;
+    renderIpsTables();
+  });
+  subscribeRealtime('ips_daily_entries', 'ips_daily_entries', rerender);
+  subscribeRealtime('ips_monthly_data', 'ips_monthly_data', rerender);
+  subscribeRealtime('ips_month_settings', 'ips_month_settings', rerender);
+}
+
+function stopIpsRealtime() {
+  unsubscribeRealtime('ips_daily_entries');
+  unsubscribeRealtime('ips_monthly_data');
+  unsubscribeRealtime('ips_month_settings');
+}
+
 function renderIps() {
   const actionsEl = document.getElementById('ips-actions');
   const el = document.getElementById('ips-content');
   if (!el) return;
+
+  startIpsRealtime();
 
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:10px;">
