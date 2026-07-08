@@ -416,6 +416,11 @@
 
   <main class="main">
 
+    <div id="egress-banner" style="display:none; align-items:center; gap:10px; background:var(--amber-wash); border:1px solid var(--amber-wash); color:var(--amber-dark,#9E6B00); border-radius:10px; padding:10px 16px; margin-bottom:16px; font-size:12.5px; font-weight:600;">
+      <span style="font-size:15px;">⏸</span>
+      <span></span>
+    </div>
+
     <!-- DASHBOARD VIEW -->
     <section class="view" id="view-dashboard">
       <div class="page-head">
@@ -1103,6 +1108,81 @@ async function checkAppVersionAndReloadIfStale() {
   }
 }
 
+// =====================================================================
+// EGRESS BUDGET — approximate TEAM-WIDE daily usage tracking + soft cap
+// =====================================================================
+// This is a shared estimate stored in Supabase (egress_budget table) —
+// EVERY employee's browser contributes to and reads the SAME running
+// total for the day, not a private per-browser count. It's still an
+// ESTIMATE, not the authoritative figure Supabase bills against (the
+// browser can't see true metered egress, including protocol overhead),
+// but because it's centralized, the whole team shares one real number
+// instead of 32 separate private ones. Notifications are deliberately
+// NOT counted against the budget — they're tiny and must never be the
+// thing that gets cut.
+const IPS_EGRESS_DAILY_CAP_MB = 217;
+
+// In-memory cache of today's team-wide total, refreshed periodically —
+// avoids a network round-trip on every single poll tick just to check
+// the cap. Slight staleness (up to ~20s) is an acceptable trade-off for
+// a SOFT cap; being a few polls late to trip is fine.
+let _egressCache = { day: null, bytes: 0, fetchedAt: 0 };
+
+function egressTodayKey() {
+  return isoDate(new Date()); // the shared row keys off local calendar day
+}
+
+async function refreshEgressCache() {
+  const day = egressTodayKey();
+  try {
+    const { data, error } = await sb.from('egress_budget').select('bytes').eq('day', day).maybeSingle();
+    if (error) return; // table missing or offline — fail silently, non-fatal
+    _egressCache = { day, bytes: data ? Number(data.bytes) : 0, fetchedAt: Date.now() };
+    updateEgressBanner();
+  } catch (err) { /* non-fatal */ }
+}
+
+// Call this after any HEAVY background fetch (polling re-loads), NOT
+// after notification checks. Adds a rough byte estimate to the SHARED
+// team total via an atomic increment (so two people's simultaneous
+// polls both get correctly counted, never overwriting each other).
+async function recordEgress(rows) {
+  if (!rows) return;
+  let bytes;
+  try { bytes = new Blob([JSON.stringify(rows)]).size; } catch (err) { bytes = 0; }
+  if (!bytes) return;
+  try {
+    const { data, error } = await sb.rpc('increment_egress_budget', { p_day: egressTodayKey(), p_bytes: bytes });
+    if (!error && data != null) {
+      _egressCache = { day: egressTodayKey(), bytes: Number(data), fetchedAt: Date.now() };
+      updateEgressBanner();
+    }
+  } catch (err) { /* non-fatal — worst case the cap is a little late to trip today */ }
+}
+
+function egressCapReached() {
+  if (_egressCache.day !== egressTodayKey()) return false; // stale/no data yet this session — don't block on a guess
+  return _egressCache.bytes >= IPS_EGRESS_DAILY_CAP_MB * 1024 * 1024;
+}
+
+function egressUsedMB() {
+  return (_egressCache.bytes / (1024 * 1024)).toFixed(1);
+}
+
+// Small admin-only banner so the cap being hit is visible, not silent.
+function updateEgressBanner() {
+  const el = document.getElementById('egress-banner');
+  if (!el) return;
+  if (!state.profile || !isAdmin()) { el.style.display = 'none'; return; }
+  if (egressCapReached()) {
+    el.style.display = 'flex';
+    el.querySelector('span').textContent =
+      `Team-wide daily data budget reached (~${egressUsedMB()} / ${IPS_EGRESS_DAILY_CAP_MB} MB estimated, shared across everyone). Background auto-refresh is paused until tomorrow — notifications still work, and anything you open still loads fresh. Switch tabs or refresh manually to see the latest.`;
+  } else {
+    el.style.display = 'none';
+  }
+}
+
 async function loadAllData() {
   // PHASE 1 — the two datasets nearly every view depends on. Await only
   // these, then paint the screen immediately: refresh feels ~4x faster
@@ -1111,9 +1191,14 @@ async function loadAllData() {
   await Promise.all([loadEmployees(), loadLeaveEntries()]);
   renderCurrentView();
   updateLeaveNavBadge();
+  refreshEgressCache(); // pulls the TEAM's shared total, not a private one
   startNavBadgePolling();
   checkAppVersionAndReloadIfStale();
   setInterval(() => { if (!document.hidden) checkAppVersionAndReloadIfStale(); }, 60000);
+  // Keep the shared team total reasonably fresh even between this
+  // browser's own polls, so the banner reflects OTHER people's usage
+  // too, not just this tab's contribution.
+  setInterval(() => { if (!document.hidden) refreshEgressCache(); }, 20000);
 
   // PHASE 2 — everything else in the background; repaint when done so
   // views that need these datasets (dashboard counts, payroll, OT,
@@ -4822,11 +4907,15 @@ function startLeaveTrackerPolling() {
     if (document.hidden) return; // no egress while the tab is in the background
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('credit-input')) return;
-    const loads = [loadLeaveEntries(), loadEmployees()];
-    if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
-    await Promise.all(loads);
-    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
+    // Notifications are NEVER gated by the daily budget — only the heavy
+    // full-table re-fetch is. If the cap is hit, still check for
+    // notifications (cheap), just skip the expensive part.
+    if (!state.leaveNotifPanelOpen) await loadLeaveNotifications();
     updateLeaveNavBadge();
+    if (egressCapReached()) return;
+    await Promise.all([loadLeaveEntries(), loadEmployees()]);
+    recordEgress(state.leaveEntries);
+    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }, 15000);
 }
 
@@ -4846,9 +4935,11 @@ function startPayrollPolling() {
   stopPayrollPolling();
   state.payrollPollHandle = setInterval(async () => {
     if (document.hidden) return;
+    if (egressCapReached()) return;
     const overlay = document.getElementById('modal-overlay');
     if (overlay && overlay.style.display === 'flex') return;
     await loadPayrollConfirmations();
+    recordEgress(state.payrollConfirmations);
     renderPayrollConfirmation();
   }, 20000);
 }
@@ -4868,9 +4959,11 @@ function startOtFilingPolling() {
   stopOtFilingPolling();
   state.otFilingPollHandle = setInterval(async () => {
     if (document.hidden) return;
+    if (egressCapReached()) return;
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return;
     await Promise.all([loadOtFilingDates(), loadOtHoursEntries()]);
+    recordEgress(state.otHoursEntries);
     renderOtFiling();
   }, 20000);
 }
@@ -4886,9 +4979,11 @@ function startTeamFundsPolling() {
   stopTeamFundsPolling();
   state.teamFundsPollHandle = setInterval(async () => {
     if (document.hidden) return;
+    if (egressCapReached()) return;
     // Skip re-fetch if a dropdown menu is open to avoid yanking it away mid-interaction
     if (state.teamFundsTxMenuId !== null || state.teamFundsLoanMenuId !== null) return;
     await loadTeamFundsData();
+    recordEgress(state.teamFundsData);
     renderTeamFundsView(); // render without loading flash — same pattern as PrioList
   }, 20000);
 }
@@ -4911,6 +5006,7 @@ function startDashboardPolling() {
   stopDashboardPolling();
   state.dashboardPollHandle = setInterval(async () => {
     if (document.hidden) return;
+    if (egressCapReached()) return;
     const overlay = document.getElementById('modal-overlay');
     if (overlay && overlay.style.display === 'flex') return;
     await Promise.all([
@@ -4921,6 +5017,7 @@ function startDashboardPolling() {
       loadOtFilingDates(),
       loadOtHoursEntries(),
     ]);
+    recordEgress([state.employees, state.leaveEntries, state.payrollConfirmations, state.liRestrictionEntries, state.otFilingDates, state.otHoursEntries]);
     renderDashboard();
   }, 30000);
 }
@@ -7096,7 +7193,11 @@ function renderTeamFundsView() {
                   <td style="padding:10px 12px; font-weight:600;">${escapeHtml(loan.employee_name)}</td>
                   <td style="padding:10px 12px; white-space:nowrap;">${formatPrettyDate(loan.loan_date)}</td>
                   <td style="padding:10px 12px; text-align:right;">${TF_FMT(loan.amount)}</td>
-                  <td style="padding:10px 12px; text-align:right; color:#2E7D32;">${TF_FMT(loanRepaid)}</td>
+                  <td style="padding:10px 12px; text-align:right; color:#2E7D32;">
+                    ${loanRepaid > 0
+                      ? `<button class="btn-link tf-repay-history-link" data-loan-id="${loan.id}" style="background:none; border:none; padding:0; font:inherit; font-weight:600; color:#2E7D32; cursor:pointer; text-decoration:underline; text-decoration-color:rgba(46,125,50,0.35);" title="View or edit repayments">${TF_FMT(loanRepaid)}</button>`
+                      : TF_FMT(loanRepaid)}
+                  </td>
                   <td style="padding:10px 12px; text-align:right; font-weight:600; color:${outstanding > 0 ? "var(--coral)" : "#2E7D32"};">${TF_FMT(outstanding)}</td>
                   <td style="padding:10px 12px;">
                     <span style="display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600;
@@ -7304,6 +7405,13 @@ function renderTeamFundsView() {
       btn.addEventListener("click", () => openTfRepaymentModal(btn.dataset.loanId, btn.dataset.loanName));
     });
 
+    // Clicking the "Repaid" amount jumps straight to that loan's
+    // repayment history (where Edit lives) — no need to hunt through
+    // the ⋯ menu first.
+    document.querySelectorAll(".tf-repay-history-link").forEach(btn => {
+      btn.addEventListener("click", () => openTfRepaymentHistory(btn.dataset.loanId, repayments, loans));
+    });
+
     // ── Portal dropdown — positioned via getBoundingClientRect so the
     // dropdown floats in a fixed overlay div outside the table entirely,
     // eliminating any layout shift when it opens ────────────────────
@@ -7366,9 +7474,10 @@ function renderTeamFundsView() {
         state.teamFundsLoanMenuId = btn.dataset.id;
         state.teamFundsTxMenuId = null;
         const loan = loans.find(l => l.id === btn.dataset.id);
+        const hasRepayments = repayments.some(r => r.loan_id === btn.dataset.id);
         showPortalMenu(btn, [
-          { action: 'loan-history', id: btn.dataset.id, label: 'Repayment history' },
-          { action: 'loan-edit',    id: btn.dataset.id, label: 'Edit' },
+          { action: 'loan-history', id: btn.dataset.id, label: hasRepayments ? 'Repayments (view / edit)' : 'Record a repayment' },
+          { action: 'loan-edit',    id: btn.dataset.id, label: 'Edit loan details' },
           { action: 'loan-delete',  id: btn.dataset.id, label: 'Delete', danger: true, name: loan?.employee_name },
         ]);
         portal.querySelectorAll('.tf-portal-item').forEach(el => {
@@ -7952,7 +8061,13 @@ function openTfTransactionModal(type) {
 }
 
 // Shared treasurer selector — which treasurer's held funds this affects
-function tfTreasurerField(id, includeOther = false) {
+function tfTreasurerField(id, includeOtherOrSelected = false, selectedValue = null) {
+  // Backwards-compatible: 2nd param is either `includeOther` (boolean,
+  // existing callers) OR a pre-selected treasurer name (string, for
+  // edit forms) — string just skips the "Other" option since we're
+  // editing an existing entry, not creating a new one.
+  const includeOther = includeOtherOrSelected === true;
+  const preselected = typeof includeOtherOrSelected === 'string' ? includeOtherOrSelected : selectedValue;
   const names = (state.teamFundsData?.treasurerCash || []).map(t => t.treasurer_name);
   let opts = names.length ? names : ['Katrena', 'Emerald', 'Roxanne'];
   if (includeOther) opts = [...opts, 'Other'];
@@ -7961,7 +8076,7 @@ function tfTreasurerField(id, includeOther = false) {
       <label for="${id}">Treasurer (whose funds)</label>
       <select id="${id}" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
         <option value="">— Select treasurer —</option>
-        ${opts.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('')}
+        ${opts.map(n => `<option value="${escapeHtml(n)}" ${preselected === n ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
       </select>
     </div>
   `;
@@ -8198,6 +8313,7 @@ function openTfRepaymentHistory(loanId, repayments, loans) {
   const loanRepayments = repayments.filter(r => r.loan_id === loanId).sort((a, b) => a.payment_date.localeCompare(b.payment_date));
   const totalRepaid = loanRepayments.reduce((s, r) => s + Number(r.amount), 0);
   const outstanding = Number(loan.amount) - totalRepaid;
+  const canEdit = canEditTeamFunds();
   openModal(`Repayment history — ${loan.employee_name}`, `
     <div style="margin-bottom:14px;">
       <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;">
@@ -8218,12 +8334,124 @@ function openTfRepaymentHistory(loanId, repayments, loans) {
               <div style="font-weight:600;">${formatPrettyDate(r.payment_date)}</div>
               ${r.note ? `<div class="faint" style="font-size:11.5px;">${escapeHtml(r.note)}</div>` : ''}
             </div>
-            <div style="font-weight:600; color:#2E7D32;">+${TF_FMT(r.amount)}</div>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div style="font-weight:600; color:#2E7D32;">+${TF_FMT(r.amount)}</div>
+              ${canEdit ? `<button class="btn btn-ghost btn-sm tf-repay-edit-btn" data-id="${r.id}" style="padding:3px 10px; font-size:11px;">Edit</button>` : ''}
+            </div>
           </div>
         `).join('')}
       </div>
     ` : `<p class="muted" style="font-size:12.5px; margin:8px 0 0;">No repayments recorded yet.</p>`}
   `);
+  document.querySelectorAll('.tf-repay-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const repayment = loanRepayments.find(r => r.id === btn.dataset.id);
+      if (repayment) openTfEditRepaymentModal(repayment, loan);
+    });
+  });
+}
+
+// Editing an existing repayment updates the loan_repayments row AND
+// keeps its linked Transaction History entries in sync automatically —
+// the principal ledger row always mirrors the new amount, and the
+// interest ledger row is created/updated/removed to match whatever
+// interest value is entered here.
+function openTfEditRepaymentModal(repayment, loan) {
+  const linkedTx = (state.teamFundsData?.transactions || []).filter(t => t.repayment_id === repayment.id);
+  const interestTx = linkedTx.find(t => t.tx_kind === 'loan_interest');
+  const currentInterest = interestTx ? Number(interestTx.amount) : 0;
+
+  openModal(`Edit repayment — ${loan.employee_name}`, `
+    <form id="tf-edit-repay-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="tf-edit-repay-date">Payment date</label>
+        <input type="date" id="tf-edit-repay-date" value="${repayment.payment_date || ''}" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      ${tfTreasurerField('tf-edit-repay-treasurer', repayment.treasurer)}
+      <div class="field">
+        <label for="tf-edit-repay-amount">Principal repayment (₱)</label>
+        <input type="number" id="tf-edit-repay-amount" value="${repayment.amount}" min="0.01" step="0.01" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-edit-repay-interest">Interest <span class="faint">(optional, ₱)</span></label>
+        <input type="number" id="tf-edit-repay-interest" value="${currentInterest}" min="0" step="0.01"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="tf-edit-repay-note">Note <span class="faint">(optional)</span></label>
+        <input type="text" id="tf-edit-repay-note" value="${escapeHtml(repayment.note || '')}"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save changes</button>
+    </form>
+  `);
+
+  document.getElementById('tf-edit-repay-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const date = document.getElementById('tf-edit-repay-date').value;
+    const treasurer = document.getElementById('tf-edit-repay-treasurer').value;
+    const amount = parseFloat(document.getElementById('tf-edit-repay-amount').value);
+    const interest = parseFloat(document.getElementById('tf-edit-repay-interest').value) || 0;
+    const note = document.getElementById('tf-edit-repay-note').value.trim();
+    if (!date) { showToast('Please select a payment date.', true); return; }
+    if (!treasurer) { showToast('Please select a treasurer.', true); return; }
+    if (!amount || amount <= 0) { showToast('Please enter a valid principal amount.', true); return; }
+    if (interest < 0) { showToast('Interest cannot be negative.', true); return; }
+
+    // 1) Update the repayment record itself
+    const { error: repayErr } = await sb.from('loan_repayments')
+      .update({ payment_date: date, treasurer, amount, note: note || null })
+      .eq('id', repayment.id);
+    if (repayErr) { showToast('Could not save the repayment.', true); return; }
+
+    // 2) Keep the linked ledger entries in sync — this is the part that
+    //    makes "any changes automatically reflect in Transaction
+    //    History" actually true, instead of the two staying independent.
+    const principalTx = linkedTx.find(t => t.tx_kind === 'loan_repayment');
+    if (principalTx) {
+      await sb.from('team_fund_transactions').update({
+        transaction_date: date, treasurer, amount,
+        note: `Loan repayment from ${loan.employee_name}${note ? ' — ' + note : ''}`,
+      }).eq('id', principalTx.id);
+    } else {
+      // Shouldn't normally happen (every repayment posts one on
+      // creation), but if it's missing, create it now rather than
+      // silently leaving the ledger out of sync.
+      await sb.from('team_fund_transactions').insert({
+        type: 'credit', amount, transaction_date: date, treasurer,
+        note: `Loan repayment from ${loan.employee_name}${note ? ' — ' + note : ''}`,
+        recorded_by: state.profile.display_name,
+        loan_id: loan.id, repayment_id: repayment.id, tx_kind: 'loan_repayment',
+      });
+    }
+
+    if (interest > 0) {
+      if (interestTx) {
+        await sb.from('team_fund_transactions').update({
+          transaction_date: date, treasurer, amount: interest,
+          note: `Interest on loan — ${loan.employee_name}${note ? ' — ' + note : ''}`,
+        }).eq('id', interestTx.id);
+      } else {
+        await sb.from('team_fund_transactions').insert({
+          type: 'credit', amount: interest, transaction_date: date, treasurer,
+          note: `Interest on loan — ${loan.employee_name}${note ? ' — ' + note : ''}`,
+          recorded_by: state.profile.display_name,
+          loan_id: loan.id, repayment_id: repayment.id, tx_kind: 'loan_interest',
+        });
+      }
+    } else if (interestTx) {
+      // Interest was removed entirely (set to 0) — delete its ledger row
+      // rather than leaving a stale ₱0 entry sitting in the history.
+      await sb.from('team_fund_transactions').delete().eq('id', interestTx.id);
+    }
+
+    closeModal();
+    showToast('Repayment updated — Transaction History is in sync.');
+    loadTeamFundsData().then(renderTeamFundsView);
+    pushTeamFundsNotification(`edited a loan repayment for ${loan.employee_name} — now ${TF_FMT(amount)}${interest > 0 ? ` + ${TF_FMT(interest)} interest` : ''}.`);
+  });
 }
 
 function openTfEditTransactionModal(tx) {
@@ -8266,11 +8494,35 @@ function openTfEditTransactionModal(tx) {
 async function deleteTfTransaction(id) {
   if (!confirm('Permanently delete this transaction? This cannot be undone.')) return;
   const tx = (state.teamFundsData?.transactions || []).find(t => t.id === id);
-  const { error } = await sb.from('team_fund_transactions').delete().eq('id', id);
+
+  // A repayment can produce TWO ledger rows sharing one repayment_id —
+  // the principal (tx_kind='loan_repayment') and, if interest was
+  // entered, a separate interest row (tx_kind='loan_interest'). Deleting
+  // EITHER one should unwind the whole repayment together, so nothing
+  // orphaned is left behind (a stray interest row with no principal, or
+  // vice versa) and the loan reverts cleanly to its pre-repayment state.
+  let siblingTxIds = [];
+  if (tx && tx.repayment_id && (tx.tx_kind === 'loan_repayment' || tx.tx_kind === 'loan_interest')) {
+    const siblings = (state.teamFundsData?.transactions || []).filter(t => t.repayment_id === tx.repayment_id);
+    siblingTxIds = siblings.map(t => t.id);
+
+    const { error: repayErr } = await sb.from('loan_repayments').delete().eq('id', tx.repayment_id);
+    if (repayErr) { showToast('Could not revert the linked loan repayment.', true); return; }
+  } else {
+    siblingTxIds = [id];
+  }
+
+  const { error } = await sb.from('team_fund_transactions').delete().in('id', siblingTxIds);
   if (error) { showToast('Could not delete the transaction.', true); return; }
-  showToast('Transaction deleted.'); loadTeamFundsData().then(renderTeamFundsView);
+
+  showToast(tx && (tx.tx_kind === 'loan_repayment' || tx.tx_kind === 'loan_interest')
+    ? 'Repayment reverted — the loan is active again and nothing was deducted from the treasurer.'
+    : 'Transaction deleted.');
+  loadTeamFundsData().then(renderTeamFundsView);
   pushTeamFundsNotification(tx
-    ? `deleted a ${tx.type === 'credit' ? TF_FMT(tx.amount) + ' inflow' : TF_FMT(tx.amount) + ' expense'} transaction — "${tx.note}".`
+    ? (tx.tx_kind === 'loan_repayment' || tx.tx_kind === 'loan_interest')
+      ? `deleted a loan repayment for ${escapeHtml((tx.note || '').replace(/^Loan repayment from |^Interest on loan — /, ''))} — the loan is active again.`
+      : `deleted a ${tx.type === 'credit' ? TF_FMT(tx.amount) + ' inflow' : TF_FMT(tx.amount) + ' expense'} transaction — "${tx.note}".`
     : 'deleted a transaction.');
 }
 
@@ -8522,9 +8774,19 @@ function ipsQaFraction(m) {
   return v > 1 ? v / 100 : v;
 }
 
-function ipsErrorCorrectionPct(employeeId) {
-  const m = ipsMonthlyFor(employeeId);
-  const errors = m ? Number(m.errors || 0) : 0;
+// Sums each day's logged errors for the given dates — the daily entries
+// ARE the source of truth now; there's no separate monthly total typed
+// in anywhere. Days with no errors value logged contribute 0 (not
+// "unknown"), matching how LQ/MD zero-days already behave.
+function ipsErrorsSum(employeeId, dates) {
+  return dates.reduce((sum, d) => {
+    const e = ipsDailyFor(employeeId, d);
+    return sum + (e && e.errors != null ? Number(e.errors) : 0);
+  }, 0);
+}
+
+function ipsErrorCorrectionPct(employeeId, dates) {
+  const errors = ipsErrorsSum(employeeId, dates);
   const workingDays = ipsState.monthSettings ? Number(ipsState.monthSettings.working_days || 0) : 0;
   if (!workingDays) return null;
   // Full precision — rounding happens only at DISPLAY time. Rounding the
@@ -8536,7 +8798,7 @@ function ipsMonthlyScore(employeeId, dates) {
   const m = ipsMonthlyFor(employeeId);
   const qa = ipsQaFraction(m) ?? 0;
   const poRatioAvg = ipsPoRatioAverage(employeeId, dates);
-  const ec = ipsErrorCorrectionPct(employeeId);
+  const ec = ipsErrorCorrectionPct(employeeId, dates);
   const aoScore = qa * 0.5;
   const apScore = poRatioAvg * 0.3;
   const aqScore = (ec != null ? ec : 0) * 0.2;
@@ -8623,6 +8885,7 @@ function renderIpsTables() {
     const day = ipsState.day;
     const dayIdx = dates.indexOf(day);
     const isFirst = dayIdx === 0, isLast = dayIdx === dates.length - 1;
+    const workingDays = ipsState.monthSettings ? ipsState.monthSettings.working_days : '';
 
     // Team totals for the day
     let teamLq = 0, teamMd = 0, loggedCount = 0;
@@ -8642,11 +8905,16 @@ function renderIpsTables() {
       const target = ipsDayTarget(emp.id, day); // 800 minus any leave hours that day (VLH, hourly VL/SL/EL, etc.)
       const onFullLeave = target <= 0;
       const ratio = total > 0 && !poExcluded && !onFullLeave ? (total / target) * 100 : null;
-      const canEdit = canEditIpsRow(emp.id);
+      const canEditDaily = canEditIpsRow(emp.id);
       const isMe = emp.id === state.profile.employee_id;
       const barColor = ratio == null ? 'var(--line)' : ratio >= 100 ? 'var(--green)' : ratio >= 90 ? 'var(--amber)' : 'var(--coral)';
 
-      const numCell = (field, val) => canEdit
+      // Errors is now logged PER DAY, in this same table, exactly like
+      // Missing Data and Lead Qualification — the monthly EC Score sums
+      // whatever's been logged across the days of the month.
+      const errors = e && e.errors != null ? e.errors : '';
+
+      const numCell = (field, val) => canEditDaily
         ? `<td style="padding:4px; text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
               style="width:90px; padding:6px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px; background:${isMe ? '#fff' : 'var(--paper)'};">
@@ -8656,6 +8924,8 @@ function renderIpsTables() {
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap;">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>
+          <td style="padding:8px; text-align:center; color:var(--ink-faint);">${workingDays || '—'}</td>
+          ${numCell('errors', errors)}
           ${numCell('md_value', md)}
           ${numCell('lq_value', lq)}
           <td style="padding:8px; text-align:center; font-weight:700;">${total || '—'}</td>
@@ -8694,82 +8964,56 @@ function renderIpsTables() {
           <span>Team MD: <strong>${round2(teamMd)}</strong></span>
         </div>
       </div>
-      <table class="ips-table" id="ips-daily-table" style="border-collapse:collapse; width:100%;">
-        <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th>
-          <th style="padding:6px 10px;">Missing Data Task</th>
-          <th style="padding:6px 10px;">Lead Qualification</th>
-          <th style="padding:6px 10px;">Day Total</th>
-          <th style="padding:6px 10px; text-align:left;">vs target</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else, and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays; monthly averages and totals live in the other tabs and the downloadable report. Target shrinks automatically for approved leave hours on a date (e.g. a 4-hour VLH day targets 400, a 2-hour VL filing targets 600), pulled from the Leave Tracker — effective July 2026 onward.</p>
-    `;
-  }
-
-  function buildEcSection() {
-    const rows = roster.map(emp => {
-      // Everyone can edit their OWN errors count directly. Admins/IPS can
-      // edit anyone's too — no Edit-mode toggle needed here, but editing
-      // someone ELSE's row asks for a one-time confirmation each time.
-      const isMe = emp.id === state.profile.employee_id;
-      const editable = isMe || admin;
-      const m = ipsMonthlyFor(emp.id);
-      const errors = m ? (m.errors ?? '') : '';
-      const ec = ipsErrorCorrectionPct(emp.id);
-      const pct = ec != null ? ec * 100 : null;
-      const barColor = pct == null ? 'var(--line)' : pct >= 95 ? 'var(--green)' : pct >= 85 ? 'var(--amber)' : 'var(--coral)';
-      return `
-        <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
-          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
-          <td style="padding:4px; text-align:center;">
-            ${editable
-              ? `<input type="number" min="0" step="1" class="ips-error-input" data-emp-id="${emp.id}" value="${errors}" style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${isMe ? 'var(--line)' : 'var(--gold-line)'}; font-family:inherit; font-size:12px; background:${isMe ? '#fff' : 'var(--paper)'};">`
-              : `<span>${errors !== '' ? errors : '—'}</span>`}
-          </td>
-          <td style="padding:8px 10px; text-align:center;">${workingDays || '—'}</td>
-          <td style="padding:8px 10px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden; min-width:80px;">
-                <div style="width:${pct != null ? Math.max(0, Math.min(100, pct)) : 0}%; height:100%; background:${barColor}; border-radius:999px;"></div>
-              </div>
-              <span style="font-weight:700; min-width:52px; text-align:right;">${pct != null ? pct.toFixed(2) + '%' : '—'}</span>
-            </div>
-          </td>
-        </tr>
-      `;
-    }).join('');
-    return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 12px;">Type your errors count in your own highlighted row — it saves automatically.${admin ? ' As admin you can also edit anyone else\'s — you\'ll be asked to confirm each time.' : ''}</p>
       ${admin ? `
-        <div class="card" style="padding:14px 16px; margin-bottom:16px; display:flex; align-items:center; gap:12px; background:var(--amber-wash); border-color:var(--amber-wash);">
-          <span style="font-size:18px;">📅</span>
-          <label style="font-size:12.5px; font-weight:600;">Working days this month (applies to everyone):</label>
-          <input type="number" min="0" step="1" id="ips-working-days-input" value="${workingDays}" style="width:80px; padding:6px 8px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        <div class="card" style="padding:12px 16px; margin-bottom:14px; display:flex; align-items:center; gap:12px; background:var(--amber-wash); border-color:var(--amber-wash);">
+          <span style="font-size:16px;">📅</span>
+          <label style="font-size:12px; font-weight:600;">Working days this month (applies to everyone, feeds EC Score):</label>
+          <input type="number" min="0" step="1" id="ips-working-days-input" value="${workingDays}" style="width:70px; padding:5px 8px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
           <button class="btn btn-primary btn-sm" id="ips-save-working-days">Save</button>
         </div>
       ` : ''}
-      <table class="ips-table" style="border-collapse:collapse; width:100%;">
+      <table class="ips-table" id="ips-daily-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">Errors</th><th style="padding:6px 10px;">Working Days</th><th style="padding:6px 10px; text-align:left;">EC Score</th>
+          <th style="padding:6px 10px; text-align:left;">Agent</th>
+          <th style="padding:6px 10px;">Working Days</th>
+          <th style="padding:6px 10px;">Errors (this day)</th>
+          <th style="padding:6px 10px;">Missing Data Task</th>
+          <th style="padding:6px 10px;">Lead Qualification</th>
+          <th style="padding:6px 10px;">Daily Total</th>
+          <th style="padding:6px 10px; text-align:left;">VS Target</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else, and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays. Errors are logged per day, just like Missing Data and Lead Qualification — the system totals every day's errors across ${ipsMonthLabel(ipsState.month)} to compute EC Score, shown live in the PO & EC Score tab as the month fills in. Working Days is a single figure for the whole month (set by admin/IPS above). Target shrinks automatically for approved leave hours on a date, pulled from the Leave Tracker — effective July 2026 onward.</p>
     `;
   }
 
   function buildPoSection() {
+    const workingDays = ipsState.monthSettings ? ipsState.monthSettings.working_days : '';
     const rows = roster.map(emp => {
       const ratioAvg = ipsPoRatioAverage(emp.id, dates);
       const poTotal = ipsPoTotal(emp.id, dates);
       const pct = ratioAvg * 100;
       const barColor = pct >= 100 ? 'var(--green)' : pct >= 90 ? 'var(--amber)' : 'var(--coral)';
+
+      // EC Score lives here now, next to PO — both are computed from a
+      // WHOLE MONTH of data (PO from every logged day so far; EC from
+      // Errors ÷ Working Days), so they belong on the same "monthly
+      // metrics" screen rather than looking day-specific in Daily Entry.
+      // Errors itself stays editable on the Daily Entry tab (it's a
+      // single monthly total, so editing it there vs. here makes no
+      // difference to the data — it's just a matter of where agents are
+      // used to typing it day to day).
+      const errors = ipsErrorsSum(emp.id, dates);
+      const ec = ipsErrorCorrectionPct(emp.id, dates);
+      const ecPct = ec != null ? ec * 100 : null;
+      const ecBarColor = ecPct == null ? 'var(--line)' : ecPct >= 95 ? 'var(--green)' : ecPct >= 85 ? 'var(--amber)' : 'var(--coral)';
+
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
           <td style="padding:8px 10px; text-align:center; font-weight:700;">${poTotal}</td>
-          <td style="padding:8px 10px;">
+          <td style="padding:8px 10px; min-width:140px;">
             <div style="display:flex; align-items:center; gap:8px;">
               <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden; min-width:80px;">
                 <div style="width:${Math.max(0, Math.min(100, pct))}%; height:100%; background:${barColor}; border-radius:999px;"></div>
@@ -8777,14 +9021,27 @@ function renderIpsTables() {
               <span style="font-weight:700; min-width:52px; text-align:right;">${pct.toFixed(2)}%</span>
             </div>
           </td>
+          <td style="padding:8px 10px; text-align:center; color:var(--ink-faint);">${errors || '—'} / ${workingDays || '—'}</td>
+          <td style="padding:8px 10px; min-width:140px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden; min-width:80px;">
+                <div style="width:${ecPct != null ? Math.max(0, Math.min(100, ecPct)) : 0}%; height:100%; background:${ecBarColor}; border-radius:999px;"></div>
+              </div>
+              <span style="font-weight:700; min-width:52px; text-align:right;">${ecPct != null ? ecPct.toFixed(2) + '%' : '—'}</span>
+            </div>
+          </td>
         </tr>
       `;
     }).join('');
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Computed automatically per day as (Lead Qualification + Missing Data) ÷ target, with zero days excluded from the average. The target is normally 800 but shrinks for approved leave hours that day (from the Leave Tracker) — e.g. 400 for a 4-hour VLH day — and a full 8-hour leave day is excluded entirely. Effective July 2026 onward. PO Total reconstructs an 800-based equivalent for comparability.</p>
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">PO: computed automatically per day as (Lead Qualification + Missing Data) ÷ target, with zero days excluded from the average. The target is normally 800 but shrinks for approved leave hours that day (from the Leave Tracker) — e.g. 400 for a 4-hour VLH day — and a full 8-hour leave day is excluded entirely. Effective July 2026 onward. PO Total reconstructs an 800-based equivalent for comparability. EC Score: 1 − (Errors ÷ Working Days) for ${ipsMonthLabel(ipsState.month)} — both figures are edited on the Daily Entry tab and recalculate live here as the month fills in.</p>
       <table class="ips-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">PO Total (avg × 800)</th><th style="padding:6px 10px; text-align:left;">PO Ratio Average</th>
+          <th style="padding:6px 10px; text-align:left;">Agent</th>
+          <th style="padding:6px 10px;">PO Total (avg × 800)</th>
+          <th style="padding:6px 10px; text-align:left;">PO Ratio Average</th>
+          <th style="padding:6px 10px;">Errors / Working Days</th>
+          <th style="padding:6px 10px; text-align:left;">EC Score</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -8974,16 +9231,19 @@ function renderIpsTables() {
 
   const tabs = [
     { id: 'daily', label: 'Daily Entry',      icon: '✏️' },
-    { id: 'ec',    label: 'Error Correction', icon: '🛠️' },
-    { id: 'po',    label: 'PO Average',       icon: '📈' },
+    { id: 'po',    label: 'PO & EC Score',    icon: '📈' },
     { id: 'qa',    label: 'QA Accuracy',      icon: '🎯' },
     { id: 'score', label: 'Monthly Score',    icon: '🏆' },
   ];
+  // Error Correction now lives INSIDE the Daily Entry tab (one place to
+  // edit). If anything still points at the old 'ec' tab id (e.g. a
+  // stale bookmark/state from before this change), just land on Daily
+  // Entry — that's where EC is now.
+  if (ipsState.tab === 'ec') ipsState.tab = 'daily';
   const active = ipsState.tab;
 
   const body =
     active === 'daily' ? buildDailySection() :
-    active === 'ec' ? buildEcSection() :
     active === 'po' ? buildPoSection() :
     active === 'qa' ? buildQaSection() :
     buildScoreSection();
@@ -9054,8 +9314,8 @@ async function loadIpsPrevRanks() {
 
   try {
     const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
-      sb.from('ips_daily_entries').select('employee_id, entry_date, lq_value, md_value, po_excluded').gte('entry_date', prevDates[0]).lte('entry_date', prevEnd),
-      sb.from('ips_monthly_data').select('employee_id, errors, qa_percent').eq('month', prevMonthIso),
+      sb.from('ips_daily_entries').select('employee_id, entry_date, lq_value, md_value, po_excluded, errors').gte('entry_date', prevDates[0]).lte('entry_date', prevEnd),
+      sb.from('ips_monthly_data').select('employee_id, qa_percent').eq('month', prevMonthIso),
       sb.from('ips_month_settings').select('working_days').eq('month', prevMonthIso).maybeSingle(),
     ]);
     if (dailyRes.error || monthlyRes.error) return;
@@ -9076,7 +9336,8 @@ async function loadIpsPrevRanks() {
       const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
       const mData = monthly.find(x => x.employee_id === emp.id) || null;
       const qa = ipsQaFraction(mData) ?? 0;
-      const ec = wd ? (1 - (Number(mData?.errors || 0) / wd)) : 0;
+      const errorsSum = mine.reduce((s, e) => s + (e.errors != null ? Number(e.errors) : 0), 0);
+      const ec = wd ? (1 - (errorsSum / wd)) : 0;
       return { id: emp.id, total: qa * 0.5 + po * 0.3 + ec * 0.2, hasData: !!(mine.length || mData) };
     });
 
@@ -9141,7 +9402,8 @@ async function openIpsYearModal(employeeId) {
     const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
     const qa = ipsQaFraction(mData) ?? 0;
     const wd = setting ? Number(setting.working_days || 0) : 0;
-    const ec = wd ? (1 - (Number(mData?.errors || 0) / wd)) : null;
+    const errorsSum = dEntries.reduce((s, e) => s + (e.errors != null ? Number(e.errors) : 0), 0);
+    const ec = wd ? (1 - (errorsSum / wd)) : null;
     const total = qa * 0.5 + po * 0.3 + (ec != null ? ec : 0) * 0.2;
     monthRows.push({ m, qa, po, ec, total });
   }
@@ -9235,19 +9497,20 @@ function downloadIpsReport() {
   });
 
   sections.push({
-    title: 'Error Correction',
-    header: ['Agent', 'Errors', 'Working Days', 'EC %'],
+    title: 'PO Average & EC Score',
+    header: ['Agent', 'PO Total (avg × 800)', 'PO Ratio Average', 'Errors', 'Working Days', 'EC Score'],
     rows: roster.map(emp => {
-      const m = ipsMonthlyFor(emp.id);
-      const ec = ipsErrorCorrectionPct(emp.id);
-      return [emp.display_name, m ? (m.errors ?? '') : '', workingDays || '', ec != null ? (ec * 100).toFixed(2) + '%' : ''];
+      const errors = ipsErrorsSum(emp.id, dates);
+      const ec = ipsErrorCorrectionPct(emp.id, dates);
+      return [
+        emp.display_name,
+        ipsPoTotal(emp.id, dates),
+        (ipsPoRatioAverage(emp.id, dates) * 100).toFixed(2) + '%',
+        errors || '',
+        workingDays || '',
+        ec != null ? (ec * 100).toFixed(2) + '%' : '',
+      ];
     }),
-  });
-
-  sections.push({
-    title: 'PO Average',
-    header: ['Agent', 'PO Total (avg × 800)', 'PO Ratio Average'],
-    rows: roster.map(emp => [emp.display_name, ipsPoTotal(emp.id, dates), (ipsPoRatioAverage(emp.id, dates) * 100).toFixed(2) + '%']),
   });
 
   sections.push({
@@ -9401,9 +9664,6 @@ function attachIpsHandlers() {
       if (next) setTimeout(() => { const fresh = document.querySelectorAll(`.ips-daily-input[data-field="${input.dataset.field}"]`)[idx + 1]; if (fresh) fresh.focus(); }, 350);
     });
   });
-  document.querySelectorAll('.ips-error-input').forEach(input => {
-    input.addEventListener('change', () => saveIpsMonthlyField(input.dataset.empId, 'errors', input.value));
-  });
   document.querySelectorAll('.ips-qa-input').forEach(input => {
     input.addEventListener('change', () => saveIpsMonthlyField(input.dataset.empId, input.dataset.field, input.value));
   });
@@ -9453,21 +9713,11 @@ async function saveIpsDailyEntry(input) {
 }
 
 async function saveIpsMonthlyField(employeeId, field, rawValue) {
-  // Everyone may edit their OWN errors count. Anything else (someone
-  // else's row, or the QA fields) stays admin/IPS-only behind Edit mode.
-  const isOwn = employeeId === state.profile.employee_id;
-  if (field === 'errors') {
-    // Error Correction: everyone edits their own row freely; admins can
-    // edit anyone's, confirming once per edit (no Edit-mode toggle here).
-    if (!isOwn) {
-      if (!canManageIps()) { showToast('You can only edit your own errors.', true); renderIpsTables(); return; }
-      if (!confirm('Are you sure you want to edit?')) { renderIpsTables(); return; }
-    }
-  } else {
-    // QA fields: admin/IPS only, behind the Edit-mode toggle.
-    if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
-    if (!ipsState.monthlyEditMode) { showToast('Click "Edit" first to unlock these fields.', true); renderIpsTables(); return; }
-  }
+  // Errors moved to daily entries (see saveIpsDailyEntry) — this
+  // function now only handles the QA fields, which stay admin/IPS-only
+  // behind the Edit-mode toggle.
+  if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
+  if (!ipsState.monthlyEditMode) { showToast('Click "Edit" first to unlock these fields.', true); renderIpsTables(); return; }
 
   let value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
