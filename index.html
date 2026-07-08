@@ -1167,13 +1167,25 @@ async function ensureYearEndHolidayBlocks() {
   const guardEnd = `${lastYearToGenerate + 1}-01-01`;
   const { data: freshRows, error: guardErr } = await sb
     .from('leave_entries')
-    .select('employee_id, leave_date')
+    .select('employee_id, leave_date, request_group_id, requested_by, note')
     .gte('leave_date', guardStart)
     .lte('leave_date', guardEnd);
   if (guardErr) { console.error('Holiday guard query failed — skipping generation this load:', guardErr); return; }
   const existingSystemHolidayDates = new Set(
     (freshRows || []).map(e => `${e.employee_id}|${e.leave_date}`)
   );
+  // If an employee already has part of a year's block (e.g. added
+  // mid-generation, or another client inserted first), any new rows for
+  // that same block must JOIN the existing group id — never start a
+  // second group, which is what used to split one holiday into two cards.
+  const existingHolidayGroupByEmpYear = new Map();
+  (freshRows || []).forEach(e => {
+    if (e.requested_by !== SYSTEM_HOLIDAY_MARKER || !e.request_group_id) return;
+    const yearMatch = /\((\d{4})\)/.exec(e.note || '');
+    if (!yearMatch) return;
+    const key = `${e.employee_id}|${yearMatch[1]}`;
+    if (!existingHolidayGroupByEmpYear.has(key)) existingHolidayGroupByEmpYear.set(key, e.request_group_id);
+  });
 
   const rowsToInsert = [];
 
@@ -1188,7 +1200,8 @@ async function ensureYearEndHolidayBlocks() {
       // together one person's own multi-day stretch, and grouping
       // unrelated people's leave together would make group-based
       // actions like cancellation incorrectly affect everyone at once.
-      const groupId = workdays.length > 1 ? (crypto.randomUUID ? crypto.randomUUID() : null) : null;
+      const existingGroupId = existingHolidayGroupByEmpYear.get(`${emp.id}|${startYear}`) || null;
+      const groupId = existingGroupId || (workdays.length > 1 ? (crypto.randomUUID ? crypto.randomUUID() : null) : null);
       workdays.forEach(d => {
         const key = `${emp.id}|${d}`;
         if (existingSystemHolidayDates.has(key)) return; // already generated for this employee/date
