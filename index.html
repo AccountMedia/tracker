@@ -8476,8 +8476,8 @@ function renderIpsTables() {
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap;">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>
-          ${numCell('lq_value', lq)}
           ${numCell('md_value', md)}
+          ${numCell('lq_value', lq)}
           <td style="padding:8px; text-align:center; font-weight:700;">${total || '—'}</td>
           <td style="padding:8px 10px; min-width:140px;">
             <div style="display:flex; align-items:center; gap:8px;">
@@ -8510,8 +8510,8 @@ function renderIpsTables() {
       <table style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th>
-          <th style="padding:6px 10px;">Lead Qualification</th>
           <th style="padding:6px 10px;">Missing Data Task</th>
+          <th style="padding:6px 10px;">Lead Qualification</th>
           <th style="padding:6px 10px;">Day Total</th>
           <th style="padding:6px 10px; text-align:left;">vs 800 target</th>
         </tr></thead>
