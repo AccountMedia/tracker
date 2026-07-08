@@ -42,6 +42,21 @@
   *{ box-sizing: border-box; }
   html, body{ margin:0; padding:0; }
 
+  /* IPS: keep column headers (and the Daily Entry day-strip) visible
+     while scrolling long tables. The IPS card must stay free of overflow
+     wrappers or sticky breaks — same lesson as the Employees tab. */
+  .ips-sticky-bar{
+    position: sticky; top: 0; z-index: 7;
+    background: var(--paper-raised);
+    margin: 0 -22px; padding: 12px 22px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .ips-table thead th{
+    position: sticky; top: var(--ips-thead-top, 0px); z-index: 6;
+    background: var(--paper-raised);
+    box-shadow: 0 2px 0 var(--line);
+  }
+
   /* No spinner arrows on ANY number field, app-wide — values are always
      typed manually. */
   input[type=number]::-webkit-outer-spin-button,
@@ -8492,7 +8507,7 @@ function renderIpsTables() {
     }).join('');
 
     return `
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+      <div class="ips-sticky-bar" id="ips-daily-nav-bar" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <button class="btn btn-ghost btn-sm" id="ips-day-prev" ${isFirst ? 'disabled' : ''}>←</button>
           <div style="text-align:center; min-width:170px;">
@@ -8507,7 +8522,7 @@ function renderIpsTables() {
           <span>Team MD: <strong>${round2(teamMd)}</strong></span>
         </div>
       </div>
-      <table style="border-collapse:collapse; width:100%;">
+      <table class="ips-table" id="ips-daily-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th>
           <th style="padding:6px 10px;">Missing Data Task</th>
@@ -8559,7 +8574,7 @@ function renderIpsTables() {
           <button class="btn btn-primary btn-sm" id="ips-save-working-days">Save</button>
         </div>
       ` : ''}
-      <table style="border-collapse:collapse; width:100%;">
+      <table class="ips-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">Errors</th><th style="padding:6px 10px;">Working Days</th><th style="padding:6px 10px; text-align:left;">EC Score</th>
         </tr></thead>
@@ -8591,7 +8606,7 @@ function renderIpsTables() {
     }).join('');
     return `
       <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Computed automatically per day as (Lead Qualification + Missing Data) ÷ 800, with zero days excluded from the average. PO Total = average × 800.</p>
-      <table style="border-collapse:collapse; width:100%;">
+      <table class="ips-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">PO Total (avg × 800)</th><th style="padding:6px 10px; text-align:left;">PO Ratio Average</th>
         </tr></thead>
@@ -8638,7 +8653,7 @@ function renderIpsTables() {
     return `
       ${admin ? ipsEditToggleHtml() : ''}
       <p class="faint" style="font-size:11.5px; margin:0 0 14px;">${admin ? (ipsState.monthlyEditMode ? 'Edit mode is ON — every field below is unlocked. Click "Done" when finished.' : 'Click "Edit" to unlock all fields at once.') : 'View only — admins and IPS manage this section.'}</p>
-      <table style="border-collapse:collapse; width:100%; min-width:640px;">
+      <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:640px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA % (e.g. 97)</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Major notes</th><th style="padding:6px 10px;">Minor notes</th>
         </tr></thead>
@@ -8826,6 +8841,15 @@ function renderIpsTables() {
   });
   document.getElementById('ips-day-prev')?.addEventListener('click', () => shiftIpsDay(-1));
   document.getElementById('ips-day-next')?.addEventListener('click', () => shiftIpsDay(1));
+
+  // Daily Entry: the day-strip is sticky at the very top, so its table's
+  // header must stick just BELOW it — measure the strip's real height
+  // (it can wrap on narrow screens) and pass it to the CSS.
+  const navBar = document.getElementById('ips-daily-nav-bar');
+  const dailyTable = document.getElementById('ips-daily-table');
+  if (navBar && dailyTable) {
+    dailyTable.style.setProperty('--ips-thead-top', navBar.offsetHeight + 'px');
+  }
 
   document.querySelectorAll('.ips-score-row').forEach(row => {
     row.addEventListener('click', () => openIpsYearModal(row.dataset.empId));
