@@ -1083,6 +1083,26 @@ function renderCurrentView() {
   else if (v === 'ips') renderIps();
 }
 
+// Bump this on every deploy. Any tab still running an OLDER version will
+// auto-reload itself within ~30s of a newer build going live — no one
+// has to remember to hard-refresh. Uses a tiny Supabase table
+// (app_version: key text primary key, value text) so it works across
+// every browser without needing a server push.
+const APP_VERSION = '2026-07-08-1';
+
+async function checkAppVersionAndReloadIfStale() {
+  try {
+    const { data } = await sb.from('app_version').select('value').eq('key', 'current').maybeSingle();
+    if (data && data.value && data.value !== APP_VERSION) {
+      showToast('Updating to the latest version…');
+      setTimeout(() => location.reload(), 1200);
+    }
+  } catch (err) {
+    // Table missing or offline — fail silently, this is a nice-to-have,
+    // never something that should block the app from working.
+  }
+}
+
 async function loadAllData() {
   // PHASE 1 — the two datasets nearly every view depends on. Await only
   // these, then paint the screen immediately: refresh feels ~4x faster
@@ -1092,6 +1112,8 @@ async function loadAllData() {
   renderCurrentView();
   updateLeaveNavBadge();
   startNavBadgePolling();
+  checkAppVersionAndReloadIfStale();
+  setInterval(() => { if (!document.hidden) checkAppVersionAndReloadIfStale(); }, 60000);
 
   // PHASE 2 — everything else in the background; repaint when done so
   // views that need these datasets (dashboard counts, payroll, OT,
