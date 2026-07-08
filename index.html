@@ -765,6 +765,41 @@ function canEditIpsRow(employeeId) {
   if (state.profile.employee_id === employeeId) return true;
   return canManageIps();
 }
+
+// ── IPS Daily Entry: day-boundary edit rules ────────────────────────
+// TODAY   — the owner (and admin/IPS) can edit freely, no approval.
+// PAST    — the owner can only PROPOSE a change (a correction request);
+//           it takes effect only once an admin/IPS approves it.
+//           Admin/IPS themselves can still edit past days directly —
+//           they're the approvers, so there's no one above them to ask.
+// FUTURE  — locked for everyone. Nobody types ahead of today.
+function ipsDayKind(dateIso) {
+  const today = isoDate(new Date());
+  if (dateIso === today) return 'today';
+  if (dateIso < today) return 'past';
+  return 'future';
+}
+
+// Whether a cell should render as a free, directly-editable input.
+// Admin/IPS get this for today AND past (they approve corrections, so
+// there's no need to route their own edits through the queue). A
+// regular employee only gets it for TODAY on their own row.
+function ipsCellDirectlyEditable(employeeId, dateIso) {
+  if (!canEditIpsRow(employeeId)) return false;
+  const kind = ipsDayKind(dateIso);
+  if (kind === 'future') return false; // locked for everyone, no exceptions
+  if (kind === 'today') return true;
+  // kind === 'past'
+  return canManageIps(); // admin/IPS edit past days directly; employees must request
+}
+
+// Whether a regular employee can propose a correction for this cell
+// (past day, their own row, not admin/IPS — admins just edit directly).
+function ipsCellNeedsCorrectionRequest(employeeId, dateIso) {
+  if (!state.profile || state.profile.employee_id !== employeeId) return false;
+  if (canManageIps()) return false; // admin/IPS edit directly, no request needed
+  return ipsDayKind(dateIso) === 'past';
+}
 function canEditTeamFunds() {
   if (!state.profile) return false;
   if (EMPLOYEE_MANAGEMENT_ALLOWED_NAMES.includes(state.profile.display_name)) return true;
@@ -8654,6 +8689,8 @@ const ipsState = {
   monthSettings: null,
   monthlyEditMode: false,   // Edit/Done toggle for Error Correction + QA Accuracy fields
   loaded: false,
+  myPendingRequests: [],     // this employee's own pending correction requests (any status shown as pending badge)
+  pendingApprovals: [],      // ALL pending requests, for admin/IPS's approval inbox
 };
 
 function ipsDatesForMonth(monthIso) {
@@ -8668,10 +8705,11 @@ async function loadIpsData() {
   const [y, m] = monthStart.split('-').map(Number);
   const monthEnd = isoDate(new Date(y, m, 0));
 
-  const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+  const [dailyRes, monthlyRes, settingsRes, correctionsRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', monthStart).lte('entry_date', monthEnd),
     sb.from('ips_monthly_data').select('*').eq('month', monthStart),
     sb.from('ips_month_settings').select('*').eq('month', monthStart).maybeSingle(),
+    sb.from('ips_correction_requests').select('*').order('requested_at', { ascending: false }),
   ]);
 
   if (dailyRes.error || monthlyRes.error) {
@@ -8683,6 +8721,17 @@ async function loadIpsData() {
   ipsState.monthlyData = monthlyRes.data || [];
   ipsState.monthSettings = settingsRes.data || null;
   ipsState.loaded = true;
+
+  // Correction requests aren't fatal if the table/RLS isn't set up yet
+  // (older deployments before this feature) — degrade quietly rather
+  // than blocking the whole IPS tab from loading.
+  if (!correctionsRes.error) {
+    const all = correctionsRes.data || [];
+    ipsState.pendingApprovals = all.filter(r => r.status === 'pending');
+    ipsState.myPendingRequests = state.profile
+      ? all.filter(r => r.employee_id === state.profile.employee_id)
+      : [];
+  }
 }
 
 function ipsDailyFor(employeeId, dateIso) {
@@ -8817,12 +8866,14 @@ function startIpsRealtime() {
   subscribeRealtime('ips_daily_entries', 'ips_daily_entries', rerender);
   subscribeRealtime('ips_monthly_data', 'ips_monthly_data', rerender);
   subscribeRealtime('ips_month_settings', 'ips_month_settings', rerender);
+  subscribeRealtime('ips_correction_requests', 'ips_correction_requests', rerender);
 }
 
 function stopIpsRealtime() {
   unsubscribeRealtime('ips_daily_entries');
   unsubscribeRealtime('ips_monthly_data');
   unsubscribeRealtime('ips_month_settings');
+  unsubscribeRealtime('ips_correction_requests');
 }
 
 function renderIps() {
@@ -8911,6 +8962,8 @@ function renderIpsTables() {
       teamMd += e && e.md_value != null ? Number(e.md_value) : 0;
     });
 
+    const dayKind = ipsDayKind(day); // 'today' | 'past' | 'future'
+
     const rows = roster.map(emp => {
       const e = ipsDailyFor(emp.id, day);
       const lq = e && e.lq_value != null ? e.lq_value : '';
@@ -8920,8 +8973,9 @@ function renderIpsTables() {
       const target = ipsDayTarget(emp.id, day); // 800 minus any leave hours that day (VLH, hourly VL/SL/EL, etc.)
       const onFullLeave = target <= 0;
       const ratio = total > 0 && !poExcluded && !onFullLeave ? (total / target) * 100 : null;
-      const canEditDaily = canEditIpsRow(emp.id);
       const isMe = emp.id === state.profile.employee_id;
+      const directEdit = ipsCellDirectlyEditable(emp.id, day);
+      const needsRequest = ipsCellNeedsCorrectionRequest(emp.id, day);
       const barColor = ratio == null ? 'var(--line)' : ratio >= 100 ? 'var(--green)' : ratio >= 90 ? 'var(--amber)' : 'var(--coral)';
 
       // Errors is now logged PER DAY, in this same table, exactly like
@@ -8929,12 +8983,34 @@ function renderIpsTables() {
       // whatever's been logged across the days of the month.
       const errors = e && e.errors != null ? e.errors : '';
 
-      const numCell = (field, val) => canEditDaily
-        ? `<td style="padding:4px; text-align:center;">
+      const pendingForField = (field) => (ipsState.myPendingRequests || []).find(
+        r => r.employee_id === emp.id && r.entry_date === day && r.field === field && r.status === 'pending'
+      );
+
+      const numCell = (field, val) => {
+        if (directEdit) {
+          return `<td style="padding:4px; text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
               style="width:90px; padding:6px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px; background:${isMe ? '#fff' : 'var(--paper)'};">
-          </td>`
-        : `<td style="padding:8px; text-align:center; color:var(--ink-soft);">${val !== '' ? val : '—'}</td>`;
+          </td>`;
+        }
+        if (needsRequest) {
+          const pending = pendingForField(field);
+          if (pending) {
+            return `<td style="padding:8px; text-align:center;">
+              <span title="Correction pending approval: ${pending.old_value ?? '—'} → ${pending.new_value ?? '—'}" style="font-size:10px; font-weight:700; padding:2px 8px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">⏳ pending</span>
+            </td>`;
+          }
+          return `<td style="padding:4px; text-align:center;">
+            <button class="btn btn-ghost btn-sm ips-request-correction-btn" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" data-current="${val}"
+              style="padding:3px 8px; font-size:11px; min-width:52px;" title="Propose a change — needs admin/IPS approval">
+              ${val !== '' ? val : '—'} <span style="opacity:0.6;">✎</span>
+            </button>
+          </td>`;
+        }
+        // Locked (future day, or someone else's row you can't touch)
+        return `<td style="padding:8px; text-align:center; color:var(--ink-soft);">${val !== '' ? val : '—'}</td>`;
+      };
 
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
@@ -8963,13 +9039,46 @@ function renderIpsTables() {
       `;
     }).join('');
 
+    const pendingApprovals = ipsState.pendingApprovals || [];
+    const approvalInboxHtml = (canManageIps() && pendingApprovals.length) ? `
+      <div class="card" style="padding:14px 16px; margin-bottom:16px; background:var(--amber-wash); border-color:var(--amber-wash);">
+        <div style="font-weight:700; font-size:12.5px; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+          <span>⏳</span> ${pendingApprovals.length} correction request${pendingApprovals.length === 1 ? '' : 's'} awaiting approval
+        </div>
+        <div style="display:flex; flex-direction:column; gap:8px;">
+          ${pendingApprovals.map(r => {
+            const emp = roster.find(x => x.id === r.employee_id);
+            const fieldLabel = r.field === 'errors' ? 'Errors' : r.field === 'md_value' ? 'Missing Data Task' : 'Lead Qualification';
+            return `
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:#fff; border-radius:8px; padding:8px 12px; font-size:12.5px;">
+                <div>
+                  <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong> — ${fieldLabel} on ${formatPrettyDate(r.entry_date)}:
+                  <span style="color:var(--ink-soft);">${r.old_value ?? '—'}</span> → <strong style="color:var(--teal);">${r.new_value ?? '—'}</strong>
+                </div>
+                <div style="display:flex; gap:6px; flex-shrink:0;">
+                  <button class="btn btn-sm ips-approve-correction-btn" data-id="${r.id}" style="background:var(--green); color:#F7F3E8; padding:4px 12px; font-size:11px;">Approve</button>
+                  <button class="btn btn-ghost btn-sm ips-reject-correction-btn" data-id="${r.id}" style="padding:4px 12px; font-size:11px; color:var(--coral);">Reject</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    ` : '';
+
     return `
+      ${approvalInboxHtml}
       <div class="ips-sticky-bar" id="ips-daily-nav-bar" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <button class="btn btn-ghost btn-sm" id="ips-day-prev" ${isFirst ? 'disabled' : ''}>←</button>
           <div style="text-align:center; min-width:170px;">
             <div style="font-family:var(--font-display); font-size:17px; font-weight:600; color:var(--teal);">${formatPrettyDate(day)}</div>
             <div class="faint" style="font-size:10.5px;">Workday ${dayIdx + 1} of ${dates.length}</div>
+            ${dayKind === 'future'
+              ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--ink-faint);">🔒 Future — locked</div>`
+              : dayKind === 'past'
+                ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);">✎ Past — requests need approval</div>`
+                : `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Today — freely editable</div>`}
           </div>
           <button class="btn btn-ghost btn-sm" id="ips-day-next" ${isLast ? 'disabled' : ''}>→</button>
         </div>
@@ -8999,7 +9108,7 @@ function renderIpsTables() {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else, and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays. Errors are logged per day, just like Missing Data and Lead Qualification — the system totals every day's errors across ${ipsMonthLabel(ipsState.month)} to compute EC Score, shown live in the PO & EC Score tab as the month fills in. Working Days is a single figure for the whole month (set by admin/IPS above). Target shrinks automatically for approved leave hours on a date, pulled from the Leave Tracker — effective July 2026 onward.</p>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 <strong>Today</strong> is freely editable on your own row. <strong>Past days</strong> show a ✎ button — click a value to propose a correction, which needs admin/IPS approval before it applies. <strong>Future days</strong> are locked for everyone. ${admin ? 'As admin/IPS you can edit anyone\'s past or present entries directly (a confirmation appears when editing someone else), and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays. Errors are logged per day, just like Missing Data and Lead Qualification — the system totals every day's errors across ${ipsMonthLabel(ipsState.month)} to compute EC Score, shown live in the PO & EC Score tab as the month fills in. Working Days is a single figure for the whole month (set by admin/IPS above). Target shrinks automatically for approved leave hours on a date, pulled from the Leave Tracker — effective July 2026 onward.</p>
     `;
   }
 
@@ -9665,6 +9774,15 @@ function attachIpsHandlers() {
     ipsState.monthlyEditMode = !ipsState.monthlyEditMode;
     renderIpsTables();
   });
+  document.querySelectorAll('.ips-request-correction-btn').forEach(btn => {
+    btn.addEventListener('click', () => openIpsCorrectionRequestModal(btn.dataset.empId, btn.dataset.date, btn.dataset.field, btn.dataset.current));
+  });
+  document.querySelectorAll('.ips-approve-correction-btn').forEach(btn => {
+    btn.addEventListener('click', () => approveIpsCorrection(btn.dataset.id));
+  });
+  document.querySelectorAll('.ips-reject-correction-btn').forEach(btn => {
+    btn.addEventListener('click', () => rejectIpsCorrection(btn.dataset.id));
+  });
   document.querySelectorAll('.ips-daily-input').forEach(input => {
     input.addEventListener('change', () => saveIpsDailyEntry(input));
     // Enter = save and hop to the SAME column in the next row — rapid
@@ -9723,6 +9841,90 @@ async function saveIpsDailyEntry(input) {
 
   const { error } = await sb.from('ips_daily_entries').upsert(payload, { onConflict: 'employee_id,entry_date' });
   if (error) { console.error(error); showToast(ipsSaveErrorMsg(error), true); return; }
+  await loadIpsData();
+  renderIpsTables();
+}
+
+// ── Past-day correction requests (employee proposes, admin/IPS approves) ──
+
+function openIpsCorrectionRequestModal(employeeId, dateIso, field, currentValue) {
+  const fieldLabel = field === 'errors' ? 'Errors' : field === 'md_value' ? 'Missing Data Task' : 'Lead Qualification';
+  openModal(`Request a correction — ${fieldLabel}`, `
+    <form id="ips-correction-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">
+        ${formatPrettyDate(dateIso)} is a past day, so this change needs admin/IPS approval before it takes effect.
+        Your current value stays in place until then.
+      </p>
+      <div class="field">
+        <label>Current value</label>
+        <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line-soft); background:var(--paper); color:var(--ink-soft);">${currentValue !== '' ? currentValue : '—'}</div>
+      </div>
+      <div class="field">
+        <label for="ips-correction-new-value">Proposed value</label>
+        <input type="number" id="ips-correction-new-value" min="0" step="1" required autofocus
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Submit for approval</button>
+    </form>
+  `);
+  document.getElementById('ips-correction-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newValRaw = document.getElementById('ips-correction-new-value').value;
+    const newVal = newValRaw === '' ? null : parseFloat(newValRaw);
+    if (newVal == null || isNaN(newVal) || newVal < 0) { showToast('Enter a valid, non-negative number.', true); return; }
+    const oldVal = currentValue !== '' ? Number(currentValue) : null;
+    if (newVal === oldVal) { showToast('That already matches the current value.', true); return; }
+
+    const { error } = await sb.from('ips_correction_requests').insert({
+      employee_id: employeeId, entry_date: dateIso, field,
+      old_value: oldVal, new_value: newVal,
+      status: 'pending', requested_by: state.profile.display_name,
+    });
+    if (error) {
+      console.error(error);
+      showToast(/relation .* does not exist/i.test(error.message || '') ? 'Correction requests need setup — run ips_correction_requests_schema.sql in Supabase.' : 'Could not submit the request.', true);
+      return;
+    }
+    closeModal();
+    showToast('Correction submitted — waiting on admin/IPS approval.');
+    await loadIpsData();
+    renderIpsTables();
+  });
+}
+
+// Approving applies the proposed value exactly like a direct edit would
+// — same table, same upsert — then marks the request resolved.
+async function approveIpsCorrection(requestId) {
+  if (!canManageIps()) { showToast('Only admins and IPS can approve corrections.', true); return; }
+  const req = ipsState.pendingApprovals.find(r => r.id === requestId);
+  if (!req) return;
+
+  const payload = { employee_id: req.employee_id, entry_date: req.entry_date, updated_by: `${state.profile.display_name} (approved correction)`, updated_at: new Date().toISOString() };
+  payload[req.field] = req.new_value;
+  const { error: applyErr } = await sb.from('ips_daily_entries').upsert(payload, { onConflict: 'employee_id,entry_date' });
+  if (applyErr) { showToast('Could not apply the correction.', true); return; }
+
+  const { error: statusErr } = await sb.from('ips_correction_requests')
+    .update({ status: 'approved', reviewed_by: state.profile.display_name, reviewed_at: new Date().toISOString() })
+    .eq('id', requestId);
+  if (statusErr) console.error('Could not mark request approved (value was still applied):', statusErr);
+
+  showToast('Correction approved and applied.');
+  await loadIpsData();
+  renderIpsTables();
+}
+
+async function rejectIpsCorrection(requestId) {
+  if (!canManageIps()) { showToast('Only admins and IPS can review corrections.', true); return; }
+  const reason = prompt('Optional: reason for rejecting this correction (visible to the employee later if you add a viewer for it).');
+  if (reason === null) return; // cancelled
+
+  const { error } = await sb.from('ips_correction_requests')
+    .update({ status: 'rejected', reviewed_by: state.profile.display_name, reviewed_at: new Date().toISOString(), reject_reason: reason || null })
+    .eq('id', requestId);
+  if (error) { showToast('Could not reject the request.', true); return; }
+
+  showToast('Correction rejected — the original value stays.');
   await loadIpsData();
   renderIpsTables();
 }
