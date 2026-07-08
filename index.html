@@ -8352,22 +8352,36 @@ function ipsPoRatioAverage(employeeId, dates) {
 function ipsPoTotal(employeeId, dates) {
   return round2(ipsPoRatioAverage(employeeId, dates) * 800);
 }
+// QA is stored as a fraction (0.97 = 97%), matching the spreadsheet's
+// formulas. Tolerates legacy values entered as whole percents (97) by
+// normalizing anything > 1 down to a fraction.
+function ipsQaFraction(m) {
+  if (!m || m.qa_percent == null || m.qa_percent === '') return null;
+  const v = Number(m.qa_percent);
+  return v > 1 ? v / 100 : v;
+}
+
 function ipsErrorCorrectionPct(employeeId) {
   const m = ipsMonthlyFor(employeeId);
   const errors = m ? Number(m.errors || 0) : 0;
   const workingDays = ipsState.monthSettings ? Number(ipsState.monthSettings.working_days || 0) : 0;
   if (!workingDays) return null;
-  return round2((1 - (errors / workingDays)) * 1);
+  // Full precision — rounding happens only at DISPLAY time. Rounding the
+  // fraction here (round2 → 0.95) silently snapped EC to whole-percent
+  // steps and threw every score off.
+  return (1 - (errors / workingDays)) * 1;
 }
 function ipsMonthlyScore(employeeId, dates) {
   const m = ipsMonthlyFor(employeeId);
-  const qa = m && m.qa_percent != null ? Number(m.qa_percent) : 0;
+  const qa = ipsQaFraction(m) ?? 0;
   const poRatioAvg = ipsPoRatioAverage(employeeId, dates);
   const ec = ipsErrorCorrectionPct(employeeId);
   const aoScore = qa * 0.5;
   const apScore = poRatioAvg * 0.3;
   const aqScore = (ec != null ? ec : 0) * 0.2;
-  return { qa, poRatioAvg, ec, aoScore, apScore, aqScore, total: round2(aoScore + apScore + aqScore) };
+  // Keep the total at full precision; .toFixed(2) at display time gives
+  // the two-decimal PERCENT (e.g. 96.15%), not a whole-percent snap.
+  return { qa, poRatioAvg, ec, aoScore, apScore, aqScore, total: aoScore + apScore + aqScore };
 }
 
 function ipsMonthLabel(monthIso) {
@@ -8486,7 +8500,7 @@ function renderIpsTables() {
               <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden;">
                 <div style="width:${ratio != null ? Math.max(0, Math.min(100, ratio)) : 0}%; height:100%; background:${barColor}; border-radius:999px;"></div>
               </div>
-              <span style="font-weight:700; min-width:52px; text-align:right; font-size:12px;">${ratio != null ? ratio.toFixed(1) + '%' : '—'}</span>
+              <span style="font-weight:700; min-width:52px; text-align:right; font-size:12px;">${ratio != null ? ratio.toFixed(2) + '%' : '—'}</span>
             </div>
           </td>
         </tr>
@@ -8545,7 +8559,7 @@ function renderIpsTables() {
               <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden; min-width:80px;">
                 <div style="width:${pct != null ? Math.max(0, Math.min(100, pct)) : 0}%; height:100%; background:${barColor}; border-radius:999px;"></div>
               </div>
-              <span style="font-weight:700; min-width:52px; text-align:right;">${pct != null ? pct.toFixed(1) + '%' : '—'}</span>
+              <span style="font-weight:700; min-width:52px; text-align:right;">${pct != null ? pct.toFixed(2) + '%' : '—'}</span>
             </div>
           </td>
         </tr>
@@ -8585,7 +8599,7 @@ function renderIpsTables() {
               <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden; min-width:80px;">
                 <div style="width:${Math.max(0, Math.min(100, pct))}%; height:100%; background:${barColor}; border-radius:999px;"></div>
               </div>
-              <span style="font-weight:700; min-width:52px; text-align:right;">${pct.toFixed(1)}%</span>
+              <span style="font-weight:700; min-width:52px; text-align:right;">${pct.toFixed(2)}%</span>
             </div>
           </td>
         </tr>
@@ -8606,7 +8620,8 @@ function renderIpsTables() {
     const editable = admin && ipsState.monthlyEditMode;
     const rows = roster.map(emp => {
       const m = ipsMonthlyFor(emp.id);
-      const qa = m && m.qa_percent != null ? m.qa_percent : '';
+      const qaFrac = ipsQaFraction(m);
+      const qa = qaFrac != null ? round2(qaFrac * 100) : '';
       const major = m ? (m.major_count ?? 0) : 0;
       const minor = m ? (m.minor_count ?? 0) : 0;
       const majorNotes = m && Array.isArray(m.major_notes) ? m.major_notes : [];
@@ -8640,7 +8655,7 @@ function renderIpsTables() {
       <p class="faint" style="font-size:11.5px; margin:0 0 14px;">${admin ? (ipsState.monthlyEditMode ? 'Edit mode is ON — every field below is unlocked. Click "Done" when finished.' : 'Click "Edit" to unlock all fields at once.') : 'View only — admins and IPS manage this section.'}</p>
       <table style="border-collapse:collapse; width:100%; min-width:640px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Major notes</th><th style="padding:6px 10px;">Minor notes</th>
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA % (e.g. 97)</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Major notes</th><th style="padding:6px 10px;">Minor notes</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -8656,10 +8671,10 @@ function renderIpsTables() {
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; text-align:center; font-weight:700; width:44px;">${medal}</td>
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
-          <td style="padding:8px 10px; text-align:center;">${(s.qa || 0).toFixed(1)}<span class="faint" style="font-size:11px;"> → ${s.aoScore.toFixed(2)}</span></td>
-          <td style="padding:8px 10px; text-align:center;">${(s.poRatioAvg*100).toFixed(1)}%<span class="faint" style="font-size:11px;"> → ${s.apScore.toFixed(2)}</span></td>
-          <td style="padding:8px 10px; text-align:center;">${s.ec != null ? (s.ec*100).toFixed(1)+'%' : '—'}<span class="faint" style="font-size:11px;"> → ${s.aqScore.toFixed(2)}</span></td>
-          <td style="padding:8px 10px; text-align:center; font-weight:700; font-family:var(--font-display); font-size:16px; color:var(--teal);">${s.total.toFixed(2)}</td>
+          <td style="padding:8px 10px; text-align:center;">${(s.qa*100).toFixed(2)}%<span class="faint" style="font-size:11px;"> → ${(s.aoScore*100).toFixed(2)}%</span></td>
+          <td style="padding:8px 10px; text-align:center;">${(s.poRatioAvg*100).toFixed(2)}%<span class="faint" style="font-size:11px;"> → ${(s.apScore*100).toFixed(2)}%</span></td>
+          <td style="padding:8px 10px; text-align:center;">${s.ec != null ? (s.ec*100).toFixed(2)+'%' : '—'}<span class="faint" style="font-size:11px;"> → ${(s.aqScore*100).toFixed(2)}%</span></td>
+          <td style="padding:8px 10px; text-align:center; font-weight:700; font-family:var(--font-display); font-size:16px; color:var(--teal);">${(s.total*100).toFixed(2)}%</td>
         </tr>
       `;
     }).join('');
@@ -8684,10 +8699,10 @@ function renderIpsTables() {
     snapshotHtml = `
       <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px;">
         ${[
-          ['My LQ Average', lqAvg ?? '—'],
-          ['My MD Total', mdTot],
-          ['My PO Ratio', (s.poRatioAvg*100).toFixed(1) + '%'],
-          ['My Total Score', s.total.toFixed(2)],
+          ['My LQ Average', lqAvg != null ? lqAvg.toFixed(2) : '—'],
+          ['My MD Total', mdTot.toFixed(2)],
+          ['My PO Ratio', (s.poRatioAvg*100).toFixed(2) + '%'],
+          ['My Total Score', (s.total*100).toFixed(2) + '%'],
         ].map(([label, val]) => `
           <div class="card" style="padding:14px 16px;">
             <div class="faint" style="font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;">${label}</div>
@@ -8796,14 +8811,14 @@ function downloadIpsReport() {
     rows: roster.map(emp => {
       const m = ipsMonthlyFor(emp.id);
       const ec = ipsErrorCorrectionPct(emp.id);
-      return [emp.display_name, m ? (m.errors ?? '') : '', workingDays || '', ec != null ? (ec * 100).toFixed(1) + '%' : ''];
+      return [emp.display_name, m ? (m.errors ?? '') : '', workingDays || '', ec != null ? (ec * 100).toFixed(2) + '%' : ''];
     }),
   });
 
   sections.push({
     title: 'PO Average',
     header: ['Agent', 'PO Total (avg × 800)', 'PO Ratio Average'],
-    rows: roster.map(emp => [emp.display_name, ipsPoTotal(emp.id, dates), (ipsPoRatioAverage(emp.id, dates) * 100).toFixed(1) + '%']),
+    rows: roster.map(emp => [emp.display_name, ipsPoTotal(emp.id, dates), (ipsPoRatioAverage(emp.id, dates) * 100).toFixed(2) + '%']),
   });
 
   sections.push({
@@ -8813,7 +8828,8 @@ function downloadIpsReport() {
       const m = ipsMonthlyFor(emp.id);
       const majorNotes = m && Array.isArray(m.major_notes) ? m.major_notes.filter(Boolean).join(' | ') : '';
       const minorNotes = m && Array.isArray(m.minor_notes) ? m.minor_notes.filter(Boolean).join(' | ') : '';
-      return [emp.display_name, m && m.qa_percent != null ? m.qa_percent : '', m ? (m.major_count ?? 0) : 0, m ? (m.minor_count ?? 0) : 0, majorNotes, minorNotes];
+      const qaFrac = ipsQaFraction(m);
+      return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '', m ? (m.major_count ?? 0) : 0, m ? (m.minor_count ?? 0) : 0, majorNotes, minorNotes];
     }),
   });
 
@@ -8822,7 +8838,7 @@ function downloadIpsReport() {
     header: ['Rank', 'Agent', 'QA (50%)', 'PO (30%)', 'EC (20%)', 'Total Score'],
     rows: roster.map(emp => ({ emp, s: ipsMonthlyScore(emp.id, dates) }))
       .sort((a, b) => b.s.total - a.s.total)
-      .map(({ emp, s }, i) => [i + 1, emp.display_name, s.aoScore.toFixed(2), s.apScore.toFixed(2), s.aqScore.toFixed(2), s.total.toFixed(2)]),
+      .map(({ emp, s }, i) => [i + 1, emp.display_name, (s.aoScore*100).toFixed(2) + '%', (s.apScore*100).toFixed(2) + '%', (s.aqScore*100).toFixed(2) + '%', (s.total*100).toFixed(2) + '%']),
   });
 
   openIpsTabbedReport(monthLabel, sections);
@@ -8995,8 +9011,14 @@ async function saveIpsMonthlyField(employeeId, field, rawValue) {
   if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
   if (!ipsState.monthlyEditMode) { showToast('Click "Edit" first to unlock these fields.', true); renderIpsTables(); return; }
 
-  const value = rawValue === '' ? null : parseFloat(rawValue);
+  let value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
+  // QA is typed as a percent (97) but stored as a fraction (0.97) so the
+  // weighted score math matches the spreadsheet exactly.
+  if (field === 'qa_percent' && value !== null) {
+    if (value > 100) { showToast('QA % cannot exceed 100.', true); return; }
+    value = round2(value) / 100;
+  }
 
   const existing = ipsMonthlyFor(employeeId);
   const payload = {
