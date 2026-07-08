@@ -1106,6 +1106,53 @@ async function checkAppVersionAndReloadIfStale() {
   }
 }
 
+// =====================================================================
+// REALTIME — replaces polling for live updates
+// =====================================================================
+// Instead of asking "did anything change?" every N seconds (which costs
+// full egress every single cycle whether or not anything changed),
+// Supabase pushes just the changed ROW the instant it changes, over one
+// persistent connection. This is both more instant than polling ever
+// was AND far cheaper — idle periods cost nothing.
+//
+// REQUIRES: each table must have Realtime turned on in Supabase
+// (Database -> Replication, or run realtime_setup_v2.sql). Until
+// that's done for a given table, its subscription silently receives
+// nothing — never throws, so partial rollout is safe.
+const _realtimeChannels = {};
+
+function subscribeRealtime(key, table, onChange) {
+  if (_realtimeChannels[key]) return; // already subscribed
+  try {
+    const channel = sb.channel(`rt:${key}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table }, (payload) => {
+        onChange(payload);
+      })
+      .subscribe();
+    _realtimeChannels[key] = channel;
+  } catch (err) {
+    console.error(`Realtime subscribe failed for ${table}:`, err);
+  }
+}
+
+function unsubscribeRealtime(key) {
+  const channel = _realtimeChannels[key];
+  if (channel) {
+    try { sb.removeChannel(channel); } catch (err) { /* non-fatal */ }
+    delete _realtimeChannels[key];
+  }
+}
+
+// Small debounce so a burst of rapid changes (e.g. a multi-row import)
+// triggers one re-render instead of one per row.
+function debounceRealtime(fn, wait = 250) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), wait);
+  };
+}
+
 async function loadAllData() {
   // PHASE 1 — the two datasets nearly every view depends on. Await only
   // these, then paint the screen immediately: refresh feels ~4x faster
