@@ -387,9 +387,8 @@
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
+      <a class="nav-item" data-view="ips" id="nav-ips"><span class="dot"></span>IPS (Individual Performance Score)</a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
-      <div class="nav-section-label" id="nav-coming-soon-label">Coming soon</div>
-      <a class="nav-item" data-view="ips" id="nav-ips" style="display:none;"><span class="dot"></span>IPS (Individual Performance Score)</a>
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
@@ -740,13 +739,6 @@ function canViewTeamFunds() {
   return !!state.profile;
 }
 
-// IPS is still in development — the whole tab is visible and usable
-// ONLY by Jeinna while it's being built.
-const IPS_PREVIEW_ALLOWED_NAME = 'Jeinna Louise Perez';
-function canAccessIpsPreview() {
-  return !!state.profile && state.profile.display_name === IPS_PREVIEW_ALLOWED_NAME;
-}
-
 // IPS: admins and the 'ips' role can edit everyone's entries (with a
 // confirmation prompt); everyone else can only edit their own row.
 function canManageIps() {
@@ -831,20 +823,7 @@ function initNav() {
     employeeManagementNavItem.style.display = canManageEmployees() ? '' : 'none';
   }
 
-  // IPS preview: the "Coming soon" label + IPS item are visible to
-  // EVERYONE, but the item is only actually clickable for Jeinna while
-  // it's in development — everyone else sees it grayed out.
-  const ipsNavItem = document.getElementById('nav-ips');
-  const comingSoonLabel = document.getElementById('nav-coming-soon-label');
-  if (comingSoonLabel) comingSoonLabel.style.display = '';
-  if (ipsNavItem) {
-    ipsNavItem.style.display = '';
-    if (canAccessIpsPreview()) {
-      ipsNavItem.classList.remove('disabled');
-    } else {
-      ipsNavItem.classList.add('disabled');
-    }
-  }
+
 
   const savedView = sessionStorage.getItem('registry_active_view');
   const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips'];
@@ -864,10 +843,7 @@ function switchView(viewName) {
   if (viewName === 'employee-management' && !canManageEmployees()) {
     viewName = 'dashboard';
   }
-  // IPS preview is restricted to Jeinna — same hard boundary pattern.
-  if (viewName === 'ips' && !canAccessIpsPreview()) {
-    viewName = 'dashboard';
-  }
+
 
   state.currentView = viewName;
   sessionStorage.setItem('registry_active_view', viewName);
@@ -8541,7 +8517,7 @@ function renderIpsTables() {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else.' : ''} Changes save automatically. Use ← → to move between workdays; monthly averages and totals live in the other tabs and the downloadable report.</p>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else, and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays; monthly averages and totals live in the other tabs and the downloadable report.</p>
     `;
   }
 
@@ -8650,10 +8626,10 @@ function renderIpsTables() {
               style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; ${editable ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
           </td>
           <td style="padding:6px;">
-            ${editable ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="major" style="font-size:11px; padding:3px 8px;">${majorNotes.length} note${majorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${majorNotes.length} note${majorNotes.length===1?'':'s'}</span>`}
+            <button class="btn btn-ghost btn-sm ips-notes-btn" data-emp-id="${emp.id}" data-kind="major" data-mode="${editable ? 'edit' : 'view'}" ${majorNotes.length || editable ? '' : 'disabled'} style="font-size:11px; padding:3px 8px; ${majorNotes.length ? 'color:var(--coral); border-color:var(--coral-wash);' : ''}">${majorNotes.length} note${majorNotes.length===1?'':'s'}${editable ? ' — edit' : majorNotes.length ? ' — view' : ''}</button>
           </td>
           <td style="padding:6px;">
-            ${editable ? `<button class="btn btn-ghost btn-sm ips-edit-notes-btn" data-emp-id="${emp.id}" data-kind="minor" style="font-size:11px; padding:3px 8px;">${minorNotes.length} note${minorNotes.length===1?'':'s'} — edit</button>` : `<span class="faint" style="font-size:11.5px;">${minorNotes.length} note${minorNotes.length===1?'':'s'}</span>`}
+            <button class="btn btn-ghost btn-sm ips-notes-btn" data-emp-id="${emp.id}" data-kind="minor" data-mode="${editable ? 'edit' : 'view'}" ${minorNotes.length || editable ? '' : 'disabled'} style="font-size:11px; padding:3px 8px; ${minorNotes.length ? 'color:var(--amber); border-color:var(--amber-wash);' : ''}">${minorNotes.length} note${minorNotes.length===1?'':'s'}${editable ? ' — edit' : minorNotes.length ? ' — view' : ''}</button>
           </td>
         </tr>
       `;
@@ -8673,27 +8649,96 @@ function renderIpsTables() {
   function buildScoreSection() {
     const scored = roster.map(emp => ({ emp, s: ipsMonthlyScore(emp.id, dates) }))
       .sort((a, b) => b.s.total - a.s.total);
-    const rows = scored.map(({ emp, s }, i) => {
-      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
+    const leader = scored.length ? scored[0].s.total : 0;
+    const prevRanks = ipsState._prevRanks && ipsState._prevRanks.month === ipsState.month ? ipsState._prevRanks.map : null;
+    if (!prevRanks) loadIpsPrevRanks(); // async; re-renders once with movement arrows
+
+    const initials = (name) => name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase();
+
+    const movement = (empId, rank) => {
+      if (!prevRanks || !(empId in prevRanks)) return '';
+      const diff = prevRanks[empId] - rank;
+      if (diff > 0) return `<span title="Up ${diff} from last month" style="font-size:10.5px; font-weight:700; color:var(--green);">▲${diff}</span>`;
+      if (diff < 0) return `<span title="Down ${-diff} from last month" style="font-size:10.5px; font-weight:700; color:var(--coral);">▼${-diff}</span>`;
+      return `<span title="Same as last month" style="font-size:10.5px; color:var(--ink-faint);">—</span>`;
+    };
+
+    // ── Podium: top 3, champion in the middle and tallest ──
+    const podiumOrder = [scored[1], scored[0], scored[2]].filter(Boolean);
+    const podiumMeta = {
+      0: { medal: '🥇', ring: 'var(--gold-line)',  bg: 'linear-gradient(160deg, #FBF4E3 0%, #F3E6C8 100%)', h: 168, avatar: 58 },
+      1: { medal: '🥈', ring: '#9FA6AD',            bg: 'linear-gradient(160deg, #F3F4F6 0%, #E6E8EB 100%)', h: 140, avatar: 48 },
+      2: { medal: '🥉', ring: '#C08A57',            bg: 'linear-gradient(160deg, #F8EEE4 0%, #EFDCC9 100%)', h: 128, avatar: 48 },
+    };
+    const podiumHtml = scored.length ? `
+      <div style="display:flex; align-items:flex-end; justify-content:center; gap:14px; margin:6px 0 26px;">
+        ${podiumOrder.map(({ emp, s }) => {
+          const rank = scored.findIndex(x => x.emp.id === emp.id);
+          const meta = podiumMeta[rank];
+          const isMe = emp.id === state.profile.employee_id;
+          return `
+            <div class="ips-score-row" data-emp-id="${emp.id}" title="Click for ${escapeHtml(emp.display_name)}'s full-year view" style="
+              flex:1; max-width:220px; min-height:${meta.h}px; cursor:pointer;
+              background:${meta.bg}; border:2px solid ${meta.ring};
+              ${isMe ? 'box-shadow:0 0 0 3px var(--teal-wash), 0 6px 18px rgba(31,61,58,0.18);' : 'box-shadow:0 4px 14px rgba(58,58,56,0.1);'}
+              border-radius:16px; padding:16px 12px 14px; text-align:center; position:relative;
+              display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:6px;
+              transition:transform 0.15s;"
+              onmouseenter="this.style.transform='translateY(-4px)'" onmouseleave="this.style.transform='none'">
+              <div style="position:absolute; top:-14px; left:50%; transform:translateX(-50%); font-size:26px;">${meta.medal}</div>
+              <div style="width:${meta.avatar}px; height:${meta.avatar}px; border-radius:50%; background:var(--teal); color:#F7F3E8; display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-weight:700; font-size:${meta.avatar * 0.36}px; border:2.5px solid ${meta.ring};">${initials(emp.display_name)}</div>
+              <div style="font-weight:700; font-size:12.5px; line-height:1.25;">${escapeHtml(emp.display_name)}${isMe ? ' <span style="font-size:9.5px; color:var(--teal);">(you)</span>' : ''}</div>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-family:var(--font-display); font-size:21px; font-weight:700; color:var(--teal);">${(s.total * 100).toFixed(2)}%</span>
+                ${movement(emp.id, rank)}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    ` : '';
+
+    // ── Ranked list for everyone from #4 down (plus 1-3 for completeness on narrow data) ──
+    const listRows = scored.slice(3).map(({ emp, s }, idx) => {
+      const rank = idx + 3;
+      const isMe = emp.id === state.profile.employee_id;
+      const pct = leader > 0 ? (s.total / leader) * 100 : 0;
       return `
-        <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
-          <td style="padding:8px 10px; text-align:center; font-weight:700; width:44px;">${medal}</td>
-          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
-          <td style="padding:8px 10px; text-align:center;">${(s.qa*100).toFixed(2)}%<span class="faint" style="font-size:11px;"> → ${(s.aoScore*100).toFixed(2)}%</span></td>
-          <td style="padding:8px 10px; text-align:center;">${(s.poRatioAvg*100).toFixed(2)}%<span class="faint" style="font-size:11px;"> → ${(s.apScore*100).toFixed(2)}%</span></td>
-          <td style="padding:8px 10px; text-align:center;">${s.ec != null ? (s.ec*100).toFixed(2)+'%' : '—'}<span class="faint" style="font-size:11px;"> → ${(s.aqScore*100).toFixed(2)}%</span></td>
-          <td style="padding:8px 10px; text-align:center; font-weight:700; font-family:var(--font-display); font-size:16px; color:var(--teal);">${(s.total*100).toFixed(2)}%</td>
-        </tr>
+        <div class="ips-score-row" data-emp-id="${emp.id}" title="Click for ${escapeHtml(emp.display_name)}'s full-year view" style="
+          display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:12px; cursor:pointer;
+          border:1px solid ${isMe ? 'var(--teal)' : 'var(--line-soft)'};
+          background:${isMe ? '#DCEFEA' : 'var(--paper-raised)'};
+          transition:transform 0.12s, box-shadow 0.12s;"
+          onmouseenter="this.style.boxShadow='var(--shadow-md)';this.style.transform='translateX(3px)'"
+          onmouseleave="this.style.boxShadow='none';this.style.transform='none'">
+          <div style="width:30px; text-align:center; font-family:var(--font-display); font-weight:700; font-size:15px; color:var(--ink-faint); flex-shrink:0;">${rank + 1}</div>
+          <div style="width:36px; height:36px; border-radius:50%; background:${isMe ? 'var(--teal)' : 'var(--teal-wash)'}; color:${isMe ? '#F7F3E8' : 'var(--teal)'}; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12.5px; flex-shrink:0;">${initials(emp.display_name)}</div>
+          <div style="flex:1; min-width:0;">
+            <div style="display:flex; align-items:center; gap:7px;">
+              <span style="font-weight:700; font-size:13px;">${escapeHtml(emp.display_name)}</span>
+              ${isMe ? '<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--teal); color:#F7F3E8;">YOU</span>' : ''}
+              ${movement(emp.id, rank)}
+            </div>
+            <div style="display:flex; gap:10px; margin-top:3px;" class="faint">
+              <span style="font-size:10.5px;">QA ${(s.qa * 100).toFixed(2)}%</span>
+              <span style="font-size:10.5px;">PO ${(s.poRatioAvg * 100).toFixed(2)}%</span>
+              <span style="font-size:10.5px;">EC ${s.ec != null ? (s.ec * 100).toFixed(2) + '%' : '—'}</span>
+            </div>
+            <div style="height:4px; background:var(--line-soft); border-radius:999px; margin-top:6px; overflow:hidden;">
+              <div style="width:${Math.max(0, Math.min(100, pct))}%; height:100%; background:linear-gradient(90deg, var(--teal) 0%, var(--teal-soft) 100%); border-radius:999px;"></div>
+            </div>
+          </div>
+          <div style="font-family:var(--font-display); font-size:19px; font-weight:700; color:var(--teal); flex-shrink:0; min-width:82px; text-align:right;">${(s.total * 100).toFixed(2)}%</div>
+        </div>
       `;
     }).join('');
+
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Total Monthly Score = QA×50% + PO×30% + EC×20%, ranked highest first.</p>
-      <table style="border-collapse:collapse; width:100%;">
-        <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px;">Rank</th><th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA (50%)</th><th style="padding:6px 10px;">PO (30%)</th><th style="padding:6px 10px;">EC (20%)</th><th style="padding:6px 10px;">Total Score</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
+      <p class="faint" style="font-size:11.5px; margin:0 0 18px;">Total Monthly Score = QA×50% + PO×30% + EC×20%. Click anyone for their full-year view.${prevRanks ? ' ▲▼ show movement vs last month.' : ''}</p>
+      ${podiumHtml}
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        ${listRows || (scored.length ? '' : '<p class="muted">No scores yet for this month.</p>')}
+      </div>
     `;
   }
 
@@ -8704,8 +8749,16 @@ function renderIpsTables() {
     const s = ipsMonthlyScore(me.id, dates);
     const lqAvg = ipsLqAverage(me.id, dates);
     const mdTot = ipsMdSum(me.id, dates);
+    const standings = roster.map(e2 => ({ id: e2.id, total: ipsMonthlyScore(e2.id, dates).total }))
+      .sort((a, b) => b.total - a.total);
+    const myRank = standings.findIndex(x => x.id === me.id) + 1;
+    const rankLabel = myRank === 1 ? '🥇 #1' : myRank === 2 ? '🥈 #2' : myRank === 3 ? '🥉 #3' : `#${myRank}`;
     snapshotHtml = `
-      <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:20px;">
+      <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:20px;">
+        <div class="card" style="padding:14px 16px; background:linear-gradient(135deg, var(--teal) 0%, var(--teal-soft) 100%); border:none;">
+          <div style="font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px; color:#9FB8B2;">My Rank</div>
+          <div style="font-family:var(--font-display); font-size:24px; font-weight:700; color:#F7F3E8;">${rankLabel} <span style="font-size:13px; opacity:0.7;">of ${standings.length}</span></div>
+        </div>
         ${[
           ['My LQ Average', lqAvg != null ? lqAvg.toFixed(2) : '—'],
           ['My MD Total', mdTot.toFixed(2)],
@@ -8722,11 +8775,11 @@ function renderIpsTables() {
   }
 
   const tabs = [
-    { id: 'daily', label: 'Daily Entry' },
-    { id: 'ec',    label: 'Error Correction' },
-    { id: 'po',    label: 'PO Average' },
-    { id: 'qa',    label: 'QA Accuracy' },
-    { id: 'score', label: 'Monthly Score' },
+    { id: 'daily', label: 'Daily Entry',      icon: '✏️' },
+    { id: 'ec',    label: 'Error Correction', icon: '🛠️' },
+    { id: 'po',    label: 'PO Average',       icon: '📈' },
+    { id: 'qa',    label: 'QA Accuracy',      icon: '🎯' },
+    { id: 'score', label: 'Monthly Score',    icon: '🏆' },
   ];
   const active = ipsState.tab;
 
@@ -8740,16 +8793,25 @@ function renderIpsTables() {
   el.innerHTML = `
     ${snapshotHtml}
     <div class="card" style="padding:22px;">
-      <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin:0 0 20px; overflow-x:auto;">
-        ${tabs.map(t => `
+      <div style="display:flex; gap:8px; margin:0 0 22px; overflow-x:auto; padding:4px; background:var(--paper); border-radius:999px; border:1px solid var(--line-soft);">
+        ${tabs.map(t => {
+          const on = active === t.id;
+          return `
           <button class="ips-tab-btn" data-tab="${t.id}" style="
-            padding:10px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer;
-            border-bottom:${active === t.id ? '3px solid var(--teal)' : '3px solid transparent'};
-            color:${active === t.id ? 'var(--teal)' : 'var(--ink-faint)'};
-            margin-bottom:-2px; font-family:inherit; white-space:nowrap;">
-            ${t.label}
+            display:flex; align-items:center; gap:7px;
+            padding:9px 18px; font-size:12.5px; font-weight:600; border:none; cursor:pointer;
+            border-radius:999px; font-family:inherit; white-space:nowrap; flex:1; justify-content:center;
+            background:${on ? 'linear-gradient(135deg, var(--teal) 0%, var(--teal-soft) 100%)' : 'transparent'};
+            color:${on ? '#F7F3E8' : 'var(--ink-soft)'};
+            box-shadow:${on ? '0 2px 8px rgba(31,61,58,0.25)' : 'none'};
+            transition:background 0.15s, color 0.15s, box-shadow 0.15s;"
+            onmouseenter="if(!this.dataset.active)this.style.background='var(--line-soft)'"
+            onmouseleave="if(!this.dataset.active)this.style.background='transparent'"
+            ${on ? 'data-active="1"' : ''}>
+            <span style="font-size:14px;">${t.icon}</span>${t.label}
           </button>
-        `).join('')}
+        `;
+        }).join('')}
       </div>
       ${body}
     </div>
@@ -8764,7 +8826,159 @@ function renderIpsTables() {
   document.getElementById('ips-day-prev')?.addEventListener('click', () => shiftIpsDay(-1));
   document.getElementById('ips-day-next')?.addEventListener('click', () => shiftIpsDay(1));
 
+  document.querySelectorAll('.ips-score-row').forEach(row => {
+    row.addEventListener('click', () => openIpsYearModal(row.dataset.empId));
+  });
+
   attachIpsHandlers();
+}
+
+// Loads LAST month's data once (cached per viewed month) to compute each
+// person's previous rank — powers the ▲▼ movement arrows on the
+// leaderboard. Fetched only when the Monthly Score tab is opened.
+async function loadIpsPrevRanks() {
+  if (ipsState._prevRanksLoading === ipsState.month) return;
+  ipsState._prevRanksLoading = ipsState.month;
+
+  const [y, m] = ipsState.month.split('-').map(Number);
+  const prevMonthIso = isoDate(new Date(y, m - 2, 1));
+  const prevDates = ipsDatesForMonth(prevMonthIso);
+  const prevEnd = prevDates[prevDates.length - 1];
+
+  try {
+    const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+      sb.from('ips_daily_entries').select('employee_id, entry_date, lq_value, md_value, po_excluded').gte('entry_date', prevDates[0]).lte('entry_date', prevEnd),
+      sb.from('ips_monthly_data').select('employee_id, errors, qa_percent').eq('month', prevMonthIso),
+      sb.from('ips_month_settings').select('working_days').eq('month', prevMonthIso).maybeSingle(),
+    ]);
+    if (dailyRes.error || monthlyRes.error) return;
+
+    const daily = dailyRes.data || [];
+    const monthly = monthlyRes.data || [];
+    const wd = settingsRes.data ? Number(settingsRes.data.working_days || 0) : 0;
+
+    const totals = ipsRoster().map(emp => {
+      const mine = daily.filter(e => e.employee_id === emp.id);
+      const byDate = {}; mine.forEach(e => { byDate[e.entry_date] = e; });
+      const ratios = prevDates.map(d => {
+        const e = byDate[d];
+        if (!e || e.po_excluded) return null;
+        const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
+        return t > 0 ? t / 800 : null;
+      }).filter(r => r != null);
+      const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
+      const mData = monthly.find(x => x.employee_id === emp.id) || null;
+      const qa = ipsQaFraction(mData) ?? 0;
+      const ec = wd ? (1 - (Number(mData?.errors || 0) / wd)) : 0;
+      return { id: emp.id, total: qa * 0.5 + po * 0.3 + ec * 0.2, hasData: !!(mine.length || mData) };
+    });
+
+    const anyData = totals.some(t => t.hasData);
+    const map = {};
+    if (anyData) {
+      totals.sort((a, b) => b.total - a.total).forEach((t, i) => { if (t.hasData) map[t.id] = i; });
+    }
+    ipsState._prevRanks = { month: ipsState.month, map: anyData ? map : {} };
+    // Repaint only if the person is still looking at this month's score tab
+    if (state.currentView === 'ips' && ipsState.tab === 'score' && anyData) renderIpsTables();
+  } catch (err) {
+    console.error('Prev-rank load failed:', err);
+  }
+}
+
+// =====================================================================
+// IPS — full-year view for one employee
+// Fetches ONLY that person's rows for the year (small queries), computes
+// each month with the exact same formulas as the live tabs.
+// =====================================================================
+
+async function openIpsYearModal(employeeId) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  if (!emp) return;
+  const year = Number(ipsState.month.slice(0, 4));
+
+  openModal(`${emp.display_name} — ${year}`, '<div class="loading-row">Loading…</div>');
+
+  const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+    sb.from('ips_daily_entries').select('*').eq('employee_id', employeeId).gte('entry_date', `${year}-01-01`).lte('entry_date', `${year}-12-31`),
+    sb.from('ips_monthly_data').select('*').eq('employee_id', employeeId).gte('month', `${year}-01-01`).lte('month', `${year}-12-01`),
+    sb.from('ips_month_settings').select('*').gte('month', `${year}-01-01`).lte('month', `${year}-12-01`),
+  ]);
+  if (dailyRes.error || monthlyRes.error || settingsRes.error) {
+    openModal(`${emp.display_name} — ${year}`, '<p class="muted">Could not load the year data.</p>');
+    return;
+  }
+  const daily = dailyRes.data || [];
+  const monthly = monthlyRes.data || [];
+  const settings = settingsRes.data || [];
+
+  const monthRows = [];
+  for (let m = 0; m < 12; m++) {
+    const monthIso = `${year}-${String(m + 1).padStart(2, '0')}-01`;
+    const dates = ipsDatesForMonth(monthIso);
+    const dEntries = daily.filter(e => e.entry_date >= dates[0] && e.entry_date <= dates[dates.length - 1]);
+    const mData = monthly.find(x => x.month === monthIso) || null;
+    const setting = settings.find(x => x.month === monthIso) || null;
+    const hasAny = dEntries.length || mData;
+    if (!hasAny) { monthRows.push({ m, empty: true }); continue; }
+
+    // Same formulas as the live tabs, scoped to this month's fetched rows
+    const byDate = {};
+    dEntries.forEach(e => { byDate[e.entry_date] = e; });
+    const ratios = dates.map(d => {
+      const e = byDate[d];
+      if (!e || e.po_excluded) return null;
+      const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
+      return t > 0 ? t / 800 : null;
+    }).filter(r => r != null);
+    const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
+    const qa = ipsQaFraction(mData) ?? 0;
+    const wd = setting ? Number(setting.working_days || 0) : 0;
+    const ec = wd ? (1 - (Number(mData?.errors || 0) / wd)) : null;
+    const total = qa * 0.5 + po * 0.3 + (ec != null ? ec : 0) * 0.2;
+    monthRows.push({ m, qa, po, ec, total });
+  }
+
+  const withData = monthRows.filter(r => !r.empty);
+  const yearAvg = withData.length ? withData.reduce((s, r) => s + r.total, 0) / withData.length : null;
+  const best = withData.length ? withData.reduce((a, b) => (b.total > a.total ? b : a)) : null;
+
+  const bodyHtml = `
+    ${withData.length ? `
+      <div style="display:flex; gap:12px; margin-bottom:16px;">
+        <div style="flex:1; border:1px solid var(--line-soft); border-radius:10px; padding:12px 14px;">
+          <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px;">Year Average</div>
+          <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:var(--teal);">${(yearAvg * 100).toFixed(2)}%</div>
+        </div>
+        <div style="flex:1; border:1px solid var(--line-soft); border-radius:10px; padding:12px 14px;">
+          <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:2px;">Best Month</div>
+          <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:var(--green);">${MONTH_NAMES[best.m].slice(0,3)} · ${(best.total * 100).toFixed(2)}%</div>
+        </div>
+      </div>
+    ` : ''}
+    <table style="border-collapse:collapse; width:100%;">
+      <thead><tr style="border-bottom:2px solid var(--line); font-size:10.5px; text-transform:uppercase; color:var(--ink-faint);">
+        <th style="padding:6px 8px; text-align:left;">Month</th><th style="padding:6px 8px;">QA</th><th style="padding:6px 8px;">PO</th><th style="padding:6px 8px;">EC</th><th style="padding:6px 8px;">Total</th>
+      </tr></thead>
+      <tbody>
+        ${monthRows.map(r => r.empty ? `
+          <tr style="border-bottom:1px solid var(--line-soft); opacity:0.45;">
+            <td style="padding:7px 8px; font-weight:600;">${MONTH_NAMES[r.m]}</td>
+            <td colspan="4" style="padding:7px 8px; text-align:center;" class="faint">No data</td>
+          </tr>
+        ` : `
+          <tr style="border-bottom:1px solid var(--line-soft);">
+            <td style="padding:7px 8px; font-weight:600;">${MONTH_NAMES[r.m]}</td>
+            <td style="padding:7px 8px; text-align:center;">${(r.qa * 100).toFixed(2)}%</td>
+            <td style="padding:7px 8px; text-align:center;">${(r.po * 100).toFixed(2)}%</td>
+            <td style="padding:7px 8px; text-align:center;">${r.ec != null ? (r.ec * 100).toFixed(2) + '%' : '—'}</td>
+            <td style="padding:7px 8px; text-align:center; font-weight:700; color:var(--teal);">${(r.total * 100).toFixed(2)}%</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+  openModal(`${emp.display_name} — ${year}`, bodyHtml);
 }
 
 function shiftIpsDay(delta) {
@@ -8968,6 +9182,17 @@ function attachIpsHandlers() {
   });
   document.querySelectorAll('.ips-daily-input').forEach(input => {
     input.addEventListener('change', () => saveIpsDailyEntry(input));
+    // Enter = save and hop to the SAME column in the next row — rapid
+    // top-to-bottom entry for admins/IPS filling in the whole team.
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const all = Array.from(document.querySelectorAll(`.ips-daily-input[data-field="${input.dataset.field}"]`));
+      const idx = all.indexOf(input);
+      input.blur(); // triggers change/save if edited
+      const next = all[idx + 1];
+      if (next) setTimeout(() => { const fresh = document.querySelectorAll(`.ips-daily-input[data-field="${input.dataset.field}"]`)[idx + 1]; if (fresh) fresh.focus(); }, 350);
+    });
   });
   document.querySelectorAll('.ips-error-input').forEach(input => {
     input.addEventListener('change', () => saveIpsMonthlyField(input.dataset.empId, 'errors', input.value));
@@ -8976,8 +9201,11 @@ function attachIpsHandlers() {
     input.addEventListener('change', () => saveIpsMonthlyField(input.dataset.empId, input.dataset.field, input.value));
   });
   document.getElementById('ips-save-working-days')?.addEventListener('click', saveIpsWorkingDays);
-  document.querySelectorAll('.ips-edit-notes-btn').forEach(btn => {
-    btn.addEventListener('click', () => openIpsNotesModal(btn.dataset.empId, btn.dataset.kind));
+  document.querySelectorAll('.ips-notes-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.dataset.mode === 'edit') openIpsNotesModal(btn.dataset.empId, btn.dataset.kind);
+      else openIpsNotesViewModal(btn.dataset.empId, btn.dataset.kind);
+    });
   });
 }
 
@@ -9006,6 +9234,8 @@ async function saveIpsDailyEntry(input) {
   const value = raw === '' ? null : parseFloat(raw);
   if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
 
+  // Only send the ONE field being changed — never clobber the other
+  // (a race guard: two quick edits in a row each carry only their own field).
   const payload = { employee_id: employeeId, entry_date: dateIso, updated_by: state.profile.display_name, updated_at: new Date().toISOString() };
   payload[field] = value;
 
@@ -9092,6 +9322,29 @@ function openIpsNotesModal(employeeId, kind) {
     const field = kind === 'major' ? 'major_notes' : 'minor_notes';
     await saveIpsNotes(employeeId, field, notes);
   });
+}
+
+// Read-only notes viewer — accessible to EVERYONE, so any agent can see
+// exactly what their QA major/minor errors were.
+function openIpsNotesViewModal(employeeId, kind) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  const m = ipsMonthlyFor(employeeId);
+  const notes = ((kind === 'major' ? m?.major_notes : m?.minor_notes) || []).filter(Boolean);
+  const accent = kind === 'major' ? 'var(--coral)' : 'var(--amber)';
+  const wash = kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
+
+  openModal(`${kind === 'major' ? 'Major' : 'Minor'} error notes — ${emp ? emp.display_name : ''}`, `
+    ${notes.length ? `
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        ${notes.map((n, i) => `
+          <div style="display:flex; gap:10px; align-items:flex-start; padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px;">
+            <span style="font-weight:700; color:${accent}; font-size:12px; flex-shrink:0;">#${i + 1}</span>
+            <span style="font-size:13px; line-height:1.5;">${escapeHtml(n)}</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : `<p class="muted" style="font-size:13px; margin:0;">No ${kind} error notes recorded for this month.</p>`}
+  `);
 }
 
 async function saveIpsNotes(employeeId, field, notes) {
