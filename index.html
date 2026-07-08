@@ -1391,6 +1391,31 @@ async function loadPriolistEntries() {
   const { data, error } = await sb.from('priolist_entries').select('*');
   if (error) { showToast('Could not load PrioList.', true); return; }
   state.priolistEntries = data || [];
+
+  // Self-healing backfill: PrioList is driven by its OWN table, so any
+  // active employee without a matching row here is invisible on this
+  // tab even though they exist everywhere else (this is exactly what
+  // happened with a new employee added via the Employees tab before
+  // this row got created for them automatically). Create rows for
+  // anyone missing, silently — this makes the tab robust against ANY
+  // path that creates an employee, not just the one form.
+  const existingIds = new Set(state.priolistEntries.map(e => e.employee_id));
+  const missing = state.employees.filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia' && !existingIds.has(emp.id));
+  if (missing.length) {
+    const today = isoDate(new Date());
+    const { data: created, error: backfillErr } = await sb.from('priolist_entries').insert(
+      missing.map(emp => ({
+        employee_id: emp.id, md_output: 0, leads: 0, status: '', file_color: null, note: '',
+        last_reset_date: today,
+      }))
+    ).select();
+    if (!backfillErr && created) {
+      state.priolistEntries = [...state.priolistEntries, ...created];
+    } else if (backfillErr) {
+      console.error('PrioList backfill failed:', backfillErr);
+    }
+  }
+
   await applyDailyPriolistReset();
 }
 
@@ -4323,7 +4348,7 @@ function renderPrioList() {
   const rows = state.priolistEntries.map(entry => {
     const emp = state.employees.find(e => e.id === entry.employee_id);
     return { entry, emp };
-  }).filter(r => r.emp);
+  }).filter(r => r.emp && r.emp.display_name !== 'Kristina Mutia'); // manager — never shown on PrioList, no matter what
 
   // Two distinct states:
   //   1. Every single status is still blank -> show everyone in plain
@@ -6192,6 +6217,25 @@ async function submitAddEmployee(e) {
     errorBox.textContent = 'Could not create the login account. The employee record was not saved.';
     errorBox.style.display = 'block';
     return;
+  }
+
+  // PrioList is driven by its OWN table (priolist_entries), joined to
+  // employees — it does NOT automatically include everyone in
+  // `employees`. Without this row, a brand-new employee is invisible on
+  // that tab even though they appear everywhere else. Not fatal if it
+  // fails (non-blocking, logged only) — the person still gets their
+  // login and shows up on every other tab; the backfill on next
+  // PrioList load will pick up anyone missed here.
+  // Kristina (the manager) is EXCLUDED everywhere on PrioList, so skip
+  // creating a row for her even if a future edit ever lets someone
+  // recreate her employee record under this exact name.
+  if (display_name !== 'Kristina Mutia') {
+    const { error: priolistErr } = await sb.from('priolist_entries').insert({
+      employee_id: newEmployee.id,
+      md_output: 0, leads: 0, status: '', file_color: null, note: '',
+      last_reset_date: isoDate(new Date()),
+    });
+    if (priolistErr) console.error('Could not create PrioList row for new employee:', priolistErr);
   }
 
   closeModal();
