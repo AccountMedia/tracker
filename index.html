@@ -8060,12 +8060,24 @@ function openTfLoanModal() {
     if (!treasurer) { showToast("Please select which treasurer's funds this loan comes from.", true); return; }
     if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
     if (!note) { showToast('Please add a note — it is required.', true); return; }
-    const { error } = await sb.from('employee_loans').insert({
+    const { data: loanRow, error } = await sb.from('employee_loans').insert({
       employee_id: empId, employee_name: empName,
       amount, note, loan_date: date, treasurer,
       status: 'active', recorded_by: state.profile.display_name,
-    });
+    }).select().single();
     if (error) { showToast('Could not record the loan.', true); return; }
+
+    // A loan going OUT is a debit against the fund — post it to
+    // Transaction History too, so the ledger and the loan log always
+    // agree. Tagged with the loan id so it can be found/edited/removed
+    // together with the loan it belongs to.
+    await sb.from('team_fund_transactions').insert({
+      type: 'debit', amount, transaction_date: date, treasurer,
+      note: `Loan to ${empName} — ${note}`,
+      recorded_by: state.profile.display_name,
+      loan_id: loanRow.id, tx_kind: 'loan_grant',
+    });
+
     closeModal();
     showToast('Loan recorded. Balance will reflect this once saved.');
     loadTeamFundsData().then(renderTeamFundsView);
@@ -8079,9 +8091,16 @@ function openTfRepaymentModal(loanId, loanName) {
       ${tfDateField('tf-repay-date', 'Payment date')}
       ${tfTreasurerField('tf-repay-treasurer')}
       <div class="field">
-        <label for="tf-repay-amount">Amount paid (₱)</label>
+        <label for="tf-repay-amount">Principal repayment (₱)</label>
         <input type="number" id="tf-repay-amount" min="0.01" step="0.01" required
           style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <p class="faint" style="font-size:11px; margin:4px 0 0;">The portion that pays down the loan itself.</p>
+      </div>
+      <div class="field">
+        <label for="tf-repay-interest">Interest <span class="faint">(optional, ₱)</span></label>
+        <input type="number" id="tf-repay-interest" min="0" step="0.01" value="0"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <p class="faint" style="font-size:11px; margin:4px 0 0;">If the payment includes interest, it's recorded as its own separate entry — not mixed into the loan balance.</p>
       </div>
       <div class="field">
         <label for="tf-repay-note">Note <span class="faint">(optional)</span></label>
@@ -8096,20 +8115,42 @@ function openTfRepaymentModal(loanId, loanName) {
     e.preventDefault();
     const date = document.getElementById('tf-repay-date').value;
     const amount = parseFloat(document.getElementById('tf-repay-amount').value);
+    const interest = parseFloat(document.getElementById('tf-repay-interest').value) || 0;
     const note = document.getElementById('tf-repay-note').value.trim();
     const treasurer = document.getElementById('tf-repay-treasurer').value;
     if (!date) { showToast('Please select a payment date.', true); return; }
     if (!treasurer) { showToast("Please select which treasurer received this repayment.", true); return; }
-    if (!amount || amount <= 0) { showToast('Please enter a valid amount.', true); return; }
-    const { error } = await sb.from('loan_repayments').insert({
+    if (!amount || amount <= 0) { showToast('Please enter a valid principal amount.', true); return; }
+    if (interest < 0) { showToast('Interest cannot be negative.', true); return; }
+
+    const { data: repayRow, error } = await sb.from('loan_repayments').insert({
       loan_id: loanId, amount, payment_date: date, note: note || null, treasurer,
       recorded_by: state.profile.display_name,
-    });
+    }).select().single();
     if (error) { showToast('Could not record the repayment.', true); return; }
+
+    // Principal repayment posts as a credit to the ledger.
+    await sb.from('team_fund_transactions').insert({
+      type: 'credit', amount, transaction_date: date, treasurer,
+      note: `Loan repayment from ${loanName}${note ? ' — ' + note : ''}`,
+      recorded_by: state.profile.display_name,
+      loan_id: loanId, repayment_id: repayRow.id, tx_kind: 'loan_repayment',
+    });
+    // Interest, if any, is its OWN separate ledger entry — never merged
+    // into the principal repayment amount.
+    if (interest > 0) {
+      await sb.from('team_fund_transactions').insert({
+        type: 'credit', amount: interest, transaction_date: date, treasurer,
+        note: `Interest on loan — ${loanName}${note ? ' — ' + note : ''}`,
+        recorded_by: state.profile.display_name,
+        loan_id: loanId, repayment_id: repayRow.id, tx_kind: 'loan_interest',
+      });
+    }
+
     closeModal();
-    showToast('Repayment recorded.');
+    showToast(interest > 0 ? 'Repayment and interest recorded as separate entries.' : 'Repayment recorded.');
     loadTeamFundsData().then(renderTeamFundsView);
-    pushTeamFundsNotification(`recorded a ${TF_FMT(amount)} loan repayment from ${loanName} (to ${treasurer}).`);
+    pushTeamFundsNotification(`recorded a ${TF_FMT(amount)} loan repayment from ${loanName} (to ${treasurer})${interest > 0 ? ` plus ${TF_FMT(interest)} interest` : ''}.`);
   });
 }
 
