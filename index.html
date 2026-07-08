@@ -6854,6 +6854,15 @@ function renderTeamFundsView() {
   const { settings, transactions, accounts, loans, repayments, tbSettings, treasurerCash } = state.teamFundsData;
 
   // Per-treasurer balances: cash on hand + credits − debits − loans + repayments
+  //
+  // IMPORTANT: loan grants and repayments now ALSO post their own rows into
+  // `transactions` (tx_kind = 'loan_grant' / 'loan_repayment' / 'loan_interest')
+  // so they show up in Transaction History. That means `credits`/`debits`
+  // below already include every loan and repayment — so the separate
+  // `loaned`/`repaid` terms (sourced from the loans/repayments tables
+  // directly) must be excluded here, or every repayment gets counted twice
+  // (once as a ledger credit, once again as `repaid`) and Funds Held
+  // overstates itself by exactly the repaid amount.
   const treasurers = (treasurerCash || []).map(tc => {
     const name = tc.treasurer_name;
     const isGeneral = (t) => (t.category || 'general') === 'general';
@@ -6863,8 +6872,13 @@ function renderTeamFundsView() {
     // OUT of their hands into the TB pot — deduct them. TB expenses spend
     // from the TB pot itself and never touch treasurer balances.
     const tbTaken = transactions.filter(t => t.type === 'credit' && t.treasurer === name && t.category === 'team_building').reduce((s, t) => s + Number(t.amount), 0);
-    const loaned  = loans.filter(l => l.treasurer === name).reduce((s, l) => s + Number(l.amount), 0);
-    const repaid  = repayments.filter(r => r.treasurer === name).reduce((s, r) => s + Number(r.amount), 0);
+    // Loans/repayments WITHOUT a matching ledger row (legacy data from
+    // before loans started auto-posting) still need to be counted the old
+    // way, so nothing from before this change silently disappears.
+    const loaned = loans.filter(l => l.treasurer === name && !transactions.some(t => t.loan_id === l.id && t.tx_kind === 'loan_grant'))
+      .reduce((s, l) => s + Number(l.amount), 0);
+    const repaid = repayments.filter(r => r.treasurer === name && !transactions.some(t => t.repayment_id === r.id))
+      .reduce((s, r) => s + Number(r.amount), 0);
     return { ...tc, balance: Number(tc.amount) + credits - debits - tbTaken - loaned + repaid };
   });
   const treasurerCashTotal = treasurers.reduce((s, t) => s + Number(t.amount), 0);
@@ -6876,6 +6890,9 @@ function renderTeamFundsView() {
   const totalDebits  = transactions.filter(t => t.type === 'debit'  && (t.category || 'general') === 'general').reduce((s, t) => s + Number(t.amount), 0);
   const tbCredits    = transactions.filter(t => t.type === 'credit' && t.category === 'team_building').reduce((s, t) => s + Number(t.amount), 0);
   const tbDebits     = transactions.filter(t => t.type === 'debit'  && t.category === 'team_building').reduce((s, t) => s + Number(t.amount), 0);
+  // "Loans Outstanding" = total loaned - total repaid, from the loans/
+  // repayments tables directly — NOT from transactions, so this figure is
+  // completely unaffected by whether a matching ledger row also exists.
   const totalLoaned  = loans.reduce((s, l) => s + Number(l.amount), 0);
   const totalRepaid  = repayments.reduce((s, r) => s + Number(r.amount), 0);
   const loanOutstanding = totalLoaned - totalRepaid;
