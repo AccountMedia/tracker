@@ -4550,51 +4550,49 @@ function renderRedFilesView() {
     return emp ? emp.display_name : '—';
   }
 
-  function fileCard(f) {
+  function fileChip(f) {
     const isOpen = f.status === 'open';
     const isMine = f.claimed_by === state.profile.employee_id;
     const canFinish = f.status === 'claimed' && (isMine || admin);
     return `
-      <div class="card" style="padding:14px 16px; display:flex; align-items:center; gap:14px;
+      <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:9px;
+        border:1px solid ${isMine ? 'var(--teal)' : 'var(--line-soft)'};
         border-left:4px solid ${isMine ? 'var(--teal)' : isOpen ? 'var(--coral)' : 'var(--amber)'};
-        ${isMine ? 'background:#DCEFEA; border-color:var(--teal); box-shadow:0 0 0 1px var(--teal-wash);' : ''}">
+        background:${isMine ? '#DCEFEA' : 'var(--paper)'};">
         <div style="flex:1; min-width:0;">
-          <div style="display:flex; align-items:center; gap:8px;">
-            <span style="font-family:var(--font-mono); font-weight:700; font-size:14px;">${escapeHtml(f.camp_id)}</span>
-            ${isMine ? `<span style="font-size:10px; font-weight:700; padding:2px 9px; border-radius:999px; background:var(--teal); color:#F7F3E8; letter-spacing:0.04em;">YOURS</span>` : ''}
+          <div style="display:flex; align-items:center; gap:7px;">
+            <span style="font-family:var(--font-mono); font-weight:700; font-size:13px;">${escapeHtml(f.camp_id)}</span>
+            ${isMine ? `<span style="font-size:9px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--teal); color:#F7F3E8;">YOURS</span>` : ''}
           </div>
-          <div class="faint" style="font-size:11.5px; margin-top:2px;">
-            ${isOpen
-              ? 'Unclaimed — pick this up to start working on it.'
-              : isMine
-                ? `You claimed this${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`
-                : `Claimed by <strong style="color:var(--ink);">${escapeHtml(claimedName(f))}</strong>${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`}
+          <div class="faint" style="font-size:10.5px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            ${isOpen ? 'Unclaimed' : isMine ? `You · ${f.claimed_at ? formatDateTime(f.claimed_at) : ''}` : `${escapeHtml(claimedName(f))}${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`}
           </div>
         </div>
-        ${isOpen ? `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}">Claim</button>` : ''}
+        ${isOpen ? `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}" style="padding:4px 12px; font-size:11.5px;">Claim</button>` : ''}
         ${canFinish ? `
-          <button class="btn btn-sm red-file-finish-btn" data-id="${f.id}" data-status="done" style="background:var(--green); color:#F7F3E8;">Done</button>
-          <button class="btn btn-ghost btn-sm red-file-finish-btn" data-id="${f.id}" data-status="av">AV</button>
+          <button class="btn btn-sm red-file-finish-btn" data-id="${f.id}" data-status="done" style="background:var(--green); color:#F7F3E8; padding:4px 10px; font-size:11.5px;">Done</button>
+          <button class="btn btn-ghost btn-sm red-file-finish-btn" data-id="${f.id}" data-status="av" style="padding:4px 10px; font-size:11.5px;">AV</button>
         ` : ''}
-        ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:4px 8px;">✕</button>` : ''}
+        ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:2px 7px; font-size:11px;">✕</button>` : ''}
       </div>
     `;
   }
 
-  const doneRows = doneFiles.map(f => `
-    <div style="display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
-      <span style="font-family:var(--font-mono); font-weight:700;">${escapeHtml(f.camp_id)}</span>
-      <span style="font-size:10.5px; font-weight:700; padding:2px 10px; border-radius:999px;
-        background:${f.status === 'done' ? 'var(--green-wash)' : 'var(--amber-wash)'};
-        color:${f.status === 'done' ? 'var(--green)' : 'var(--amber)'};">${f.status === 'done' ? '✓ Done' : 'AV'}</span>
-      <span class="faint">by ${escapeHtml(claimedName(f))}</span>
-      <span class="faint" style="margin-left:auto;">${f.completed_at ? formatDateTime(f.completed_at) : ''}</span>
-      ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:2px 8px; font-size:11px;">✕</button>` : ''}
-    </div>
-  `).join('');
+  function doneChip(f) {
+    return `
+      <div style="display:flex; align-items:center; gap:8px; padding:7px 11px; border-radius:10px; border:1px solid var(--line-soft); background:var(--paper); font-size:12px;">
+        <span style="font-family:var(--font-mono); font-weight:700;">${escapeHtml(f.camp_id)}</span>
+        <span style="font-size:9.5px; font-weight:700; padding:1px 8px; border-radius:999px;
+          background:${f.status === 'done' ? 'var(--green-wash)' : 'var(--amber-wash)'};
+          color:${f.status === 'done' ? 'var(--green)' : 'var(--amber)'};">${f.status === 'done' ? '✓ Done' : 'AV'}</span>
+        <span class="faint" style="font-size:10.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(claimedName(f))}</span>
+        ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:1px 6px; font-size:10.5px; margin-left:auto;">✕</button>` : ''}
+      </div>
+    `;
+  }
 
   el.innerHTML = `
-    <div class="card" style="padding:20px; margin-bottom:20px;">
+    <div class="card" style="padding:20px; margin-bottom:16px;">
       <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Add CampIDs</h3>
       <p class="faint" style="font-size:11.5px; margin:0 0 12px;">Type a CampID and press Enter — it's added instantly and a fresh cell opens below. Everyone can add at the same time; the list updates live for the whole team.</p>
       <div id="red-file-entry-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:8px;">
@@ -4604,20 +4602,28 @@ function renderRedFilesView() {
         `).join('')}
       </div>
     </div>
-    <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:24px;">
-      ${activeFiles.length ? activeFiles.map(fileCard).join('') : `
-        <div class="card" style="padding:30px; text-align:center;">
-          <p class="muted" style="margin:0;">No red files right now.</p>
-          <p class="faint" style="font-size:12px; margin-top:6px;">Type a CampID in a cell above to add one.</p>
+
+    <div class="card" style="padding:18px 20px;">
+      <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:15px; color:var(--coral);">🔴 Active Red Files <span class="faint" style="font-size:11.5px; font-weight:400;">(${activeFiles.length})</span></h3>
+      ${activeFiles.length ? `
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr)); gap:6px;">
+          ${activeFiles.map(fileChip).join('')}
         </div>
+      ` : `
+        <p class="muted" style="margin:0; text-align:center; padding:12px 0; font-size:13px;">No red files right now.</p>
       `}
     </div>
-    ${doneFiles.length ? `
-      <div class="card" style="padding:20px;">
-        <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:16px; color:var(--teal);">Completed</h3>
-        ${doneRows}
-      </div>
-    ` : ''}
+
+    <div class="card" style="padding:18px 20px; margin-top:16px;">
+      <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:15px; color:var(--teal);">✓ Done / AV <span class="faint" style="font-size:11.5px; font-weight:400;">(${doneFiles.length})</span></h3>
+      ${doneFiles.length ? `
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:6px; max-height:280px; overflow-y:auto; padding-right:4px;">
+          ${doneFiles.map(doneChip).join('')}
+        </div>
+      ` : `
+        <p class="muted" style="margin:0; text-align:center; padding:12px 0; font-size:13px;">Nothing completed yet.</p>
+      `}
+    </div>
   `;
 
   document.querySelectorAll('.red-file-claim-btn').forEach(btn => {
@@ -8380,6 +8386,33 @@ function ipsMdSum(employeeId, dates) {
   if (!vals.length) return 0;
   return round2(vals.reduce((s, v) => s + Number(v), 0));
 }
+// Hours an employee was on approved/cancellation-pending leave on a
+// given date. Mirrors entriesForEmployee + dayFractionForEntry exactly
+// (fraction-of-a-day × 8), so IPS and the Leave Tracker always agree.
+// Multiple leave rows on the same date (rare, but possible) are summed
+// and capped at a full 8-hour day.
+function ipsLeaveHoursOn(employeeId, dateIso) {
+  const rows = entriesForEmployee(employeeId).filter(e => e.leave_date === dateIso);
+  if (!rows.length) return 0;
+  const totalDayFraction = rows.reduce((s, e) => s + dayFractionForEntry(e), 0);
+  return Math.min(8, totalDayFraction * 8);
+}
+
+// The PO target for one day: normally 800, shrunk proportionally by
+// hours on leave that day (VLH for 4 hrs → 800 × 4/8 = 400; a 2-hour VL
+// filing → 800 × 6/8 = 600). A full 8-hour leave day has a target of 0
+// and is excluded from the PO average entirely (nothing to measure).
+// Only applies from July 2026 onward — June and earlier keep the flat
+// 800 target, matching how the historical spreadsheet import works.
+const IPS_LEAVE_AWARE_TARGET_START = '2026-07-01';
+function ipsDayTarget(employeeId, dateIso) {
+  if (dateIso < IPS_LEAVE_AWARE_TARGET_START) return 800;
+  const leaveHours = ipsLeaveHoursOn(employeeId, dateIso);
+  if (leaveHours <= 0) return 800;
+  const workedHours = Math.max(0, 8 - leaveHours);
+  return Math.round((workedHours / 8) * 800);
+}
+
 function ipsPoRatioAverage(employeeId, dates) {
   const ratios = dates.map(d => {
     const e = ipsDailyFor(employeeId, d);
@@ -8387,12 +8420,17 @@ function ipsPoRatioAverage(employeeId, dates) {
     const lq = e && e.lq_value != null ? Number(e.lq_value) : 0;
     const md = e && e.md_value != null ? Number(e.md_value) : 0;
     const total = lq + md;
-    return total > 0 ? total / 800 : null;
+    if (total <= 0) return null;
+    const target = ipsDayTarget(employeeId, d); // shrinks for partial-day leave (VLH, hourly VL/SL/EL, etc.)
+    if (target <= 0) return null; // full day on leave — nothing to measure
+    return total / target;
   }).filter(r => r != null);
   if (!ratios.length) return 0;
   return ratios.reduce((s, r) => s + r, 0) / ratios.length;
 }
 function ipsPoTotal(employeeId, dates) {
+  // "PO Total" reconstructs an equivalent 800-based figure so it stays
+  // comparable across days regardless of each day's actual target.
   return round2(ipsPoRatioAverage(employeeId, dates) * 800);
 }
 // QA is stored as a fraction (0.97 = 97%), matching the spreadsheet's
@@ -8521,7 +8559,9 @@ function renderIpsTables() {
       const md = e && e.md_value != null ? e.md_value : '';
       const total = (lq === '' ? 0 : Number(lq)) + (md === '' ? 0 : Number(md));
       const poExcluded = !!(e && e.po_excluded);
-      const ratio = total > 0 && !poExcluded ? (total / 800) * 100 : null;
+      const target = ipsDayTarget(emp.id, day); // 800 minus any leave hours that day (VLH, hourly VL/SL/EL, etc.)
+      const onFullLeave = target <= 0;
+      const ratio = total > 0 && !poExcluded && !onFullLeave ? (total / target) * 100 : null;
       const canEdit = canEditIpsRow(emp.id);
       const isMe = emp.id === state.profile.employee_id;
       const barColor = ratio == null ? 'var(--line)' : ratio >= 100 ? 'var(--green)' : ratio >= 90 ? 'var(--amber)' : 'var(--coral)';
@@ -8539,13 +8579,20 @@ function renderIpsTables() {
           ${numCell('md_value', md)}
           ${numCell('lq_value', lq)}
           <td style="padding:8px; text-align:center; font-weight:700;">${total || '—'}</td>
-          <td style="padding:8px 10px; min-width:140px;">
+          <td style="padding:8px 10px; min-width:150px;">
             <div style="display:flex; align-items:center; gap:8px;">
               <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden;">
                 <div style="width:${ratio != null ? Math.max(0, Math.min(100, ratio)) : 0}%; height:100%; background:${barColor}; border-radius:999px;"></div>
               </div>
-              <span style="font-weight:700; min-width:52px; text-align:right; font-size:12px;">${poExcluded ? '<span title="This day counts in the MD/LQ totals but is excluded from the PO average, matching the spreadsheet." style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">excl. PO</span>' : ratio != null ? ratio.toFixed(2) + '%' : '—'}</span>
+              <span style="font-weight:700; min-width:52px; text-align:right; font-size:12px;">
+                ${poExcluded
+                  ? '<span title="This day counts in the MD/LQ totals but is excluded from the PO average, matching the spreadsheet." style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">excl. PO</span>'
+                  : onFullLeave
+                    ? '<span title="Full day on leave — no target to measure against." style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--line-soft); color:var(--ink-faint);">on leave</span>'
+                    : ratio != null ? ratio.toFixed(2) + '%' : '—'}
+              </span>
             </div>
+            ${target < 800 && !poExcluded ? `<div class="faint" style="font-size:9.5px; margin-top:2px; text-align:right;" title="Target reduced for approved leave hours on this date">target: ${target}</div>` : ''}
           </td>
         </tr>
       `;
@@ -8573,17 +8620,21 @@ function renderIpsTables() {
           <th style="padding:6px 10px;">Missing Data Task</th>
           <th style="padding:6px 10px;">Lead Qualification</th>
           <th style="padding:6px 10px;">Day Total</th>
-          <th style="padding:6px 10px; text-align:left;">vs 800 target</th>
+          <th style="padding:6px 10px; text-align:left;">vs target</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else, and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays; monthly averages and totals live in the other tabs and the downloadable report.</p>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 You can only type into your own highlighted row. ${admin ? 'As admin/IPS you can edit anyone — a confirmation appears when editing someone else, and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays; monthly averages and totals live in the other tabs and the downloadable report. Target shrinks automatically for approved leave hours on a date (e.g. a 4-hour VLH day targets 400, a 2-hour VL filing targets 600), pulled from the Leave Tracker — effective July 2026 onward.</p>
     `;
   }
 
   function buildEcSection() {
-    const editable = admin && ipsState.monthlyEditMode;
     const rows = roster.map(emp => {
+      // Everyone can edit their OWN errors count directly. Admins/IPS can
+      // edit anyone's too — no Edit-mode toggle needed here, but editing
+      // someone ELSE's row asks for a one-time confirmation each time.
+      const isMe = emp.id === state.profile.employee_id;
+      const editable = isMe || admin;
       const m = ipsMonthlyFor(emp.id);
       const errors = m ? (m.errors ?? '') : '';
       const ec = ipsErrorCorrectionPct(emp.id);
@@ -8594,7 +8645,7 @@ function renderIpsTables() {
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
           <td style="padding:4px; text-align:center;">
             ${editable
-              ? `<input type="number" min="0" step="1" class="ips-error-input" data-emp-id="${emp.id}" value="${errors}" style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid var(--gold-line); font-family:inherit; font-size:12px;">`
+              ? `<input type="number" min="0" step="1" class="ips-error-input" data-emp-id="${emp.id}" value="${errors}" style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${isMe ? 'var(--line)' : 'var(--gold-line)'}; font-family:inherit; font-size:12px; background:${isMe ? '#fff' : 'var(--paper)'};">`
               : `<span>${errors !== '' ? errors : '—'}</span>`}
           </td>
           <td style="padding:8px 10px; text-align:center;">${workingDays || '—'}</td>
@@ -8610,7 +8661,7 @@ function renderIpsTables() {
       `;
     }).join('');
     return `
-      ${admin ? ipsEditToggleHtml() : ''}
+      <p class="faint" style="font-size:11.5px; margin:0 0 12px;">Type your errors count in your own highlighted row — it saves automatically.${admin ? ' As admin you can also edit anyone else\'s — you\'ll be asked to confirm each time.' : ''}</p>
       ${admin ? `
         <div class="card" style="padding:14px 16px; margin-bottom:16px; display:flex; align-items:center; gap:12px; background:var(--amber-wash); border-color:var(--amber-wash);">
           <span style="font-size:18px;">📅</span>
@@ -8650,7 +8701,7 @@ function renderIpsTables() {
       `;
     }).join('');
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Computed automatically per day as (Lead Qualification + Missing Data) ÷ 800, with zero days excluded from the average. PO Total = average × 800.</p>
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Computed automatically per day as (Lead Qualification + Missing Data) ÷ target, with zero days excluded from the average. The target is normally 800 but shrinks for approved leave hours that day (from the Leave Tracker) — e.g. 400 for a 4-hour VLH day — and a full 8-hour leave day is excluded entirely. Effective July 2026 onward. PO Total reconstructs an 800-based equivalent for comparability.</p>
       <table class="ips-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">PO Total (avg × 800)</th><th style="padding:6px 10px; text-align:left;">PO Ratio Average</th>
@@ -8696,8 +8747,14 @@ function renderIpsTables() {
       `;
     }).join('');
     return `
-      ${admin ? ipsEditToggleHtml() : ''}
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">${admin ? (ipsState.monthlyEditMode ? 'Edit mode is ON — every field below is unlocked. Click "Done" when finished.' : 'Click "Edit" to unlock all fields at once.') : 'View only — admins and IPS manage this section.'}</p>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
+        <p class="faint" style="font-size:11.5px; margin:0;">${admin ? (ipsState.monthlyEditMode ? 'Edit mode is ON — every field below is unlocked. Click "Done" when finished.' : 'Click "Edit" to unlock all fields at once.') : 'View only — admins and IPS manage this section.'}</p>
+        ${admin ? `
+          <button class="btn ${ipsState.monthlyEditMode ? 'btn-primary' : 'btn-ghost'} btn-sm" id="ips-monthly-edit-toggle" style="padding:6px 16px; flex-shrink:0;">
+            ${ipsState.monthlyEditMode ? '✓ Done' : 'Edit'}
+          </button>
+        ` : ''}
+      </div>
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:640px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA % (e.g. 97)</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Major notes</th><th style="padding:6px 10px;">Minor notes</th>
@@ -9316,8 +9373,21 @@ async function saveIpsDailyEntry(input) {
 }
 
 async function saveIpsMonthlyField(employeeId, field, rawValue) {
-  if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
-  if (!ipsState.monthlyEditMode) { showToast('Click "Edit" first to unlock these fields.', true); renderIpsTables(); return; }
+  // Everyone may edit their OWN errors count. Anything else (someone
+  // else's row, or the QA fields) stays admin/IPS-only behind Edit mode.
+  const isOwn = employeeId === state.profile.employee_id;
+  if (field === 'errors') {
+    // Error Correction: everyone edits their own row freely; admins can
+    // edit anyone's, confirming once per edit (no Edit-mode toggle here).
+    if (!isOwn) {
+      if (!canManageIps()) { showToast('You can only edit your own errors.', true); renderIpsTables(); return; }
+      if (!confirm('Are you sure you want to edit?')) { renderIpsTables(); return; }
+    }
+  } else {
+    // QA fields: admin/IPS only, behind the Edit-mode toggle.
+    if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
+    if (!ipsState.monthlyEditMode) { showToast('Click "Edit" first to unlock these fields.', true); renderIpsTables(); return; }
+  }
 
   let value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
