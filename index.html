@@ -1073,19 +1073,31 @@ function updateBrowserTabBadge(count) {
 // badge the instant it's saved, regardless of which tab is open.
 function startNavBadgePolling() {
   if (!state.profile || !isAdmin()) return;
-  const rerender = debounceRealtime(async () => {
+  const rerenderBadge = debounceRealtime(() => {
     if (!state.profile || !isAdmin()) return;
-    const loads = [loadLeaveEntries()];
-    if (!state.leaveNotifPanelOpen) loads.push(loadLeaveNotifications());
-    await Promise.all(loads);
     updateLeaveNavBadge();
   }, 200); // short debounce — badges should feel instant
-  subscribeRealtime('badge_leave_entries', 'leave_entries', rerender);
-  subscribeRealtime('badge_leave_notifications', 'leave_notifications', rerender);
+
+  // Only open a SEPARATE leave_entries subscription if one doesn't
+  // already exist (e.g. from the Leave Tracker tab or Dashboard being
+  // open) — subscribeRealtime already de-dupes by key, but this key is
+  // intentionally different ('badge_leave_entries' vs 'leave_entries')
+  // so the badge keeps working even when neither of those tabs is open.
+  // Patch state directly from the payload either way — never re-fetch.
+  subscribeRealtime('badge_leave_entries', 'leave_entries', (payload) => {
+    applyRealtimePatch(payload, () => state.leaveEntries, (v) => { state.leaveEntries = v; });
+    rerenderBadge();
+  });
+  subscribeRealtime('badge_leave_notifications', 'leave_notifications', (payload) => {
+    applyRealtimePatch(payload, () => state.leaveNotifications, (v) => { state.leaveNotifications = v; });
+    rerenderBadge();
+  });
 
   // The instant the tab becomes visible again (e.g. after being
   // minimized, where some browsers throttle background JS/websockets),
-  // force a fresh read so the badge can't ever be stale for long.
+  // force a fresh read so the badge can't ever be stale for long. This
+  // is the ONE place a real fetch still happens — a single check on
+  // tab-focus, not a recurring cost.
   if (!window._navBadgeVisHook) {
     window._navBadgeVisHook = true;
     document.addEventListener('visibilitychange', () => {
@@ -1186,6 +1198,26 @@ function debounceRealtime(fn, wait = 250) {
     clearTimeout(t);
     t = setTimeout(() => fn(...args), wait);
   };
+}
+
+// Patches a state array DIRECTLY from a Realtime payload's row — no
+// re-fetch, no full-table download. This is the actual point of
+// Realtime: it already hands us the changed row; re-downloading the
+// whole table on top of that defeats the egress savings entirely
+// (worse than polling once multiple people have the same tab open,
+// since every edit then re-fetches for every viewer).
+// `getArray`/`setArray` are getter/setter closures so this works for
+// any state.* array without duplicating the INSERT/UPDATE/DELETE logic.
+function applyRealtimePatch(payload, getArray, setArray, idField = 'id') {
+  const arr = getArray() || [];
+  if (payload.eventType === 'INSERT') {
+    if (arr.some(r => r[idField] === payload.new[idField])) return; // already have it (e.g. from our own optimistic update)
+    setArray([...arr, payload.new]);
+  } else if (payload.eventType === 'UPDATE') {
+    setArray(arr.map(r => r[idField] === payload.new[idField] ? payload.new : r));
+  } else if (payload.eventType === 'DELETE') {
+    setArray(arr.filter(r => r[idField] !== payload.old[idField]));
+  }
 }
 
 async function loadAllData() {
@@ -4323,20 +4355,27 @@ const PRIOLIST_STATUS_COLORS = {
 // instant they're saved, so the list re-sorts live for everyone.
 function startPriolistPolling() {
   stopPriolistPolling();
+  // PrioList entries keeps a light re-fetch rather than a raw patch —
+  // loadPriolistEntries() also self-heals missing rows for any newly
+  // added employee, which a payload-only patch would silently skip.
+  // The table itself is small (one row per employee, ~32 total), so
+  // this is a reasonable trade-off unlike the larger tables elsewhere.
   const rerenderPriolist = debounceRealtime(async () => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return; // don't yank the list mid-keystroke
     await loadPriolistEntries();
     renderPrioList();
   });
-  const rerenderRedFiles = debounceRealtime(async () => {
+  const rerenderRedFiles = debounceRealtime(() => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('red-file-entry-cell') && active.value) return; // mid-typing a CampID
-    await loadRedFiles();
     renderRedFilesView();
   });
   subscribeRealtime('priolist_entries', 'priolist_entries', rerenderPriolist);
-  subscribeRealtime('priolist_red_files', 'priolist_red_files', rerenderRedFiles);
+  subscribeRealtime('priolist_red_files', 'priolist_red_files', (payload) => {
+    applyRealtimePatch(payload, () => state.redFiles, (v) => { state.redFiles = v; });
+    rerenderRedFiles();
+  });
 }
 
 function stopPriolistPolling() {
@@ -4926,15 +4965,20 @@ function stopLiRestrictionTicker() {
 // never be skipped for budget reasons.
 function startLeaveTrackerPolling() {
   stopLeaveTrackerPolling();
-  const rerender = debounceRealtime(async () => {
+  const rerenderOnly = debounceRealtime(() => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('credit-input')) return; // never yank a field mid-keystroke
-    await Promise.all([loadLeaveEntries(), loadEmployees()]);
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
     updateLeaveNavBadge();
   });
-  subscribeRealtime('leave_entries', 'leave_entries', rerender);
-  subscribeRealtime('employees_lt', 'employees', rerender);
+  subscribeRealtime('leave_entries', 'leave_entries', (payload) => {
+    applyRealtimePatch(payload, () => state.leaveEntries, (v) => { state.leaveEntries = v; });
+    rerenderOnly();
+  });
+  subscribeRealtime('employees_lt', 'employees', (payload) => {
+    applyRealtimePatch(payload, () => state.employees, (v) => { state.employees = v; });
+    rerenderOnly();
+  });
 }
 
 function stopLeaveTrackerPolling() {
@@ -4947,13 +4991,15 @@ function stopLeaveTrackerPolling() {
 // saved, no polling interval.
 function startPayrollPolling() {
   stopPayrollPolling();
-  const rerender = debounceRealtime(async () => {
+  const rerender = debounceRealtime(() => {
     const overlay = document.getElementById('modal-overlay');
     if (overlay && overlay.style.display === 'flex') return; // don't yank the view out from under an open modal
-    await loadPayrollConfirmations();
     renderPayrollConfirmation();
   });
-  subscribeRealtime('payroll_confirmations', 'payroll_confirmations', rerender);
+  subscribeRealtime('payroll_confirmations', 'payroll_confirmations', (payload) => {
+    applyRealtimePatch(payload, () => state.payrollConfirmations, (v) => { state.payrollConfirmations = v; });
+    rerender();
+  });
 }
 
 function stopPayrollPolling() {
@@ -4966,14 +5012,19 @@ function stopPayrollPolling() {
 // actively typing into one of its number fields.
 function startOtFilingPolling() {
   stopOtFilingPolling();
-  const rerender = debounceRealtime(async () => {
+  const rerender = debounceRealtime(() => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return;
-    await Promise.all([loadOtFilingDates(), loadOtHoursEntries()]);
     renderOtFiling();
   });
-  subscribeRealtime('ot_filing_dates', 'ot_filing_dates', rerender);
-  subscribeRealtime('ot_hours_entries', 'ot_hours_entries', rerender);
+  subscribeRealtime('ot_filing_dates', 'ot_filing_dates', (payload) => {
+    applyRealtimePatch(payload, () => state.otFilingDates, (v) => { state.otFilingDates = v; });
+    rerender();
+  });
+  subscribeRealtime('ot_hours_entries', 'ot_hours_entries', (payload) => {
+    applyRealtimePatch(payload, () => state.otHoursEntries, (v) => { state.otHoursEntries = v; });
+    rerender();
+  });
 }
 
 function stopOtFilingPolling() {
@@ -4986,14 +5037,42 @@ function stopOtFilingPolling() {
 // repayment appears the instant it's saved, anywhere on the team.
 function startTeamFundsPolling() {
   stopTeamFundsPolling();
-  const rerender = debounceRealtime(async () => {
-    // Skip re-fetch if a dropdown menu is open, to avoid yanking it away mid-interaction
+  const rerender = debounceRealtime(() => {
+    // Skip re-render if a dropdown menu is open, to avoid yanking it away mid-interaction
     if (state.teamFundsTxMenuId !== null || state.teamFundsLoanMenuId !== null) return;
-    await loadTeamFundsData();
     renderTeamFundsView(); // render without loading flash — same pattern as PrioList
   });
-  ['team_fund_transactions', 'employee_loans', 'loan_repayments', 'treasurer_cash', 'treasurer_accounts', 'team_funds_settings', 'team_building_settings']
-    .forEach(table => subscribeRealtime(`tf_${table}`, table, rerender));
+
+  // Maps each subscribed table to where it lives inside state.teamFundsData.
+  // Two (settings, tbSettings) are single-row objects, not arrays — those
+  // get the payload's row directly rather than array-patched.
+  const arrayFields = {
+    team_fund_transactions: 'transactions',
+    employee_loans: 'loans',
+    loan_repayments: 'repayments',
+    treasurer_cash: 'treasurerCash',
+    treasurer_accounts: 'accounts',
+  };
+  const singletonFields = {
+    team_funds_settings: 'settings',
+    team_building_settings: 'tbSettings',
+  };
+
+  if (!state.teamFundsData) state.teamFundsData = { settings: null, transactions: [], accounts: [], loans: [], repayments: [], tbSettings: null, treasurerCash: [] };
+
+  Object.entries(arrayFields).forEach(([table, field]) => {
+    subscribeRealtime(`tf_${table}`, table, (payload) => {
+      applyRealtimePatch(payload, () => state.teamFundsData[field], (v) => { state.teamFundsData[field] = v; });
+      rerender();
+    });
+  });
+  Object.entries(singletonFields).forEach(([table, field]) => {
+    subscribeRealtime(`tf_${table}`, table, (payload) => {
+      if (payload.eventType === 'DELETE') state.teamFundsData[field] = null;
+      else state.teamFundsData[field] = payload.new; // INSERT or UPDATE — this table only ever holds the latest row
+      rerender();
+    });
+  });
 }
 
 function stopTeamFundsPolling() {
@@ -5007,21 +5086,26 @@ function stopTeamFundsPolling() {
 // refresh the instant the underlying data changes, anywhere.
 function startDashboardPolling() {
   stopDashboardPolling();
-  const rerender = debounceRealtime(async () => {
+  const rerender = debounceRealtime(() => {
     const overlay = document.getElementById('modal-overlay');
     if (overlay && overlay.style.display === 'flex') return; // don't disturb an open modal elsewhere
-    await Promise.all([
-      loadEmployees(),
-      loadLeaveEntries(),
-      loadPayrollConfirmations(),
-      loadLiRestrictionEntries(),
-      loadOtFilingDates(),
-      loadOtHoursEntries(),
-    ]);
     renderDashboard();
   });
+  const fieldByTable = {
+    employees: () => state.employees, li_restriction_entries: () => state.liRestrictionEntries,
+    leave_entries: () => state.leaveEntries, payroll_confirmations: () => state.payrollConfirmations,
+    ot_filing_dates: () => state.otFilingDates, ot_hours_entries: () => state.otHoursEntries,
+  };
+  const setterByTable = {
+    employees: (v) => { state.employees = v; }, li_restriction_entries: (v) => { state.liRestrictionEntries = v; },
+    leave_entries: (v) => { state.leaveEntries = v; }, payroll_confirmations: (v) => { state.payrollConfirmations = v; },
+    ot_filing_dates: (v) => { state.otFilingDates = v; }, ot_hours_entries: (v) => { state.otHoursEntries = v; },
+  };
   ['employees', 'leave_entries', 'payroll_confirmations', 'li_restriction_entries', 'ot_filing_dates', 'ot_hours_entries']
-    .forEach(table => subscribeRealtime(`dash_${table}`, table, rerender));
+    .forEach(table => subscribeRealtime(`dash_${table}`, table, (payload) => {
+      applyRealtimePatch(payload, fieldByTable[table], setterByTable[table]);
+      rerender();
+    }));
 }
 
 function stopDashboardPolling() {
@@ -8850,7 +8934,7 @@ function ipsMonthLabel(monthIso) {
 // across every IPS tab (Daily Entry, PO & EC Score, QA, Monthly Score).
 function startIpsRealtime() {
   stopIpsRealtime();
-  const rerender = debounceRealtime(async () => {
+  const rerender = debounceRealtime(() => {
     const active = document.activeElement;
     // Don't yank a field out from under someone mid-keystroke on any of
     // the IPS input classes.
@@ -8859,14 +8943,54 @@ function startIpsRealtime() {
       active.classList.contains('ips-qa-input') ||
       active.id === 'ips-working-days-input'
     )) return;
-    await loadIpsData();
-    ipsState._loadedMonth = ipsState.month;
     renderIpsTables();
   });
-  subscribeRealtime('ips_daily_entries', 'ips_daily_entries', rerender);
-  subscribeRealtime('ips_monthly_data', 'ips_monthly_data', rerender);
-  subscribeRealtime('ips_month_settings', 'ips_month_settings', rerender);
-  subscribeRealtime('ips_correction_requests', 'ips_correction_requests', rerender);
+
+  // ips_daily_entries and ips_monthly_data are scoped to the CURRENTLY
+  // VIEWED month (ipsState.month) — a pushed row for a different month
+  // (e.g. another admin working in June while I'm viewing July) must be
+  // ignored rather than blindly appended, or switching months would
+  // show a mix of two months' data until the next full month-switch.
+  subscribeRealtime('ips_daily_entries', 'ips_daily_entries', (payload) => {
+    const row = payload.new || payload.old;
+    const [y, m] = ipsState.month.split('-').map(Number);
+    const monthEnd = isoDate(new Date(y, m, 0));
+    if (row.entry_date < ipsState.month || row.entry_date > monthEnd) return; // different month — not our concern right now
+    applyRealtimePatch(payload, () => ipsState.dailyEntries, (v) => { ipsState.dailyEntries = v; });
+    rerender();
+  });
+  subscribeRealtime('ips_monthly_data', 'ips_monthly_data', (payload) => {
+    const row = payload.new || payload.old;
+    if (row.month !== ipsState.month) return; // different month
+    applyRealtimePatch(payload, () => ipsState.monthlyData, (v) => { ipsState.monthlyData = v; });
+    rerender();
+  });
+  subscribeRealtime('ips_month_settings', 'ips_month_settings', (payload) => {
+    const row = payload.new || payload.old;
+    if (row.month !== ipsState.month) return; // different month
+    if (payload.eventType === 'DELETE') ipsState.monthSettings = null;
+    else ipsState.monthSettings = payload.new;
+    rerender();
+  });
+  subscribeRealtime('ips_correction_requests', 'ips_correction_requests', (payload) => {
+    // Correction requests span all months (the approval inbox and "my
+    // pending" badges aren't month-scoped the same way), so just patch
+    // both derived lists directly rather than re-deriving from a full
+    // re-fetch.
+    const row = payload.new || payload.old;
+    if (payload.eventType === 'DELETE') {
+      ipsState.pendingApprovals = (ipsState.pendingApprovals || []).filter(r => r.id !== row.id);
+      ipsState.myPendingRequests = (ipsState.myPendingRequests || []).filter(r => r.id !== row.id);
+    } else {
+      const isPending = payload.new.status === 'pending';
+      const isMine = state.profile && payload.new.employee_id === state.profile.employee_id;
+      ipsState.pendingApprovals = (ipsState.pendingApprovals || []).filter(r => r.id !== payload.new.id);
+      if (isPending) ipsState.pendingApprovals.push(payload.new);
+      ipsState.myPendingRequests = (ipsState.myPendingRequests || []).filter(r => r.id !== payload.new.id);
+      if (isMine) ipsState.myPendingRequests.push(payload.new);
+    }
+    rerender();
+  });
 }
 
 function stopIpsRealtime() {
