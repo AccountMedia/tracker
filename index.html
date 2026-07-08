@@ -8608,8 +8608,9 @@ function renderIpsTables() {
       const qa = qaFrac != null ? round2(qaFrac * 100) : '';
       const major = m ? (m.major_count ?? 0) : 0;
       const minor = m ? (m.minor_count ?? 0) : 0;
-      const majorNotes = m && Array.isArray(m.major_notes) ? m.major_notes : [];
-      const minorNotes = m && Array.isArray(m.minor_notes) ? m.minor_notes : [];
+      // Only non-empty strings count as notes — cleared/blank lines are ignored
+      const majorNotes = (m && Array.isArray(m.major_notes) ? m.major_notes : []).filter(n => n && n.trim());
+      const minorNotes = (m && Array.isArray(m.minor_notes) ? m.minor_notes : []).filter(n => n && n.trim());
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
@@ -9296,8 +9297,11 @@ function openIpsNotesModal(employeeId, kind) {
   if (!canManageIps()) return;
   const emp = state.employees.find(e => e.id === employeeId);
   const m = ipsMonthlyFor(employeeId);
-  const count = kind === 'major' ? (m?.major_count || 0) : (m?.minor_count || 0);
-  const existingNotes = (kind === 'major' ? m?.major_notes : m?.minor_notes) || [];
+  const declaredCount = kind === 'major' ? (m?.major_count || 0) : (m?.minor_count || 0);
+  const existingNotes = ((kind === 'major' ? m?.major_notes : m?.minor_notes) || []).filter(n => n && n.trim());
+  // Show enough rows for the declared count OR any leftover saved notes —
+  // so stale notes can always be cleared even after the count is zeroed.
+  const count = Math.max(declaredCount, existingNotes.length);
 
   const rowsHtml = Array.from({ length: count }).map((_, i) => `
     <div class="field">
@@ -9318,7 +9322,8 @@ function openIpsNotesModal(employeeId, kind) {
 
   document.getElementById('ips-notes-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const notes = Array.from(document.querySelectorAll('.ips-note-line')).map(inp => inp.value.trim());
+    // Drop blank lines — an emptied field means "delete this note"
+    const notes = Array.from(document.querySelectorAll('.ips-note-line')).map(inp => inp.value.trim()).filter(Boolean);
     const field = kind === 'major' ? 'major_notes' : 'minor_notes';
     await saveIpsNotes(employeeId, field, notes);
   });
