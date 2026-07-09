@@ -565,6 +565,7 @@
 <div id="toast"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 // =====================================================================
 // ACCOUNT MEDIA — Team Hub
@@ -2032,7 +2033,7 @@ function renderAccountHub() {
   // The toggle is always first; the right-side buttons swap cleanly.
   const contextBtns = ltOn ? `
     ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
-    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download monthly report</button>` : ''}
+    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download Report</button>` : ''}
     <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
   ` : emOn ? `
     <div style="position:relative;">
@@ -2144,7 +2145,7 @@ function renderLeaveTracker() {
     actionsEl.innerHTML = `
       <div style="display:flex; align-items:center; gap:8px;">
         ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
-        ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download monthly report</button>` : ''}
+        ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download Report</button>` : ''}
         <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
       </div>
     `;
@@ -2678,7 +2679,7 @@ function shiftMonth(delta) {
 
 // ---- Monthly report export -------------------------------------------
 
-// Core report builder, shared by the plain "Download monthly report"
+// Core report builder, shared by the plain "Download Report"
 // button (current calendar month, every leave type) and the new
 // "Filter report" flow (a custom date range and/or a specific set of
 // leave types). Leaving either parameter unset reproduces the exact
@@ -2971,16 +2972,50 @@ async function openTodaysApprovalsReport() {
   win.document.close();
 }
 
+// Opens a small date-range picker so the report can cover any span —
+// a single month, a quarter, half a year, whatever's needed — instead
+// of being locked to whichever month the calendar happens to be on.
 function buildAndOpenLeaveReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
   const year = state.calendarYear;
   const month = state.calendarMonth;
-  const monthStart = isoDate(new Date(year, month, 1));
-  const monthEnd = isoDate(new Date(year, month + 1, 0));
+  const defaultStart = isoDate(new Date(year, month, 1));
+  const defaultEnd = isoDate(new Date(year, month + 1, 0));
 
+  openModal('Download Report', `
+    <form id="leave-report-range-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">Choose the date range to include — anywhere from a single month up to several.</p>
+      <div style="display:flex; gap:12px;">
+        <div class="field" style="flex:1;">
+          <label for="leave-report-start">From</label>
+          <input type="date" id="leave-report-start" value="${defaultStart}" required
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div class="field" style="flex:1;">
+          <label for="leave-report-end">To</label>
+          <input type="date" id="leave-report-end" value="${defaultEnd}" required
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Generate report</button>
+    </form>
+  `);
+
+  document.getElementById('leave-report-range-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const rangeStart = document.getElementById('leave-report-start').value;
+    const rangeEnd = document.getElementById('leave-report-end').value;
+    if (!rangeStart || !rangeEnd) { showToast('Please select both dates.', true); return; }
+    if (rangeStart > rangeEnd) { showToast('The start date must be before the end date.', true); return; }
+    closeModal();
+    generateLeaveReport(rangeStart, rangeEnd);
+  });
+}
+
+function generateLeaveReport(rangeStart, rangeEnd) {
   const entries = state.leaveEntries
-    .filter(e => e.leave_date >= monthStart && e.leave_date <= monthEnd)
+    .filter(e => e.leave_date >= rangeStart && e.leave_date <= rangeEnd)
     .filter(e => e.status !== STATUS.DECLINED) // exclude declined/cancelled leave (belt-and-suspenders; these rows are normally deleted outright)
     .slice()
     .sort((a, b) => {
@@ -3008,8 +3043,10 @@ function buildAndOpenLeaveReport() {
     .sort(byKristinaFirstThenName)
     .map(emp => ({ employee: emp.display_name, vl: getVLBalance(emp), sl: getSLBalance(emp) }));
 
-  const titleLabel = `${MONTH_NAMES[month]} ${year}`;
-  const filename = `Leave Report - ${titleLabel}.csv`;
+  const titleLabel = rangeStart === rangeEnd
+    ? formatPrettyDate(rangeStart)
+    : `${formatPrettyDate(rangeStart)} – ${formatPrettyDate(rangeEnd)}`;
+  const filename = `Leave Report - ${rangeStart} to ${rangeEnd}.csv`;
   openFilterableLeaveReportTab({ titleLabel, tableRows, creditRows, asOfDate: formatPrettyDate(isoDate(new Date())), filename });
 }
 
@@ -3086,7 +3123,7 @@ function openReportInNewTab(rows, filename) {
     </head>
     <body>
       <div class="dl-toolbar">
-        <button id="dl-download-btn">Download as CSV</button>
+        <button id="dl-download-btn">Download as Excel (.xlsx, separate tab per month)</button>
       </div>
       <table>${bodyHtml}</table>
       <script>
@@ -3127,6 +3164,13 @@ function openFilterableLeaveReportTab({ titleLabel, tableRows, creditRows, asOfD
     showToast('Could not open a new tab — your browser may have blocked the pop-up.', true);
     return;
   }
+  // Hand the ALREADY-LOADED XLSX library straight to the popup instead of
+  // having the popup fetch its own copy from the CDN via document.write —
+  // that approach loads asynchronously with no guarantee it finishes
+  // before someone clicks "Download", which is exactly what caused the
+  // "Excel export library did not load" error even on a fine connection.
+  // Same-origin popups can access each other's window object directly.
+  win.XLSX = window.XLSX;
 
   const employeeOptions = Array.from(new Set(tableRows.map(r => r.employee))).sort();
   const leaveTypeOptions = Array.from(new Set(tableRows.map(r => r.leaveType))).sort();
@@ -3245,6 +3289,7 @@ function openFilterableLeaveReportTab({ titleLabel, tableRows, creditRows, asOfD
 
       <script>
         const ALL_ROWS = ${tableRowsJson};
+        const CREDIT_ROWS = ${JSON.stringify(creditRows).replace(/</g, '\\u003c')};
         const totalRowCount = ALL_ROWS.length;
 
         function csvEscapeCell(value) {
@@ -3301,28 +3346,74 @@ function openFilterableLeaveReportTab({ titleLabel, tableRows, creditRows, asOfD
           applyFilters();
         });
 
+        // Excel month names, for sheet naming — same convention as the
+        // rest of the app, kept local since this runs in the popup window.
+        const XL_MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
         document.getElementById('dl-download-btn').addEventListener('click', () => {
+          if (typeof XLSX === 'undefined') {
+            alert('The Excel export library could not load — this is usually caused by an ad blocker or network filter blocking cdn.jsdelivr.net. Please allow that domain (or disable the blocker for this site) and try again.');
+            return;
+          }
           const f = currentFilters();
           const visibleRows = ALL_ROWS.filter((row, i) => {
             const tr = document.querySelector('#report-tbody tr[data-row-index="' + i + '"]');
             return tr && !tr.classList.contains('row-hidden');
           });
-          const csvRows = [
-            [${JSON.stringify(`Leave Report — ${titleLabel}`)}],
-            [],
-            ['Date', 'Employee', 'Leave Type', 'Hours', 'Status', 'Note'],
-            ...visibleRows.map(r => [r.dateDisplay, r.employee, r.leaveType, r.hours, r.status, r.note]),
-          ];
-          const csvContent = csvRows.map(row => row.map(csvEscapeCell).join(',')).join('\\r\\n');
-          const blob = new Blob(['\\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = ${JSON.stringify(filename)};
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(url);
+
+          // Group the (already-filtered) rows by calendar month — each
+          // month becomes its own SHEET in the workbook, a genuine
+          // separate tab a person can click between in Excel. A .csv
+          // file has no concept of multiple sheets at all, so this is
+          // only possible once the export is a real .xlsx.
+          const byMonth = new Map(); // "YYYY-MM" -> rows[]
+          visibleRows.forEach(r => {
+            const key = r.date.slice(0, 7); // "YYYY-MM" from the ISO date
+            if (!byMonth.has(key)) byMonth.set(key, []);
+            byMonth.get(key).push(r);
+          });
+          const monthKeys = Array.from(byMonth.keys()).sort();
+
+          const usedNames = new Set();
+          function sheetNameFor(name) {
+            let base = String(name).replace(/[:\\\/?*\[\]]/g, '-').slice(0, 31).trim() || 'Sheet';
+            let candidate = base, n = 2;
+            while (usedNames.has(candidate)) {
+              const suffix = ' (' + (n++) + ')';
+              candidate = base.slice(0, 31 - suffix.length) + suffix;
+            }
+            usedNames.add(candidate);
+            return candidate;
+          }
+
+          const wb = XLSX.utils.book_new();
+          const header = ['Date', 'Employee', 'Leave Type', 'Hours', 'Status', 'Note'];
+
+          if (monthKeys.length <= 1) {
+            // Single month (or nothing) in range — one sheet is enough,
+            // named after the actual month rather than a generic label.
+            const rows = monthKeys.length ? byMonth.get(monthKeys[0]) : [];
+            const label = monthKeys.length
+              ? (XL_MONTH_NAMES[Number(monthKeys[0].slice(5, 7)) - 1] + ' ' + monthKeys[0].slice(0, 4))
+              : 'Leave Entries';
+            const ws = XLSX.utils.aoa_to_sheet([header, ...rows.map(r => [r.dateDisplay, r.employee, r.leaveType, r.hours, r.status, r.note])]);
+            XLSX.utils.book_append_sheet(wb, ws, sheetNameFor(label));
+          } else {
+            monthKeys.forEach(key => {
+              const rows = byMonth.get(key);
+              const label = XL_MONTH_NAMES[Number(key.slice(5, 7)) - 1] + ' ' + key.slice(0, 4);
+              const ws = XLSX.utils.aoa_to_sheet([header, ...rows.map(r => [r.dateDisplay, r.employee, r.leaveType, r.hours, r.status, r.note])]);
+              XLSX.utils.book_append_sheet(wb, ws, sheetNameFor(label));
+            });
+          }
+
+          // Leave Credits gets its own dedicated sheet, same as before —
+          // it's a snapshot, not tied to any particular month in the range.
+          const creditsRows = [['Employee', 'VL Remaining', 'SL Remaining'], ...CREDIT_ROWS.map(r => [r.employee, r.vl, r.sl])];
+          const creditsWs = XLSX.utils.aoa_to_sheet(creditsRows);
+          XLSX.utils.book_append_sheet(wb, creditsWs, sheetNameFor('Leave Credits'));
+
+          XLSX.writeFile(wb, ${JSON.stringify(filename.replace(/\.csv$/i, '.xlsx'))});
         });
 
         applyFilters();
@@ -9188,7 +9279,7 @@ function renderIps() {
   `;
   document.getElementById('ips-prev-month').addEventListener('click', () => shiftIpsMonth(-1));
   document.getElementById('ips-next-month').addEventListener('click', () => shiftIpsMonth(1));
-  document.getElementById('ips-download-report')?.addEventListener('click', downloadIpsReport);
+  document.getElementById('ips-download-report')?.addEventListener('click', openIpsReportRangeModal);
 
   if (!state.employees.length) { el.innerHTML = '<div class="loading-row">Loading…</div>'; return; }
 
@@ -9892,6 +9983,209 @@ function shiftIpsDay(delta) {
 // Full-month spread report: opens in a new tab with a Download-as-CSV
 // button, using the same openReportInNewTab plumbing as every other
 // report in the app.
+// Lets the report span any range — a single month (same detailed
+// daily-grid report as before) or several months at once (a per-
+// employee monthly-summary report instead, since a multi-month wide
+// daily grid with one column per day would be unreadable).
+function openIpsReportRangeModal() {
+  if (!canManageIps()) { showToast('Only admins and IPS can download this report.', true); return; }
+
+  const defaultStart = ipsState.month;
+  openModal('Download IPS Report', `
+    <form id="ips-report-range-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">Choose the months to include — pick the same month twice for a single month's detailed report, or a wider range for a monthly-summary report across several months.</p>
+      <div style="display:flex; gap:12px;">
+        <div class="field" style="flex:1;">
+          <label for="ips-report-start">From month</label>
+          <input type="month" id="ips-report-start" value="${defaultStart.slice(0, 7)}" required
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div class="field" style="flex:1;">
+          <label for="ips-report-end">To month</label>
+          <input type="month" id="ips-report-end" value="${defaultStart.slice(0, 7)}" required
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Generate report</button>
+    </form>
+  `);
+
+  document.getElementById('ips-report-range-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const startVal = document.getElementById('ips-report-start').value; // "YYYY-MM"
+    const endVal = document.getElementById('ips-report-end').value;
+    if (!startVal || !endVal) { showToast('Please select both months.', true); return; }
+    const startMonth = `${startVal}-01`;
+    const endMonth = `${endVal}-01`;
+    if (startMonth > endMonth) { showToast('The start month must be before the end month.', true); return; }
+    closeModal();
+
+    if (startMonth === endMonth) {
+      // Single month — same detailed report as before, using whatever's
+      // already cached if it's the currently-viewed month, or a fresh
+      // fetch otherwise.
+      if (startMonth === ipsState.month && ipsState.loaded) {
+        downloadIpsReport();
+      } else {
+        await downloadIpsReportForMonth(startMonth);
+      }
+    } else {
+      await downloadIpsMultiMonthReport(startMonth, endMonth);
+    }
+  });
+}
+
+// Same detailed single-month report as downloadIpsReport(), but for a
+// month that ISN'T the one currently being viewed — fetches that
+// month's data fresh rather than assuming it's cached.
+async function downloadIpsReportForMonth(monthIso) {
+  const [y, m] = monthIso.split('-').map(Number);
+  const monthEnd = isoDate(new Date(y, m, 0));
+  const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+    sb.from('ips_daily_entries').select('*').gte('entry_date', monthIso).lte('entry_date', monthEnd),
+    sb.from('ips_monthly_data').select('*').eq('month', monthIso),
+    sb.from('ips_month_settings').select('*').eq('month', monthIso).maybeSingle(),
+  ]);
+  if (dailyRes.error || monthlyRes.error) { showToast('Could not load that month\'s data.', true); return; }
+
+  // Temporarily swap ipsState's data to the requested month, generate
+  // the report using all the same logic as the live tab, then restore
+  // whatever was being viewed — so this never disturbs the screen.
+  const saved = { month: ipsState.month, dailyEntries: ipsState.dailyEntries, monthlyData: ipsState.monthlyData, monthSettings: ipsState.monthSettings };
+  ipsState.month = monthIso;
+  ipsState.dailyEntries = dailyRes.data || [];
+  ipsState.monthlyData = monthlyRes.data || [];
+  ipsState.monthSettings = settingsRes.data || null;
+  downloadIpsReport();
+  ipsState.month = saved.month;
+  ipsState.dailyEntries = saved.dailyEntries;
+  ipsState.monthlyData = saved.monthlyData;
+  ipsState.monthSettings = saved.monthSettings;
+}
+
+// Multi-month report: one row per employee per month (PO, EC, QA,
+// Total Score), stacked across the whole range — the readable
+// alternative to a giant daily grid spanning several months.
+// Multi-month report: FULL detail for every month in the range — the
+// same daily grids (Lead Qualification, Missing Data Task, PO & EC
+// Score, QA Accuracy, Monthly Score) the single-month report produces,
+// just repeated once per month and clearly labeled, plus one combined
+// Monthly Summary tab at the end for a quick overview across the whole
+// range. Nothing is rolled up at the expense of the daily detail.
+async function downloadIpsMultiMonthReport(startMonth, endMonth) {
+  // ONE sheet/tab PER MONTH, showing only three metric groups:
+  //   1. Lead Qualification & Missing Data Task — ONE table, TWO rows
+  //      per employee (an "LQ" row then an "MD" row directly beneath it)
+  //   2. QA Accuracy
+  //   3. Monthly Score
+  const roster = ipsRoster();
+  const [sy, sm] = startMonth.split('-').map(Number);
+  const [ey, em] = endMonth.split('-').map(Number);
+
+  const months = [];
+  let y = sy, m = sm;
+  while (y < ey || (y === ey && m <= em)) {
+    months.push(`${y}-${String(m).padStart(2, '0')}-01`);
+    m++; if (m > 12) { m = 1; y++; }
+  }
+
+  const rangeStart = months[0];
+  const rangeEndDate = isoDate(new Date(ey, em, 0));
+
+  const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+    sb.from('ips_daily_entries').select('*').gte('entry_date', rangeStart).lte('entry_date', rangeEndDate),
+    sb.from('ips_monthly_data').select('*').gte('month', rangeStart).lte('month', months[months.length - 1]),
+    sb.from('ips_month_settings').select('*').gte('month', rangeStart).lte('month', months[months.length - 1]),
+  ]);
+  if (dailyRes.error || monthlyRes.error) { showToast('Could not load the report data.', true); return; }
+  const daily = dailyRes.data || [];
+  const monthly = monthlyRes.data || [];
+  const settings = settingsRes.data || [];
+
+  const sections = [];
+
+  months.forEach(monthIso => {
+    const dates = ipsDatesForMonth(monthIso);
+    const dateHeaders = dates.map(d => formatMonthDay(d));
+    const monthLabel = ipsMonthLabel(monthIso);
+    const workingDays = (settings.find(s => s.month === monthIso) || {}).working_days || '';
+
+    const dailyFor = (empId, dateIso) => daily.find(e => e.employee_id === empId && e.entry_date === dateIso) || null;
+    const monthlyFor = (empId) => monthly.find(x => x.employee_id === empId && x.month === monthIso) || null;
+
+    const poRatioAvgFor = (empId) => {
+      const ratios = dates.map(d => {
+        const e = dailyFor(empId, d);
+        if (!e || e.po_excluded || e.other_task) return null;
+        const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
+        return t > 0 ? t / 800 : null;
+      }).filter(r => r != null);
+      return ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
+    };
+    const errorsSumFor = (empId) => dates.reduce((s, d) => { const e = dailyFor(empId, d); return s + (e && e.errors != null ? Number(e.errors) : 0); }, 0);
+    const ecFor = (empId) => { const wd = Number(workingDays || 0); return wd ? (1 - (errorsSumFor(empId) / wd)) : null; };
+    const qaFor = (empId) => ipsQaFraction(monthlyFor(empId)) ?? 0;
+
+    // ── Lead Qualification & Missing Data Task — ONE table, two rows
+    //    per employee: an "LQ" row immediately followed by an "MD" row,
+    //    distinguished by color (MD in blue) instead of a Metric column.
+    const lqMdRows = [];
+    const lqMdMdRowIndices = new Set(); // which row indices are MD (for blue styling in the HTML view only)
+    roster.forEach(emp => {
+      const lqVals = dates.map(d => { const e = dailyFor(emp.id, d); return e && e.lq_value != null ? e.lq_value : ''; });
+      const mdVals = dates.map(d => { const e = dailyFor(emp.id, d); return e && e.md_value != null ? e.md_value : ''; });
+      const lqNums = lqVals.filter(v => v !== '').map(Number);
+      const lqAvg = lqNums.length ? round2(lqNums.reduce((s, v) => s + v, 0) / lqNums.length) : '';
+      const mdTotal = mdVals.filter(v => v !== '').reduce((s, v) => s + Number(v), 0);
+      lqMdRows.push([emp.display_name, ...lqVals, lqAvg]);
+      lqMdMdRowIndices.add(lqMdRows.length); // the NEXT row (about to be pushed) is the MD row
+      lqMdRows.push([emp.display_name, ...mdVals, mdTotal]);
+    });
+    const lqMdBlock = {
+      label: 'Lead Qualification & Missing Data Task',
+      header: ['Agent', ...dateHeaders, 'Avg / Total'],
+      wide: true,
+      rows: lqMdRows,
+      mergePairs: true, // visually merges the Agent name across each LQ/MD row pair (rowspan)
+      rowColorIndices: lqMdMdRowIndices, // row indices to render in blue (MD rows)
+    };
+
+    const qaBlock = {
+      label: 'QA Accuracy',
+      header: ['Agent', 'QA %', 'Major', 'Minor', 'Major Notes', 'Minor Notes'],
+      rows: roster.map(emp => {
+        const mData = monthlyFor(emp.id);
+        const majorNotes = mData && Array.isArray(mData.major_notes) ? mData.major_notes.filter(Boolean).join(' | ') : '';
+        const minorNotes = mData && Array.isArray(mData.minor_notes) ? mData.minor_notes.filter(Boolean).join(' | ') : '';
+        const qaFrac = ipsQaFraction(mData);
+        return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '', mData ? (mData.major_count ?? 0) : 0, mData ? (mData.minor_count ?? 0) : 0, majorNotes, minorNotes];
+      }),
+    };
+
+    const scoreBlock = {
+      label: 'Monthly Score',
+      header: ['Rank', 'Agent', 'QA (50%)', 'PO (30%)', 'EC (20%)', 'Total Score'],
+      rows: roster.map(emp => {
+        const qa = qaFor(emp.id), po = poRatioAvgFor(emp.id), ec = ecFor(emp.id);
+        const total = qa * 0.5 + po * 0.3 + (ec != null ? ec : 0) * 0.2;
+        return { emp, qa, po, ec, total };
+      })
+        .sort((a, b) => b.total - a.total)
+        .map((r, i) => [i + 1, r.emp.display_name, (r.qa * 100).toFixed(2) + '%', (r.po * 100).toFixed(2) + '%', r.ec != null ? (r.ec * 100).toFixed(2) + '%' : '—', (r.total * 100).toFixed(2) + '%']),
+    };
+
+    // ONE section = ONE sheet/tab for this whole month, with exactly
+    // these three groups stacked inside it, in this order.
+    sections.push({
+      title: monthLabel,
+      blocks: [lqMdBlock, qaBlock, scoreBlock],
+    });
+  });
+
+  const rangeLabel = `${ipsMonthLabel(startMonth)} – ${ipsMonthLabel(endMonth)}`;
+  openIpsTabbedReport(rangeLabel, sections);
+}
+
 function downloadIpsReport() {
   if (!canManageIps()) { showToast('Only admins and IPS can download this report.', true); return; }
 
@@ -9973,16 +10267,48 @@ function downloadIpsReport() {
 function openIpsTabbedReport(monthLabel, sections) {
   const win = window.open('', '_blank');
   if (!win) { showToast('Could not open a new tab — your browser may have blocked the pop-up.', true); return; }
+  // Hand the ALREADY-LOADED XLSX library straight to the popup — see the
+  // matching comment in openFilterableLeaveReportTab for why the popup
+  // fetching its own copy via document.write was unreliable.
+  win.XLSX = window.XLSX;
 
-  // Full-spread CSV rows (all sections stacked), reusing the standard shape
-  const csvRows = [[`IPS — Productivity Output Report — ${monthLabel}`]];
-  sections.forEach(sec => {
-    csvRows.push([]);
-    csvRows.push([sec.title]);
-    csvRows.push(sec.header);
-    sec.rows.forEach(r => csvRows.push(r));
+  // Sections can be a single table ({title, header, rows}) OR a whole
+  // sheet made of several stacked sub-tables ({title, blocks: [{label,
+  // header, rows, wide}, ...]}) — the latter is how "everything for one
+  // month in one sheet" is built: several tables (LQ&MD, QA, Score)
+  // stacked under one tab/sheet instead of split into separate ones.
+  const asBlocks = (sec) => sec.blocks || [{ label: null, header: sec.header, rows: sec.rows, wide: sec.wide, rowColorIndices: sec.rowColorIndices, mergePairs: sec.mergePairs }];
+
+  // Each SECTION becomes its own SHEET in the downloaded workbook —
+  // this is the actual fix: a real multi-sheet .xlsx (via SheetJS) has
+  // genuine separate tabs a person can click between in Excel, which a
+  // flat .csv can never do (CSV has no concept of multiple sheets at all).
+  // Sheet names build from the section title, sanitized to Excel's rules
+  // (<=31 chars, no : \\ / ? * [ ]), with numeric de-duplication if two
+  // titles collide after sanitizing.
+  const usedSheetNames = new Set();
+  function sheetNameFor(title) {
+    let name = String(title).replace(/[:\\\/?*\[\]]/g, '-').slice(0, 31).trim() || 'Sheet';
+    let candidate = name;
+    let n = 2;
+    while (usedSheetNames.has(candidate)) {
+      const suffix = ` (${n++})`;
+      candidate = name.slice(0, 31 - suffix.length) + suffix;
+    }
+    usedSheetNames.add(candidate);
+    return candidate;
+  }
+
+  const sheetsData = sections.map(sec => {
+    const rows = [];
+    asBlocks(sec).forEach(block => {
+      if (block.label) { rows.push([]); rows.push([block.label]); }
+      rows.push(block.header);
+      block.rows.forEach(r => rows.push(r));
+    });
+    return { name: sheetNameFor(sec.title), rows };
   });
-  const csvJson = JSON.stringify(csvRows).replace(/</g, '\\u003c');
+  const sheetsJson = JSON.stringify(sheetsData).replace(/</g, '\\u003c');
 
   const tabsHtml = sections.map((sec, i) => `
     <button class="rpt-tab" data-idx="${i}">${escapeHtml(sec.title)}</button>
@@ -9990,16 +10316,37 @@ function openIpsTabbedReport(monthLabel, sections) {
 
   const panelsHtml = sections.map((sec, i) => `
     <div class="rpt-panel" data-idx="${i}" style="display:${i === 0 ? 'block' : 'none'};">
-      <div class="${sec.wide ? 'rpt-scroll' : ''}">
-        <table>
-          <thead><tr>${sec.header.map(h => `<th>${escapeHtml(String(h))}</th>`).join('')}</tr></thead>
-          <tbody>
-            ${sec.rows.length
-              ? sec.rows.map(r => `<tr>${r.map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('')}</tr>`).join('')
-              : `<tr><td colspan="${sec.header.length}" style="text-align:center; color:#A8A39A; padding:30px;">No data yet.</td></tr>`}
-          </tbody>
-        </table>
-      </div>
+      ${asBlocks(sec).map(block => `
+        <div style="margin-bottom:28px;">
+          ${block.label ? `<h3 style="font-size:14px; font-weight:700; color:#1F3D3A; margin:0 0 10px;">${escapeHtml(block.label)}</h3>` : ''}
+          <div class="${block.wide ? 'rpt-scroll' : ''}">
+            <table>
+              <thead><tr>${block.header.map(h => `<th>${escapeHtml(String(h))}</th>`).join('')}</tr></thead>
+              <tbody>
+                ${block.rows.length
+                  ? block.rows.map((r, ri) => {
+                      const isColorRow = block.rowColorIndices && block.rowColorIndices.has(ri);
+                      const rowStyle = isColorRow ? ' style="color:#5B7FA6;"' : ''; // soft, still-readable blue for MD rows
+                      // When mergePairs is set, every EVEN row (0, 2, 4…) owns a
+                      // rowspan=2 first cell (the name), and the following ODD
+                      // row (its MD pair) skips rendering that cell entirely —
+                      // visually merging the name across both rows.
+                      if (block.mergePairs) {
+                        if (ri % 2 === 0) {
+                          const rest = r.slice(1).map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('');
+                          return `<tr${rowStyle}><td rowspan="2" style="vertical-align:middle;">${escapeHtml(String(r[0] ?? ''))}</td>${rest}</tr>`;
+                        }
+                        const rest = r.slice(1).map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('');
+                        return `<tr${rowStyle}>${rest}</tr>`;
+                      }
+                      return `<tr${rowStyle}>${r.map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('')}</tr>`;
+                    }).join('')
+                  : `<tr><td colspan="${block.header.length}" style="text-align:center; color:#A8A39A; padding:30px;">No data yet.</td></tr>`}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      `).join('')}
     </div>
   `).join('');
 
@@ -10030,7 +10377,7 @@ function openIpsTabbedReport(monthLabel, sections) {
     <body>
       <h1>IPS — Productivity Output Report</h1>
       <p class="sub">${escapeHtml(monthLabel)}</p>
-      <div class="toolbar"><button id="dl-btn">Download as CSV (full spread)</button></div>
+      <div class="toolbar"><button id="dl-btn">Download CSV</button></div>
       <div class="rpt-tabs">${tabsHtml}</div>
       ${panelsHtml}
       <script>
@@ -10043,16 +10390,18 @@ function openIpsTabbedReport(monthLabel, sections) {
         tabs.forEach(t => t.addEventListener('click', () => activate(t.dataset.idx)));
         activate(0);
 
-        const ROWS = ${csvJson};
-        function esc(v){ const s=String(v??''); return /[",\\r\\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
+        const SHEETS = ${sheetsJson};
         document.getElementById('dl-btn').addEventListener('click', () => {
-          const csv = ROWS.map(r => r.map(esc).join(',')).join('\\r\\n');
-          const blob = new Blob(['\\ufeff'+csv],{type:'text/csv;charset=utf-8;'});
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = ${JSON.stringify(`IPS Report - ${monthLabel}.csv`)};
-          document.body.appendChild(a); a.click();
-          document.body.removeChild(a); URL.revokeObjectURL(url);
+          if (typeof XLSX === 'undefined') {
+            alert('The Excel export library could not load — this is usually caused by an ad blocker or network filter blocking cdn.jsdelivr.net. Please allow that domain (or disable the blocker for this site) and try again.');
+            return;
+          }
+          const wb = XLSX.utils.book_new();
+          SHEETS.forEach(sheet => {
+            const ws = XLSX.utils.aoa_to_sheet(sheet.rows);
+            XLSX.utils.book_append_sheet(wb, ws, sheet.name);
+          });
+          XLSX.writeFile(wb, ${JSON.stringify(`IPS Report - ${monthLabel}.xlsx`)});
         });
       <\/script>
     </body>
