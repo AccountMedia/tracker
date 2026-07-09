@@ -953,7 +953,7 @@ function switchView(viewName) {
   if (viewName === 'dashboard') renderDashboard();
   if (viewName === 'account-hub') renderAccountHub();
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
-  if (viewName === 'priolist') renderPrioList();
+  if (viewName === 'priolist') renderPrioListEntry();
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
   if (viewName === 'team-funds') renderTeamFunds();
@@ -4421,11 +4421,38 @@ function startPriolistPolling() {
     applyRealtimePatch(payload, () => state.redFiles, (v) => { state.redFiles = v; });
     rerenderRedFiles();
   });
+  // PrioList's roster is derived from `employees` (active + non-manager)
+  // joined to priolist_entries — but until now it only listened for
+  // CHANGES TO priolist_entries. Deactivating, reactivating, or deleting
+  // someone in the Employees tab only touches the employees table, so
+  // none of those actions were ever reflected here without an unrelated
+  // action (like editing PrioList itself) forcing a repaint. This
+  // subscription patches state.employees directly and repaints —
+  // consistent with the same fix already applied to Leave Tracker,
+  // Payroll, and Dashboard for the same class of bug.
+  subscribeRealtime('priolist_employees', 'employees', (payload) => {
+    applyRealtimePatch(payload, () => state.employees, (v) => { state.employees = v; });
+    renderPrioList();
+  });
 }
 
 function stopPriolistPolling() {
   unsubscribeRealtime('priolist_entries');
   unsubscribeRealtime('priolist_red_files');
+  unsubscribeRealtime('priolist_employees');
+}
+
+// Entry point when switching INTO the PrioList tab. Paints instantly
+// from whatever's cached (no flicker), then always fetches fresh in the
+// background and repaints — this is the piece that was missing before:
+// Realtime only pushes CHANGES GOING FORWARD, so if an employee was
+// added/reactivated/deactivated while this tab wasn't open, nothing
+// ever told it to catch up until the next unrelated PrioList edit
+// happened to trigger a repaint. Same cache-first-then-refresh pattern
+// already used by IPS and Team Funds.
+function renderPrioListEntry() {
+  renderPrioList(); // instant paint from cache, avoids a loading flash
+  loadPriolistEntries().then(renderPrioList); // then always get the truth
 }
 
 function renderPrioList() {
@@ -5852,8 +5879,7 @@ function downloadOtFilingReport() {
   const dates = state.otFilingDates.map(d => d.filing_date).sort();
   if (!dates.length) { showToast('No OT filing dates to report on.', true); return; }
 
-  const roster = state.employees
-    .filter(emp => emp.active !== false)
+  const roster = activeRosterNoManager()
     .sort(byKristinaFirstThenName);
 
   // Wide format: one row per employee, one column per open date, showing
@@ -9257,8 +9283,8 @@ function renderIpsTables() {
               : dayKind === 'past'
                 ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);">✎ Needs approval</div>`
                 : day === isoDate(new Date())
-                  ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Editable</div>`
-                  : `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);" title="Still editable until 1:00 AM">🕐 Editable (until 1AM)</div>`}
+                  ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Editable (until 1 AM)</div>`
+                  : `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);" title="Still editable until 1:00 AM">🕐 Editable (until 1 AM)</div>`}
           </div>
           <button class="btn btn-ghost btn-sm" id="ips-day-next" ${isLast ? 'disabled' : ''}>→</button>
         </div>
@@ -10065,6 +10091,7 @@ function showIpsOtherTaskMenu(triggerBtn) {
 
   const items = isMarked
     ? [
+        { label: 'Show full note', action: 'view' },
         { label: 'Edit note', action: 'edit' },
         { label: 'Delete', action: 'delete', danger: true },
       ]
@@ -10084,6 +10111,7 @@ function showIpsOtherTaskMenu(triggerBtn) {
       e.stopPropagation();
       portal.style.display = 'none';
       if (el.dataset.action === 'add') ipsAddOtherTask(employeeId, dateIso);
+      else if (el.dataset.action === 'view') ipsShowFullOtherTaskNote(employeeId, dateIso);
       else if (el.dataset.action === 'edit') ipsEditOtherTaskNote(employeeId, dateIso);
       else if (el.dataset.action === 'delete') ipsDeleteOtherTask(employeeId, dateIso);
     });
@@ -10102,6 +10130,19 @@ function ipsAddOtherTask(employeeId, dateIso) {
   if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); return; }
   if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
   openIpsOtherTaskModal(employeeId, dateIso, '', null);
+}
+
+// Read-only — just shows the full note text with no edit controls. The
+// badge itself only fits a truncated preview inline, so this is for
+// when the note is longer than what fits in the row.
+function ipsShowFullOtherTaskNote(employeeId, dateIso) {
+  const emp = state.employees.find(e => e.id === employeeId);
+  const e = ipsDailyFor(employeeId, dateIso);
+  const note = e && e.other_task_note ? e.other_task_note : '';
+  openModal(`Other task — ${emp ? emp.display_name : ''}`, `
+    <p class="faint" style="font-size:11.5px; margin:0 0 10px;">${formatPrettyDate(dateIso)}</p>
+    <div style="padding:12px 14px; background:var(--teal-wash); border-radius:8px; font-size:13px; line-height:1.5; white-space:pre-wrap;">${escapeHtml(note || 'No note recorded.')}</div>
+  `);
 }
 
 function ipsEditOtherTaskNote(employeeId, dateIso) {
