@@ -756,6 +756,34 @@ function canViewTeamFunds() {
 
 // IPS: admins and the 'ips' role can edit everyone's entries (with a
 // confirmation prompt); everyone else can only edit their own row.
+// =====================================================================
+// CANONICAL ROSTERS — the single source of truth for "who shows up
+// where." Every tab that lists employees should build its list from
+// one of these, NOT by filtering state.employees inline — that's what
+// let a deactivated employee (or a newly added one) go stale on one
+// screen (PrioList) while every other screen updated correctly. Using
+// one shared function means adding or deactivating someone in the
+// Employees tab now propagates everywhere automatically, with no
+// per-tab logic to remember or get out of sync.
+//
+// activeRoster()          — every active employee, Kristina included.
+//                            Use for anything that legitimately needs
+//                            her too (e.g. the Employees list itself,
+//                            or her own login/profile-driven views).
+// activeRosterNoManager()  — every active employee EXCEPT Kristina.
+//                            Use for anything operational/task-driven
+//                            (PrioList, IPS, Payroll, OT Filing, LI
+//                            Restriction, Team Building, etc.) — she's
+//                            the manager, not a line worker, so she's
+//                            excluded from these by design, not by
+//                            each tab remembering to filter her out.
+function activeRoster() {
+  return state.employees.filter(e => e.active !== false);
+}
+function activeRosterNoManager() {
+  return state.employees.filter(e => e.active !== false && e.display_name !== 'Kristina Mutia');
+}
+
 function canManageIps() {
   if (!state.profile) return false;
   return isAdmin() || state.profile.role === 'ips';
@@ -768,14 +796,30 @@ function canEditIpsRow(employeeId) {
 
 // ── IPS Daily Entry: day-boundary edit rules ────────────────────────
 // TODAY   — the owner (and admin/IPS) can edit freely, no approval.
+//           Yesterday ALSO counts as "today" for editing purposes until
+//           1:00 AM — a grace window so someone finishing up just after
+//           midnight isn't suddenly locked out of the day they were
+//           just working on.
 // PAST    — the owner can only PROPOSE a change (a correction request);
 //           it takes effect only once an admin/IPS approves it.
 //           Admin/IPS themselves can still edit past days directly —
 //           they're the approvers, so there's no one above them to ask.
 // FUTURE  — locked for everyone. Nobody types ahead of today.
+const IPS_GRACE_WINDOW_HOUR = 1; // 1:00 AM
+
 function ipsDayKind(dateIso) {
-  const today = isoDate(new Date());
+  const now = new Date();
+  const today = isoDate(now);
   if (dateIso === today) return 'today';
+
+  // Grace window: before 1:00 AM, YESTERDAY still counts as "today" for
+  // editing — the calendar date already ticked over, but the workday
+  // people were just on hasn't really ended yet from their perspective.
+  if (now.getHours() < IPS_GRACE_WINDOW_HOUR) {
+    const yesterday = isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+    if (dateIso === yesterday) return 'today';
+  }
+
   if (dateIso < today) return 'past';
   return 'future';
 }
@@ -783,7 +827,8 @@ function ipsDayKind(dateIso) {
 // Whether a cell should render as a free, directly-editable input.
 // Admin/IPS get this for today AND past (they approve corrections, so
 // there's no need to route their own edits through the queue). A
-// regular employee only gets it for TODAY on their own row.
+// regular employee only gets it for TODAY (including the 1:00 AM grace
+// window on the prior day) on their own row.
 function ipsCellDirectlyEditable(employeeId, dateIso) {
   if (!canEditIpsRow(employeeId)) return false;
   const kind = ipsDayKind(dateIso);
@@ -1291,7 +1336,7 @@ async function ensureYearEndHolidayBlocks() {
   const currentYear = new Date().getFullYear();
   const lastYearToGenerate = Math.max(currentYear, FIRST_YEAR) + YEARS_AHEAD;
 
-  const activeEmployees = state.employees.filter(emp => emp.active !== false);
+  const activeEmployees = activeRoster(); // Kristina included — she gets company holidays too, same as everyone else
   if (!activeEmployees.length) return;
 
   // Guard against duplicates using ALL existing entries for each
@@ -1467,7 +1512,7 @@ async function loadPriolistEntries() {
   // anyone missing, silently — this makes the tab robust against ANY
   // path that creates an employee, not just the one form.
   const existingIds = new Set(state.priolistEntries.map(e => e.employee_id));
-  const missing = state.employees.filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia' && !existingIds.has(emp.id));
+  const missing = activeRosterNoManager().filter(emp => !existingIds.has(emp.id));
   if (missing.length) {
     const today = isoDate(new Date());
     const { data: created, error: backfillErr } = await sb.from('priolist_entries').insert(
@@ -1710,7 +1755,7 @@ function renderDashboard() {
   const now = new Date();
   const payrollYear = now.getFullYear();
   const payrollMonth = now.getMonth() + 1;
-  const payrollRoster = state.employees.filter(emp => emp.active !== false && emp.display_name !== 'Kristina Mutia');
+  const payrollRoster = activeRosterNoManager();
   const half1Confirmed = payrollRoster.filter(emp => {
     const c = findConfirmation(emp.id, payrollYear, payrollMonth, 1);
     return c && c.received;
@@ -1747,7 +1792,7 @@ function renderDashboard() {
       ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl')}
       ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl')}
       ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl')}
-      ${dashboardStatCard('Active team members', state.employees.filter(e=>e.active!==false).length, 'Across the PH team.', 'el')}
+      ${dashboardStatCard('Active team members', activeRoster().length, 'Across the PH team.', 'el')}
     </div>
 
     <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:18px; margin-bottom:28px;">
@@ -4422,7 +4467,7 @@ function renderPrioList() {
   const rows = state.priolistEntries.map(entry => {
     const emp = state.employees.find(e => e.id === entry.employee_id);
     return { entry, emp };
-  }).filter(r => r.emp && r.emp.display_name !== 'Kristina Mutia'); // manager — never shown on PrioList, no matter what
+  }).filter(r => r.emp && r.emp.active !== false && r.emp.display_name !== 'Kristina Mutia'); // deactivated employees and the manager never show on PrioList
 
   // Two distinct states:
   //   1. Every single status is still blank -> show everyone in plain
@@ -5377,9 +5422,7 @@ function openLiEntryModal(entryId) {
     return;
   }
 
-  const eligibleEmployees = state.employees
-    .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
-    .sort(byKristinaFirstThenName);
+  const eligibleEmployees = activeRosterNoManager().sort(byKristinaFirstThenName);
 
   const selectField = (id, label, options, current) => `
     <div class="field">
@@ -5545,8 +5588,7 @@ function renderOtFiling() {
     });
   }
 
-  const roster = state.employees
-    .filter(emp => emp.active !== false)
+  const roster = activeRosterNoManager()
     .sort(byKristinaFirstThenName)
     .sort((a, b) => {
       const aHas = hasAnyLoggedHours(a.id) ? 0 : 1;
@@ -8240,7 +8282,7 @@ function openTfOpeningBalanceModal() {
 }
 
 function openTfLoanModal() {
-  const activeEmployees = state.employees.filter(e => e.active !== false).sort(byKristinaFirstThenName);
+  const activeEmployees = activeRoster().sort(byKristinaFirstThenName); // Team Funds can legitimately loan to Kristina too
   openModal('Record employee loan', `
     <form id="tf-loan-form" style="display:flex; flex-direction:column; gap:14px;">
       <div class="field" style="position:relative;">
@@ -8630,7 +8672,7 @@ async function deleteTfTransaction(id) {
 }
 
 function openTfEditLoanModal(loan) {
-  const activeEmployees = state.employees.filter(e => e.active !== false).sort(byKristinaFirstThenName);
+  const activeEmployees = activeRoster().sort(byKristinaFirstThenName); // Team Funds can legitimately loan to Kristina too
   openModal('Edit loan', `
     <form id="tf-edit-loan-form" style="display:flex; flex-direction:column; gap:14px;">
       <div class="field">
@@ -8855,6 +8897,8 @@ function ipsLeaveHoursOn(employeeId, dateIso) {
 // 800 target, matching how the historical spreadsheet import works.
 const IPS_LEAVE_AWARE_TARGET_START = '2026-07-01';
 function ipsDayTarget(employeeId, dateIso) {
+  const e = ipsDailyFor(employeeId, dateIso);
+  if (e && e.other_task) return 0; // assigned to a special task that day — nothing to measure against 800
   if (dateIso < IPS_LEAVE_AWARE_TARGET_START) return 800;
   const leaveHours = ipsLeaveHoursOn(employeeId, dateIso);
   if (leaveHours <= 0) return 800;
@@ -8866,12 +8910,13 @@ function ipsPoRatioAverage(employeeId, dates) {
   const ratios = dates.map(d => {
     const e = ipsDailyFor(employeeId, d);
     if (e && e.po_excluded) return null; // counted in MD/LQ totals, but NOT the PO average (mirrors the spreadsheet)
+    if (e && e.other_task) return null; // assigned a special/other task that day — no target to measure against
     const lq = e && e.lq_value != null ? Number(e.lq_value) : 0;
     const md = e && e.md_value != null ? Number(e.md_value) : 0;
     const total = lq + md;
     if (total <= 0) return null;
-    const target = ipsDayTarget(employeeId, d); // shrinks for partial-day leave (VLH, hourly VL/SL/EL, etc.)
-    if (target <= 0) return null; // full day on leave — nothing to measure
+    const target = ipsDayTarget(employeeId, d); // shrinks for partial-day leave (VLH, hourly VL/SL/EL, etc.); zero for other-task days
+    if (target <= 0) return null; // full day on leave, or other task — nothing to measure
     return total / target;
   }).filter(r => r != null);
   if (!ratios.length) return 0;
@@ -9042,9 +9087,7 @@ function shiftIpsMonth(delta) {
 
 // The IPS roster: everyone active except the manager, alphabetical.
 function ipsRoster() {
-  return state.employees
-    .filter(e => e.active !== false && e.display_name !== 'Kristina Mutia')
-    .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  return activeRosterNoManager().sort((a, b) => a.display_name.localeCompare(b.display_name));
 }
 
 // Default day for the Daily Entry tab: today if it's a workday inside
@@ -9094,12 +9137,15 @@ function renderIpsTables() {
       const md = e && e.md_value != null ? e.md_value : '';
       const total = (lq === '' ? 0 : Number(lq)) + (md === '' ? 0 : Number(md));
       const poExcluded = !!(e && e.po_excluded);
-      const target = ipsDayTarget(emp.id, day); // 800 minus any leave hours that day (VLH, hourly VL/SL/EL, etc.)
-      const onFullLeave = target <= 0;
-      const ratio = total > 0 && !poExcluded && !onFullLeave ? (total / target) * 100 : null;
+      const otherTask = !!(e && e.other_task);
+      const otherTaskNote = e && e.other_task_note ? e.other_task_note : '';
+      const target = ipsDayTarget(emp.id, day); // 800 minus any leave hours that day (VLH, hourly VL/SL/EL, etc.); 0 if on an "other task"
+      const onFullLeave = target <= 0 && !otherTask;
+      const ratio = total > 0 && !poExcluded && target > 0 ? (total / target) * 100 : null;
       const isMe = emp.id === state.profile.employee_id;
       const directEdit = ipsCellDirectlyEditable(emp.id, day);
       const needsRequest = ipsCellNeedsCorrectionRequest(emp.id, day);
+      const canToggleOtherTask = directEdit; // same rule as the number fields: today freely, past via admin/IPS, future never
       const barColor = ratio == null ? 'var(--line)' : ratio >= 100 ? 'var(--green)' : ratio >= 90 ? 'var(--amber)' : 'var(--coral)';
 
       // Errors is now logged PER DAY, in this same table, exactly like
@@ -9144,20 +9190,28 @@ function renderIpsTables() {
           ${numCell('md_value', md)}
           ${numCell('lq_value', lq)}
           <td style="padding:8px; text-align:center; font-weight:700;">${total || '—'}</td>
-          <td style="padding:8px 10px; min-width:150px;">
+          <td style="padding:8px 10px; min-width:170px;">
             <div style="display:flex; align-items:center; gap:8px;">
               <div style="flex:1; height:6px; background:var(--line-soft); border-radius:999px; overflow:hidden;">
                 <div style="width:${ratio != null ? Math.max(0, Math.min(100, ratio)) : 0}%; height:100%; background:${barColor}; border-radius:999px;"></div>
               </div>
               <span style="font-weight:700; min-width:52px; text-align:right; font-size:12px;">
-                ${poExcluded
-                  ? '<span title="This day counts in the MD/LQ totals but is excluded from the PO average, matching the spreadsheet." style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">excl. PO</span>'
-                  : onFullLeave
-                    ? '<span title="Full day on leave — no target to measure against." style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--line-soft); color:var(--ink-faint);">on leave</span>'
-                    : ratio != null ? ratio.toFixed(2) + '%' : '—'}
+                ${otherTask
+                  ? `<span title="${escapeHtml(otherTaskNote || 'Other task — no note provided')}" style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--teal-wash); color:var(--teal); cursor:${canToggleOtherTask ? 'pointer' : 'default'};" ${canToggleOtherTask ? `class="ips-other-task-note-btn" data-emp-id="${emp.id}" data-date="${day}"` : ''}>other task</span>`
+                  : poExcluded
+                    ? '<span title="This day counts in the MD/LQ totals but is excluded from the PO average, matching the spreadsheet." style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">excl. PO</span>'
+                    : onFullLeave
+                      ? '<span title="Full day on leave — no target to measure against." style="font-size:10px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--line-soft); color:var(--ink-faint);">on leave</span>'
+                      : ratio != null ? ratio.toFixed(2) + '%' : '—'}
               </span>
+              ${canToggleOtherTask ? `
+                <button type="button" class="ips-other-task-menu-trigger" data-emp-id="${emp.id}" data-date="${day}" data-other-task="${otherTask ? '1' : '0'}"
+                  title="Task options" style="flex-shrink:0; width:20px; height:20px; padding:0; border:none; background:none; cursor:pointer; color:var(--ink-faint); font-size:14px; line-height:1; border-radius:4px;"
+                  onmouseenter="this.style.background='var(--line-soft)'" onmouseleave="this.style.background='none'">⋯</button>
+              ` : otherTask ? `<span style="flex-shrink:0; font-size:11px;" title="Marked as another task">🗂️</span>` : ''}
             </div>
-            ${target < 800 && !poExcluded ? `<div class="faint" style="font-size:9.5px; margin-top:2px; text-align:right;" title="Target reduced for approved leave hours on this date">target: ${target}</div>` : ''}
+            ${target < 800 && !poExcluded && !otherTask ? `<div class="faint" style="font-size:9.5px; margin-top:2px; text-align:right;" title="Target reduced for approved leave hours on this date">target: ${target}</div>` : ''}
+            ${otherTask && otherTaskNote ? `<div class="faint" style="font-size:9.5px; margin-top:2px; text-align:right; max-width:170px; margin-left:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(otherTaskNote)}">📝 ${escapeHtml(otherTaskNote)}</div>` : ''}
           </td>
         </tr>
       `;
@@ -9199,10 +9253,12 @@ function renderIpsTables() {
             <div style="font-family:var(--font-display); font-size:17px; font-weight:600; color:var(--teal);">${formatPrettyDate(day)}</div>
             <div class="faint" style="font-size:10.5px;">Workday ${dayIdx + 1} of ${dates.length}</div>
             ${dayKind === 'future'
-              ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--ink-faint);">🔒 Future — locked</div>`
+              ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--ink-faint);">🔒 Locked</div>`
               : dayKind === 'past'
-                ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);">✎ Past — requests need approval</div>`
-                : `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Today — freely editable</div>`}
+                ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);">✎ Needs approval</div>`
+                : day === isoDate(new Date())
+                  ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Editable</div>`
+                  : `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);" title="Still editable until 1:00 AM">🕐 Editable (until 1AM)</div>`}
           </div>
           <button class="btn btn-ghost btn-sm" id="ips-day-next" ${isLast ? 'disabled' : ''}>→</button>
         </div>
@@ -9232,7 +9288,7 @@ function renderIpsTables() {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 <strong>Today</strong> is freely editable on your own row. <strong>Past days</strong> show a ✎ button — click a value to propose a correction, which needs admin/IPS approval before it applies. <strong>Future days</strong> are locked for everyone. ${admin ? 'As admin/IPS you can edit anyone\'s past or present entries directly (a confirmation appears when editing someone else), and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays. Errors are logged per day, just like Missing Data and Lead Qualification — the system totals every day's errors across ${ipsMonthLabel(ipsState.month)} to compute EC Score, shown live in the PO & EC Score tab as the month fills in. Working Days is a single figure for the whole month (set by admin/IPS above). Target shrinks automatically for approved leave hours on a date, pulled from the Leave Tracker — effective July 2026 onward.</p>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">💡 <strong>Today</strong> is freely editable on your own row (yesterday stays editable too, until 1:00 AM). <strong>Past days</strong> show a ✎ button — click a value to propose a correction, which needs admin/IPS approval before it applies. <strong>Future days</strong> are locked for everyone. ${admin ? 'As admin/IPS you can edit anyone\'s past or present entries directly (a confirmation appears when editing someone else), and Enter jumps down the column.' : ''} Changes save automatically. Use ← → to move between workdays. Errors are logged per day, just like Missing Data and Lead Qualification — the system totals every day's errors across ${ipsMonthLabel(ipsState.month)} to compute EC Score, shown live in the PO & EC Score tab as the month fills in. Working Days is a single figure for the whole month (set by admin/IPS above). Target shrinks automatically for approved leave hours on a date, pulled from the Leave Tracker — effective July 2026 onward. Assigned a special task for the day? Click the ⋯ next to VS Target and choose "Add task" — that day is excluded from the target, same as a full leave day.</p>
     `;
   }
 
@@ -9577,7 +9633,7 @@ async function loadIpsPrevRanks() {
       const byDate = {}; mine.forEach(e => { byDate[e.entry_date] = e; });
       const ratios = prevDates.map(d => {
         const e = byDate[d];
-        if (!e || e.po_excluded) return null;
+        if (!e || e.po_excluded || e.other_task) return null;
         const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
         return t > 0 ? t / 800 : null;
       }).filter(r => r != null);
@@ -9643,7 +9699,7 @@ async function openIpsYearModal(employeeId) {
     dEntries.forEach(e => { byDate[e.entry_date] = e; });
     const ratios = dates.map(d => {
       const e = byDate[d];
-      if (!e || e.po_excluded) return null;
+      if (!e || e.po_excluded || e.other_task) return null;
       const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
       return t > 0 ? t / 800 : null;
     }).filter(r => r != null);
@@ -9907,6 +9963,18 @@ function attachIpsHandlers() {
   document.querySelectorAll('.ips-reject-correction-btn').forEach(btn => {
     btn.addEventListener('click', () => rejectIpsCorrection(btn.dataset.id));
   });
+  document.querySelectorAll('.ips-other-task-menu-trigger').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showIpsOtherTaskMenu(btn);
+    });
+  });
+  document.querySelectorAll('.ips-other-task-note-btn').forEach(badge => {
+    badge.addEventListener('click', () => {
+      const e = ipsDailyFor(badge.dataset.empId, badge.dataset.date);
+      openIpsOtherTaskNoteViewer(badge.dataset.empId, badge.dataset.date, e ? e.other_task_note : '');
+    });
+  });
   document.querySelectorAll('.ips-daily-input').forEach(input => {
     input.addEventListener('change', () => saveIpsDailyEntry(input));
     // Enter = save and hop to the SAME column in the next row — rapid
@@ -9965,6 +10033,165 @@ async function saveIpsDailyEntry(input) {
 
   const { error } = await sb.from('ips_daily_entries').upsert(payload, { onConflict: 'employee_id,entry_date' });
   if (error) { console.error(error); showToast(ipsSaveErrorMsg(error), true); return; }
+  await loadIpsData();
+  renderIpsTables();
+}
+
+// ── "Other Task" exclusion — same mechanism as a full leave day (the
+// target drops to 0, so VS Target shows a badge instead of a ratio),
+// but requires a short note since, unlike leave, there's no other
+// record in the app explaining why the day's numbers are excluded. ──
+
+// Small self-contained dropdown for the ⋯ trigger next to VS Target —
+// same floating-portal approach Team Funds uses for its row menus, just
+// scoped locally here since IPS's menu only ever needs these few items.
+function ipsOtherTaskMenuPortal() {
+  let portal = document.getElementById('ips-other-task-menu-portal');
+  if (!portal) {
+    portal = document.createElement('div');
+    portal.id = 'ips-other-task-menu-portal';
+    portal.style.cssText = 'position:fixed; z-index:999; display:none; background:#fff; border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:4px; min-width:150px;';
+    document.body.appendChild(portal);
+    document.addEventListener('click', () => { portal.style.display = 'none'; });
+  }
+  return portal;
+}
+
+function showIpsOtherTaskMenu(triggerBtn) {
+  const portal = ipsOtherTaskMenuPortal();
+  const employeeId = triggerBtn.dataset.empId;
+  const dateIso = triggerBtn.dataset.date;
+  const isMarked = triggerBtn.dataset.otherTask === '1';
+
+  const items = isMarked
+    ? [
+        { label: 'Edit note', action: 'edit' },
+        { label: 'Delete', action: 'delete', danger: true },
+      ]
+    : [
+        { label: 'Add task', action: 'add' },
+      ];
+
+  portal.innerHTML = items.map(item => `
+    <div class="ips-other-task-menu-item" data-action="${item.action}" style="padding:7px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; color:${item.danger ? 'var(--coral)' : 'inherit'}; white-space:nowrap;">
+      ${item.label}
+    </div>
+  `).join('');
+  portal.querySelectorAll('.ips-other-task-menu-item').forEach(el => {
+    el.addEventListener('mouseenter', () => { el.style.background = el.dataset.action === 'delete' ? 'var(--coral-wash)' : 'var(--line-soft)'; });
+    el.addEventListener('mouseleave', () => { el.style.background = 'transparent'; });
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      portal.style.display = 'none';
+      if (el.dataset.action === 'add') ipsAddOtherTask(employeeId, dateIso);
+      else if (el.dataset.action === 'edit') ipsEditOtherTaskNote(employeeId, dateIso);
+      else if (el.dataset.action === 'delete') ipsDeleteOtherTask(employeeId, dateIso);
+    });
+  });
+
+  const rect = triggerBtn.getBoundingClientRect();
+  portal.style.display = 'block';
+  const menuWidth = 150;
+  let left = rect.right - menuWidth;
+  if (left < 8) left = 8;
+  portal.style.left = left + 'px';
+  portal.style.top = (rect.bottom + 4) + 'px';
+}
+
+function ipsAddOtherTask(employeeId, dateIso) {
+  if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); return; }
+  if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
+  openIpsOtherTaskModal(employeeId, dateIso, '', null);
+}
+
+function ipsEditOtherTaskNote(employeeId, dateIso) {
+  if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); return; }
+  if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
+  const e = ipsDailyFor(employeeId, dateIso);
+  openIpsOtherTaskModal(employeeId, dateIso, e ? e.other_task_note : '', null);
+}
+
+function ipsDeleteOtherTask(employeeId, dateIso) {
+  if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); return; }
+  if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
+  // Deleting removes an already-saved exclusion, which changes that
+  // day's PO Average contribution — confirm before committing.
+  if (!confirm('Are you sure you want to delete?')) return;
+  saveIpsOtherTask(employeeId, dateIso, false, null);
+}
+
+function openIpsOtherTaskModal(employeeId, dateIso, existingNote, onCancel) {
+  let saved = false; // tracks whether the form's submit handler actually ran, so we know a later "close" is a real cancel
+
+  openModal('Mark as Other Task', `
+    <form id="ips-other-task-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">
+        ${formatPrettyDate(dateIso)} will be excluded from VS Target (same as a full day on leave) — a short note is required so it's clear why.
+      </p>
+      <div class="field">
+        <label for="ips-other-task-note">What was the task?</label>
+        <input type="text" id="ips-other-task-note" required autofocus maxlength="200" value="${escapeHtml(existingNote || '')}"
+          placeholder="e.g. Covered onboarding training for new hires"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save</button>
+    </form>
+  `);
+
+  document.getElementById('ips-other-task-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const note = document.getElementById('ips-other-task-note').value.trim();
+    if (!note) { showToast('Please add a short note.', true); return; }
+    saved = true;
+    await saveIpsOtherTask(employeeId, dateIso, true, note);
+    closeModal();
+  });
+
+  // Explicitly hook the actual dismissal paths — the "Close" button and
+  // clicking the dark backdrop — instead of trying to infer dismissal
+  // from whether the form element still exists in the DOM. closeModal()
+  // only ever hides the overlay (display:none), it never removes the
+  // markup, so that DOM-existence check could never actually fire; this
+  // is the real reason the checkbox stayed checked after cancelling.
+  const overlay = document.getElementById('modal-overlay');
+  const closeBtn = document.getElementById('modal-close-btn');
+
+  function handleCancel() {
+    if (saved) return; // the submit handler already ran — nothing to undo
+    if (onCancel) onCancel(); // reverts the checkbox's visual state
+    renderIpsTables(); // repaint from the UNCHANGED database — nothing was ever saved, so this naturally shows unchecked
+  }
+
+  closeBtn?.addEventListener('click', handleCancel);
+  overlay?.addEventListener('click', function backdropCancel(ev) {
+    if (ev.target === overlay) {
+      handleCancel();
+      overlay.removeEventListener('click', backdropCancel);
+    }
+  });
+}
+
+function openIpsOtherTaskNoteViewer(employeeId, dateIso, note) {
+  // Clicking the "other task" badge itself (once it's already set)
+  // reopens the same modal pre-filled, so the note can be edited or the
+  // task un-marked via the checkbox instead.
+  openIpsOtherTaskModal(employeeId, dateIso, note, null);
+}
+
+async function saveIpsOtherTask(employeeId, dateIso, otherTask, note) {
+  const payload = {
+    employee_id: employeeId, entry_date: dateIso,
+    other_task: otherTask, other_task_note: otherTask ? note : null,
+    updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
+
+  };
+  const { error } = await sb.from('ips_daily_entries').upsert(payload, { onConflict: 'employee_id,entry_date' });
+  if (error) {
+    console.error(error);
+    showToast(/column .*other_task.* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_other_task_schema.sql in Supabase.' : ipsSaveErrorMsg(error), true);
+    return;
+  }
+  showToast(otherTask ? 'Marked as other task — excluded from VS Target.' : 'Other task cleared — back to normal.');
   await loadIpsData();
   renderIpsTables();
 }
