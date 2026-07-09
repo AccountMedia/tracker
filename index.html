@@ -638,6 +638,7 @@ const state = {
   otFilingPollHandle: null, // setInterval handle for auto-refresh while viewing OT Hours Filing
   dashboardPollHandle: null, // setInterval handle for auto-refresh while viewing the Dashboard
   navBadgePollHandle: null, // setInterval handle for the sidebar Leave Tracker badge (all tabs)
+  maintenanceWatcherHandle: null, // setInterval handle for the 2-10 AM maintenance window check
   appUsers: [], // every login account (username/role/employee_id) — only loaded for Employee Management, not needed elsewhere
   employeeManagementOpenMenuId: null, // employee id whose row-actions dropdown is currently open
   teamFundsTab: 'transactions', // active tab in Team Funds: 'transactions' | 'loans' | 'team-building' | 'accounts'
@@ -851,12 +852,110 @@ function canEditTeamFunds() {
   return state.profile.role === 'treasurer';
 }
 
+// =====================================================================
+// MAINTENANCE WINDOW — 2:00 AM to 10:00 AM daily
+// =====================================================================
+// The app is intentionally unavailable during this window for everyone
+// EXCEPT Kristina and Jeinna, who need to be able to check in anytime.
+// This blocks fresh logins/restored sessions at the gate AND live-locks
+// anyone already inside the app when the window starts — a forgotten
+// open tab is exactly the scenario this exists to guard against.
+const MAINTENANCE_WINDOW_START_HOUR = 2;  // 2:00 AM
+const MAINTENANCE_WINDOW_END_HOUR = 10;   // 10:00 AM
+const MAINTENANCE_EXEMPT_NAMES = ['Kristina Mutia', 'Jeinna Louise Perez'];
+
+function inMaintenanceWindow() {
+  const h = new Date().getHours();
+  return h >= MAINTENANCE_WINDOW_START_HOUR && h < MAINTENANCE_WINDOW_END_HOUR;
+}
+
+function isMaintenanceExempt(profile) {
+  return !!profile && MAINTENANCE_EXEMPT_NAMES.includes(profile.display_name);
+}
+
+function showMaintenanceScreen() {
+  document.getElementById('login-screen').classList.add('hidden');
+  document.getElementById('app').classList.add('hidden');
+  let screen = document.getElementById('maintenance-screen');
+  if (!screen) {
+    screen = document.createElement('div');
+    screen.id = 'maintenance-screen';
+    screen.style.cssText = 'min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; background:var(--paper);';
+    screen.innerHTML = `
+      <div class="card" style="max-width:420px; padding:32px 28px; text-align:center;">
+        <div style="font-size:34px; margin-bottom:12px;">🌙</div>
+        <h2 style="margin:0 0 10px; font-family:var(--font-display); font-size:19px; color:var(--teal);">Scheduled maintenance</h2>
+        <p class="muted" style="font-size:13.5px; line-height:1.6; margin:0;">The application will be unavailable daily from 2:00 AM to 10:00 AM to conserve system resources. Please check back after 10:00 AM.</p>
+      </div>
+    `;
+    document.body.appendChild(screen);
+  }
+  screen.style.display = 'flex';
+}
+
+function hideMaintenanceScreen() {
+  const screen = document.getElementById('maintenance-screen');
+  if (screen) screen.style.display = 'none';
+}
+
+// Checked once a minute while logged in, so someone already inside the
+// app gets locked out the moment the window starts — not just at their
+// next login. Also re-checked on tab focus, in case the system clock
+// jumped or the tab was asleep past the boundary. Actually tears down
+// every live connection (Realtime subscriptions + any polling), not
+// just hides the screen — a forgotten open tab is exactly the case this
+// exists to stop from costing anything overnight.
+function startMaintenanceWindowWatcher() {
+  stopMaintenanceWindowWatcher();
+  let locked = false;
+  const check = () => {
+    if (!state.profile) return;
+    if (isMaintenanceExempt(state.profile)) return; // Kristina/Jeinna never get locked out
+    if (inMaintenanceWindow() && !locked) {
+      locked = true;
+      stopPriolistPolling();
+      stopLiRestrictionTicker();
+      stopLeaveTrackerPolling();
+      stopPayrollPolling();
+      stopOtFilingPolling();
+      stopTeamFundsPolling();
+      stopDashboardPolling();
+      stopIpsRealtime();
+      stopNavBadgePolling();
+      showMaintenanceScreen();
+    } else if (!inMaintenanceWindow() && locked) {
+      // Window ended while the tab was still open — don't silently
+      // resume; ask for a real reload so state isn't stale/half-wired.
+      locked = false;
+      hideMaintenanceScreen();
+      location.reload();
+    }
+  };
+  check();
+  state.maintenanceWatcherHandle = setInterval(check, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+}
+
+function stopMaintenanceWindowWatcher() {
+  if (state.maintenanceWatcherHandle) {
+    clearInterval(state.maintenanceWatcherHandle);
+    state.maintenanceWatcherHandle = null;
+  }
+}
+
 function enterApp() {
+  // Gate at the door: block entry outright during the window, unless exempt.
+  if (inMaintenanceWindow() && !isMaintenanceExempt(state.profile)) {
+    showMaintenanceScreen();
+    return;
+  }
+  hideMaintenanceScreen();
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
   document.getElementById('current-user-label').textContent = state.profile.display_name || state.profile.username;
   initNav();
   loadAllData();
+  startMaintenanceWindowWatcher();
 }
 
 function checkExistingSession() {
@@ -889,6 +988,7 @@ function logout() {
   const tfNavBadge = document.getElementById('nav-tf-badge');
   if (tfNavBadge) tfNavBadge.style.display = 'none';
   stopNavBadgePolling();
+  stopMaintenanceWindowWatcher();
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
