@@ -9234,7 +9234,7 @@ function renderIpsTables() {
                 <button type="button" class="ips-other-task-menu-trigger" data-emp-id="${emp.id}" data-date="${day}" data-other-task="${otherTask ? '1' : '0'}"
                   title="Task options" style="flex-shrink:0; width:20px; height:20px; padding:0; border:none; background:none; cursor:pointer; color:var(--ink-faint); font-size:14px; line-height:1; border-radius:4px;"
                   onmouseenter="this.style.background='var(--line-soft)'" onmouseleave="this.style.background='none'">⋯</button>
-              ` : otherTask ? `<span style="flex-shrink:0; font-size:11px;" title="Marked as another task">🗂️</span>` : ''}
+              ` : ''}
             </div>
             ${target < 800 && !poExcluded && !otherTask ? `<div class="faint" style="font-size:9.5px; margin-top:2px; text-align:right;" title="Target reduced for approved leave hours on this date">target: ${target}</div>` : ''}
             ${otherTask && otherTaskNote ? `<div class="faint" style="font-size:9.5px; margin-top:2px; text-align:right; max-width:170px; margin-left:auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(otherTaskNote)}">📝 ${escapeHtml(otherTaskNote)}</div>` : ''}
