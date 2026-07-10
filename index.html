@@ -866,7 +866,10 @@ const MAINTENANCE_WINDOW_END_HOUR = 10;   // 10:00 AM
 const MAINTENANCE_EXEMPT_NAMES = ['Kristina Mutia', 'Jeinna Louise Perez'];
 
 function inMaintenanceWindow() {
-  const h = new Date().getHours();
+  const now = new Date();
+  const day = now.getDay(); // 0 = Sunday, 6 = Saturday
+  if (day === 0 || day === 6) return false; // weekends are fully exempt — no maintenance window at all
+  const h = now.getHours();
   return h >= MAINTENANCE_WINDOW_START_HOUR && h < MAINTENANCE_WINDOW_END_HOUR;
 }
 
@@ -886,7 +889,7 @@ function showMaintenanceScreen() {
       <div class="card" style="max-width:420px; padding:32px 28px; text-align:center;">
         <div style="font-size:34px; margin-bottom:12px;">🌙</div>
         <h2 style="margin:0 0 10px; font-family:var(--font-display); font-size:19px; color:var(--teal);">Scheduled maintenance</h2>
-        <p class="muted" style="font-size:13.5px; line-height:1.6; margin:0;">The application will be unavailable daily from 2:00 AM to 10:00 AM to conserve system resources. Please check back after 10:00 AM.</p>
+        <p class="muted" style="font-size:13.5px; line-height:1.6; margin:0;">The application is unavailable from 2:00 AM to 10:00 AM, Monday through Friday, to conserve system resources. Please check back after 10:00 AM.</p>
       </div>
     `;
     document.body.appendChild(screen);
