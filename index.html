@@ -1574,6 +1574,102 @@ async function ensureYearEndHolidayBlocks() {
     }
   }
 
+  // ── Reconciliation pass: the conversion above is ONE-WAY (VL -> LNP)
+  // and never revisits a row once it's been converted, even though an
+  // employee's balance is a moving target — a later credit adjustment,
+  // or another leave request being cancelled/declined, can free up VL
+  // that a stale LNP holiday row never gets to claim back on its own.
+  // This walks every already-converted holiday LNP/HLNP row and checks
+  // TODAY's real balance; if credit is now available, it converts the
+  // row back to VL (or VLH), up to whatever's actually available, so
+  // "the app says LNP" and "the math says I have VL left" can't drift
+  // apart indefinitely.
+  await reconcileStaleHolidayLwop();
+
+  async function reconcileStaleHolidayLwop() {
+    const staleRows = state.leaveEntries.filter(e =>
+      e.requested_by === SYSTEM_HOLIDAY_MARKER &&
+      e.status === STATUS.APPROVED &&
+      (e.leave_type === 'LNP' || e.leave_type === 'HLNP')
+    );
+    if (!staleRows.length) return;
+
+    // Group by employee + fiscal year, oldest date first, so if only
+    // PART of a multi-day holiday block can now be reclaimed, it's the
+    // earliest day(s) that get restored first — consistent with how the
+    // original conversion consumed credit in date order.
+    const byEmployeeFy = new Map(); // "empId:fy" -> rows[]
+    staleRows.forEach(row => {
+      const fy = fiscalYearForDate(row.leave_date);
+      const key = `${row.employee_id}:${fy}`;
+      if (!byEmployeeFy.has(key)) byEmployeeFy.set(key, []);
+      byEmployeeFy.get(key).push(row);
+    });
+
+    const reconcileUpdates = [];
+    for (const [key, rows] of byEmployeeFy) {
+      const [empId, fyStr] = key.split(':');
+      const fy = Number(fyStr);
+      const employee = state.employees.find(e => e.id === empId);
+      if (!employee) continue;
+
+      rows.sort((a, b) => a.leave_date.localeCompare(b.leave_date));
+
+      // Current real VL balance for this fiscal year, per the SAME
+      // fiscalPoolBalance function every other part of the app already
+      // trusts — this is deliberately not a separate calculation.
+      let available = round2(Math.max(0, getVLBalance(employee, fy)) * 8); // in hours
+
+      for (const row of rows) {
+        if (available <= 0) break;
+        const rowHours = row.hours != null ? Number(row.hours) : dayFractionForEntry(row) * 8;
+        const restoreHours = round2(Math.min(available, rowHours));
+        if (restoreHours <= 0) continue;
+
+        const paidType = row.leave_type === 'HLNP' ? 'VLH' : 'VL';
+        if (restoreHours >= rowHours) {
+          // Fully reclaimable: convert the whole row back to VL/VLH.
+          reconcileUpdates.push({
+            id: row.id,
+            fields: { leave_type: paidType, note: appendAutoNote(row.note, `Auto-restored to ${paidType} — ${fiscalYearLabel(fy)} VL credit is now available.`) },
+          });
+        } else {
+          // Only part of this row can be reclaimed right now — shrink
+          // the LNP row to the remaining unpaid hours and insert a new
+          // paid row for the reclaimed portion, mirroring exactly how
+          // the original split-conversion logic above builds partial
+          // rows (same shape, just running in reverse).
+          reconcileUpdates.push({
+            id: row.id,
+            fields: { hours: round2(rowHours - restoreHours), note: appendAutoNote(row.note, `Auto-restored ${restoreHours}h to ${paidType} — partial ${fiscalYearLabel(fy)} VL credit now available.`) },
+          });
+          reconcileUpdates.push({
+            insert: true,
+            fields: {
+              employee_id: row.employee_id, leave_type: paidType, leave_date: row.leave_date,
+              note: appendAutoNote(row.note, `Auto-restored ${restoreHours}h to ${paidType} — partial ${fiscalYearLabel(fy)} VL credit now available.`),
+              status: STATUS.APPROVED, requested_by: row.requested_by,
+              request_group_id: row.request_group_id, hours: restoreHours,
+            },
+          });
+        }
+        available = round2(available - restoreHours);
+      }
+    }
+
+    if (!reconcileUpdates.length) return;
+    for (const op of reconcileUpdates) {
+      if (op.insert) {
+        const { error } = await sb.from('leave_entries').insert(op.fields);
+        if (error) console.error('LWOP reconciliation insert failed:', error);
+      } else {
+        const { error } = await sb.from('leave_entries').update(op.fields).eq('id', op.id);
+        if (error) console.error('LWOP reconciliation update failed:', error);
+      }
+    }
+    await loadLeaveEntries();
+  }
+
   if (allHolidayGroupIdsByEmployee.size) {
     await loadLeaveEntries();
   }
