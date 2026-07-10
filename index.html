@@ -5806,9 +5806,14 @@ function renderOtFiling() {
     });
   }
 
-  const roster = activeRosterNoManager()
+  const roster = activeRoster()
     .sort(byKristinaFirstThenName)
     .sort((a, b) => {
+      // Kristina always stays pinned at the very top, regardless of
+      // whether she's logged hours yet — this sort only re-orders
+      // everyone else by logged-hours status.
+      if (a.display_name === 'Kristina Mutia') return -1;
+      if (b.display_name === 'Kristina Mutia') return 1;
       const aHas = hasAnyLoggedHours(a.id) ? 0 : 1;
       const bHas = hasAnyLoggedHours(b.id) ? 0 : 1;
       return aHas - bHas;
@@ -6070,7 +6075,7 @@ function downloadOtFilingReport() {
   const dates = state.otFilingDates.map(d => d.filing_date).sort();
   if (!dates.length) { showToast('No OT filing dates to report on.', true); return; }
 
-  const roster = activeRosterNoManager()
+  const roster = activeRoster()
     .sort(byKristinaFirstThenName);
 
   // Wide format: one row per employee, one column per open date, showing
