@@ -5772,7 +5772,7 @@ function formatOtDateHeader(isoStr) {
   const d = new Date(isoStr + 'T00:00:00');
   const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
   const monthDay = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  return `${weekday}<br>${monthDay}`;
+  return `${weekday}, ${monthDay}`;
 }
 
 function renderOtFiling() {
@@ -5832,7 +5832,11 @@ function renderOtFiling() {
     return;
   }
 
-  const headerCells = dates.map(d => `<th style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; min-width:140px;">${formatOtDateHeader(d)}</th>`).join('');
+  const headerCells = dates.map(d => `<th colspan="2" style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">${formatOtDateHeader(d)}</th>`).join('');
+  const subHeaderCells = dates.map(() => `
+    <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">No. of Hours</th>
+    <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">Total Output</th>
+  `).join('');
 
   // "# of Heads working" is a headcount: anyone who has logged anything
   // at all for that date counts as 1, regardless of how many hours.
@@ -5858,13 +5862,13 @@ function renderOtFiling() {
 
   const headsRow = dates.map(d => {
     const heads = headsForDate(d);
-    return `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
+    return `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
   }).join('');
 
   const leadsToValidatePerDate = dates.map(d => round2(hoursForDate(d) * 100));
 
   const leadsRow = dates.map((d, i) => {
-    return `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
+    return `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
   }).join('');
 
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
@@ -5890,7 +5894,7 @@ function renderOtFiling() {
   const totalLeadsRow = dates.map((d, i) => {
     const val = totalLeadsPerDate[i];
     const editedBy = totalLeadsEditedByPerDate[i];
-    return `<td style="padding:6px; min-width:140px;">
+    return `<td colspan="2" style="padding:6px;">
       <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
         <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
           style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
@@ -5899,7 +5903,7 @@ function renderOtFiling() {
     </td>`;
   }).join('');
 
-  const pendingRow = pendingBalancesPerDate.map(bal => `<td style="padding:8px; min-width:140px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
+  const pendingRow = pendingBalancesPerDate.map(bal => `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
@@ -5911,23 +5915,31 @@ function renderOtFiling() {
       const confirmed = entry && entry.confirmed;
       const displayVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '—');
 
+      // Total Output is now a REAL number the employee types in at
+      // confirmation time (see openOtConfirmModal) — not a formula.
+      // Always read-only from THIS cell regardless of role; the only way
+      // to set or change it is through Confirm (or, for a confirmed
+      // entry, an admin Unlock followed by a fresh Confirm).
+      const outputVal = entry && entry.total_output != null ? entry.total_output : '—';
+      const outputCell = `<td style="padding:8px; text-align:center; font-size:12.5px; color:var(--ink-soft);">${outputVal}</td>`;
+
       if (confirmed) {
         // Locked for everyone once confirmed — admins get a deliberate
         // "Unlock" action to override this if a correction is genuinely
         // needed; staff have no way to edit it from here.
         return `
-          <td style="padding:8px; text-align:center; font-size:12.5px; min-width:140px;">
+          <td style="padding:8px; text-align:center; font-size:12.5px;">
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
               ${admin ? `<button class="btn btn-ghost btn-sm ot-unlock-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Unlock</button>` : ''}
             </div>
           </td>
-        `;
+        ` + outputCell;
       }
 
       if (!canEdit) {
-        return `<td style="padding:8px; text-align:center; font-size:12.5px; min-width:140px;">${displayVal}</td>`;
+        return `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>` + outputCell;
       }
 
       // Editable cell for the owner (or admin) — only reachable while
@@ -5938,14 +5950,14 @@ function renderOtFiling() {
         : '';
 
       return `
-        <td style="padding:4px; min-width:140px; text-align:center;">
+        <td style="padding:4px; text-align:center;">
           <div style="position:relative; display:inline-block;">
             <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
               style="width:52px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
             ${badge}
           </div>
         </td>
-      `;
+      ` + outputCell;
     }).join('');
 
     return `
@@ -5958,16 +5970,19 @@ function renderOtFiling() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm" to confirm the number is accurate or correct it to your actual hours.</p>
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm" to enter your actual time worked and total output — both lock together once confirmed.</p>
       <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
           <col style="width:230px;">
-          ${dates.map(() => '<col style="width:140px;">').join('')}
+          ${dates.map(() => '<col style="width:90px;"><col style="width:90px;">').join('')}
         </colgroup>
         <thead>
-          <tr style="border-bottom:2px solid var(--line);" class="ot-filing-header-row">
-            <th style="padding:10px; text-align:left; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">Agent</th>
+          <tr class="ot-filing-header-row">
+            <th rowspan="2" style="padding:10px; text-align:left; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; vertical-align:bottom;">Agent</th>
               ${headerCells}
+            </tr>
+            <tr>
+              ${subHeaderCells}
             </tr>
           </thead>
           <tbody>
@@ -6036,11 +6051,15 @@ function renderOtFiling() {
 async function unlockOtEntry(employeeId, filingDate) {
   if (!isAdmin()) { showToast('Only admins can unlock a confirmed entry.', true); return; }
   const emp = state.employees.find(e => e.id === employeeId);
-  if (!confirm(`Unlock ${emp ? emp.display_name : 'this'}'s confirmed OT hours for ${formatPrettyDate(filingDate)}? This will make it editable again.`)) return;
+  if (!confirm(`Unlock ${emp ? emp.display_name : 'this'}'s confirmed OT hours for ${formatPrettyDate(filingDate)}? This will make it editable again and clear its Total Output.`)) return;
 
-  const { error } = await sb.from('ot_hours_entries').update({ confirmed: false }).eq('employee_id', employeeId).eq('filing_date', filingDate);
+  // Total Output is cleared on unlock — it's a fresh number typed in at
+  // Confirm time, not something that should carry over from the
+  // now-invalidated confirmation. Hours (assumed/actual) are left as-is
+  // so the person isn't starting from zero on that part.
+  const { error } = await sb.from('ot_hours_entries').update({ confirmed: false, total_output: null }).eq('employee_id', employeeId).eq('filing_date', filingDate);
   if (error) { showToast('Could not unlock the entry.', true); return; }
-  showToast('Entry unlocked.');
+  showToast('Entry unlocked — Total Output cleared.');
   await loadOtHoursEntries();
   renderOtFiling();
 }
@@ -6081,30 +6100,47 @@ function downloadOtFilingReport() {
   const roster = activeRoster()
     .sort(byKristinaFirstThenName);
 
-  // Wide format: one row per employee, one column per open date, showing
-  // only actual (confirmed) hours — assumed hours are never shown here.
-  // An employee with no actual hours on any date is left out entirely.
+  // Wide format: one row per employee, TWO columns per open date (Actual
+  // Time Worked, Total Output) — matches the live table's format exactly.
+  // Both values only ever come from confirmed entries; assumed/unconfirmed
+  // hours are never shown here. An employee with nothing confirmed on
+  // any date is left out entirely.
   const rowsWide = roster
     .map(emp => {
-      const hoursPerDate = dates.map(d => {
+      const perDate = dates.map(d => {
         const entry = getOtEntry(emp.id, d);
-        return entry && entry.actual_hours != null ? entry.actual_hours : null;
+        const confirmed = entry && entry.confirmed;
+        return {
+          hours: confirmed && entry.actual_hours != null ? entry.actual_hours : null,
+          output: confirmed && entry.total_output != null ? entry.total_output : null,
+        };
       });
-      return { emp, hoursPerDate };
+      return { emp, perDate };
     })
-    .filter(r => r.hoursPerDate.some(h => h != null));
+    .filter(r => r.perDate.some(p => p.hours != null || p.output != null));
 
   const csvRows = [];
   csvRows.push(['OT Hours Filing Report']);
   csvRows.push([]);
-  csvRows.push(['Name', ...dates.map(d => formatPrettyDate(d))]);
+  // Two header rows, mirroring the live table: date spans two columns,
+  // sub-header labels which of the pair is which.
+  const dateHeaderRow = ['Name'];
+  const subHeaderRow = [''];
+  dates.forEach(d => {
+    dateHeaderRow.push(formatPrettyDate(d), '');
+    subHeaderRow.push('Actual Time Worked', 'Total Output');
+  });
+  csvRows.push(dateHeaderRow);
+  csvRows.push(subHeaderRow);
 
   if (rowsWide.length) {
-    rowsWide.forEach(({ emp, hoursPerDate }) => {
-      csvRows.push([emp.display_name, ...hoursPerDate.map(h => h != null ? h : '')]);
+    rowsWide.forEach(({ emp, perDate }) => {
+      const row = [emp.display_name];
+      perDate.forEach(p => { row.push(p.hours != null ? p.hours : '', p.output != null ? p.output : ''); });
+      csvRows.push(row);
     });
   } else {
-    csvRows.push(['No actual OT hours confirmed yet.']);
+    csvRows.push(['No OT entries confirmed yet.']);
   }
 
   csvRows.push([]);
@@ -6234,11 +6270,16 @@ function openOtConfirmModal(employeeId, filingDate) {
   }
 
   const formHtml = `
-    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">You logged <strong>${entry.assumed_hours}</strong> assumed OT hour(s) for ${escapeHtml(emp.display_name)} on ${formatPrettyDate(filingDate)}. Is that accurate?</p>
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">You logged <strong>${entry.assumed_hours}</strong> assumed OT hour(s) for ${escapeHtml(emp.display_name)} on ${formatPrettyDate(filingDate)}. Confirm your actual time worked and total output below.</p>
     <form id="ot-confirm-form" style="display:flex; flex-direction:column; gap:14px;">
       <div class="field">
-        <label for="ot-actual-hours">Actual OT hours</label>
-        <input type="number" id="ot-actual-hours" min="0" required value="${entry.assumed_hours}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <label for="ot-actual-hours">Actual time worked (hours)</label>
+        <input type="number" id="ot-actual-hours" min="0" step="0.01" required value="${entry.assumed_hours}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="ot-total-output">Total output</label>
+        <input type="number" id="ot-total-output" min="0" step="1" required placeholder="Enter the total output" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <p class="faint" style="font-size:11px; margin:4px 0 0;">Type the actual total \u2014 there's no automatic formula.</p>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Confirm</button>
     </form>
@@ -6248,15 +6289,22 @@ function openOtConfirmModal(employeeId, filingDate) {
   document.getElementById('ot-confirm-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const actualHours = parseFloat(document.getElementById('ot-actual-hours').value);
-    if (isNaN(actualHours) || actualHours < 0) { showToast('Enter a valid, non-negative number.', true); return; }
+    const totalOutput = parseFloat(document.getElementById('ot-total-output').value);
+    if (isNaN(actualHours) || actualHours < 0) { showToast('Enter a valid, non-negative number of hours.', true); return; }
+    if (isNaN(totalOutput) || totalOutput < 0) { showToast('Enter a valid, non-negative total output.', true); return; }
 
     const { error } = await sb.from('ot_hours_entries').update({
       actual_hours: actualHours,
+      total_output: totalOutput,
       confirmed: true,
       updated_at: new Date().toISOString(),
     }).eq('employee_id', employeeId).eq('filing_date', filingDate);
 
-    if (error) { showToast('Could not save the confirmation.', true); return; }
+    if (error) {
+      console.error(error);
+      showToast(/column .*total_output.* does not exist/i.test(error.message || '') ? 'Needs setup \u2014 run ot_total_output_schema.sql in Supabase.' : 'Could not save the confirmation.', true);
+      return;
+    }
     closeModal();
     showToast('OT hours confirmed.');
     await loadOtHoursEntries();
