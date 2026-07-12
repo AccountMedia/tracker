@@ -1287,19 +1287,39 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-08-1';
+const APP_VERSION = '2026-07-11-ot-sort-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
     const { data } = await sb.from('app_version').select('value').eq('key', 'current').maybeSingle();
     if (data && data.value && data.value !== APP_VERSION) {
-      showToast('Updating to the latest version…');
-      setTimeout(() => location.reload(), 1200);
+      // NEVER auto-reload — a mismatched value (e.g. the version wasn't
+      // bumped identically in both the file and the database) can cause
+      // an infinite reload loop, which is exactly what happened here.
+      // Show a dismissible banner instead and let the person choose
+      // when to refresh, which can never loop no matter what the two
+      // version strings actually say.
+      showStaleVersionBanner();
     }
   } catch (err) {
     // Table missing or offline — fail silently, this is a nice-to-have,
     // never something that should block the app from working.
   }
+}
+
+function showStaleVersionBanner() {
+  if (document.getElementById('stale-version-banner')) return; // already showing
+  const bar = document.createElement('div');
+  bar.id = 'stale-version-banner';
+  bar.style.cssText = 'position:fixed; bottom:0; left:0; right:0; z-index:9999; background:var(--teal); color:#F7F3E8; padding:10px 16px; display:flex; align-items:center; justify-content:center; gap:14px; font-size:13px; font-weight:600; box-shadow:0 -2px 10px rgba(0,0,0,0.15);';
+  bar.innerHTML = `
+    <span>A newer version of this app is available.</span>
+    <button id="stale-version-refresh-btn" style="background:#F7F3E8; color:var(--teal); border:none; padding:6px 14px; border-radius:999px; font-weight:700; font-size:12.5px; cursor:pointer;">Refresh now</button>
+    <button id="stale-version-dismiss-btn" style="background:none; color:#F7F3E8; border:1px solid rgba(247,243,232,0.5); padding:6px 14px; border-radius:999px; font-weight:600; font-size:12.5px; cursor:pointer;">Later</button>
+  `;
+  document.body.appendChild(bar);
+  document.getElementById('stale-version-refresh-btn').addEventListener('click', () => location.reload());
+  document.getElementById('stale-version-dismiss-btn').addEventListener('click', () => bar.remove());
 }
 
 // =====================================================================
@@ -1379,7 +1399,7 @@ async function loadAllData() {
   updateLeaveNavBadge();
   startNavBadgePolling();
   checkAppVersionAndReloadIfStale();
-  setInterval(() => { if (!document.hidden) checkAppVersionAndReloadIfStale(); }, 60000);
+  setInterval(() => { if (!document.hidden) checkAppVersionAndReloadIfStale(); }, 900000); // every 15 min, not every 60s — this is a tiny query but it ran for every logged-in person, all day; the banner isn't urgent enough to justify checking every minute
 
   // PHASE 2 — everything else in the background; repaint when done so
   // views that need these datasets (dashboard counts, payroll, OT,
