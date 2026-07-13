@@ -626,7 +626,7 @@ const state = {
   priolistEntries: [],    // PrioList rows
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
-  priolistTab: 'priolist',  // 'priolist' | 'red-files'
+  priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
   redFiles: [],             // priolist_red_files rows
   liVerificationStatus: [], // LinkedIn verification status per employee
   liRestrictionEntries: [], // LI restriction log entries
@@ -973,6 +973,7 @@ function checkExistingSession() {
 function logout() {
   sessionStorage.removeItem('registry_profile');
   sessionStorage.removeItem('registry_active_view');
+  sessionStorage.removeItem('registry_priolist_tab');
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
@@ -1287,7 +1288,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-red-files-campid-copy';
+const APP_VERSION = '2026-07-13-red-files-one-claim-limit';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4814,6 +4815,7 @@ function renderPrioList() {
   document.querySelectorAll('.priolist-view-tab').forEach(btn => {
     btn.addEventListener('click', () => {
       state.priolistTab = btn.dataset.tab;
+      sessionStorage.setItem('registry_priolist_tab', btn.dataset.tab);
       renderPrioList();
     });
   });
@@ -5113,14 +5115,25 @@ function renderRedFilesView() {
   if (!el || state.priolistTab !== 'red-files') return;
   const admin = isAdmin();
 
+  // Whether the current person already has an in-progress claim (any
+  // CampID claimed by them but not yet marked Done/AV) — drives whether
+  // their Claim buttons are enabled at all, not just what happens after
+  // clicking.
+  const myOngoingClaim = state.redFiles.find(f => f.status === 'claimed' && f.claimed_by === state.profile.employee_id);
+
   const activeFiles = state.redFiles
     .filter(f => f.status === 'open' || f.status === 'claimed')
     .sort((a, b) => {
-      // Your own claimed files float to the top, then everything else
-      // keeps its newest-first order from the query.
-      const aMine = a.claimed_by === state.profile.employee_id ? 0 : 1;
-      const bMine = b.claimed_by === state.profile.employee_id ? 0 : 1;
-      return aMine - bMine;
+      // Three tiers, in this exact order:
+      //   1. My own claimed files
+      //   2. Unclaimed files (open, waiting for anyone to claim)
+      //   3. Everyone else's claimed files
+      function tier(f) {
+        if (f.status === 'claimed' && f.claimed_by === state.profile.employee_id) return 0;
+        if (f.status === 'open') return 1;
+        return 2; // claimed by someone else
+      }
+      return tier(a) - tier(b);
     });
   const doneFiles = state.redFiles.filter(f => f.status === 'done' || f.status === 'av');
 
@@ -5162,7 +5175,11 @@ function renderRedFilesView() {
             ${isOpen ? 'Unclaimed' : isMine ? `You · ${f.claimed_at ? formatDateTime(f.claimed_at) : ''}` : `${escapeHtml(claimedName(f))}${f.claimed_at ? ' · ' + formatDateTime(f.claimed_at) : ''}`}
           </div>
         </div>
-        ${isOpen ? `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}" style="padding:4px 12px; font-size:11.5px;">Claim</button>` : ''}
+        ${isOpen ? (
+          myOngoingClaim
+            ? `<button class="btn btn-ghost btn-sm" disabled title="Finish ${escapeHtml(myOngoingClaim.camp_id)} first" style="padding:4px 12px; font-size:11.5px; opacity:0.45; cursor:not-allowed;">Claim</button>`
+            : `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}" style="padding:4px 12px; font-size:11.5px;">Claim</button>`
+        ) : ''}
         ${canFinish ? `
           <button class="btn btn-sm red-file-finish-btn" data-id="${f.id}" data-status="done" style="background:var(--green); color:#F7F3E8; padding:4px 10px; font-size:11.5px;">Done</button>
           <button class="btn btn-ghost btn-sm red-file-finish-btn" data-id="${f.id}" data-status="av" style="padding:4px 10px; font-size:11.5px;">AV</button>
@@ -5294,7 +5311,7 @@ async function submitRedFileCell(cell, refocus) {
 
   // Duplicate guard against anything currently loaded (open, claimed, or completed)
   if (state.redFiles.some(f => f.camp_id.toLowerCase() === camp_id.toLowerCase())) {
-    showToast(`${camp_id} is already in the list.`, true);
+    showToast('This campID already exists.', true);
     cell.select();
     return;
   }
@@ -5328,6 +5345,15 @@ async function claimRedFile(id) {
   if (!state.profile.employee_id) { showToast('Your account is not linked to an employee record.', true); return; }
   const f = state.redFiles.find(x => x.id === id);
   if (!f || f.status !== 'open') { showToast('This CampID has already been claimed.', true); await loadRedFiles(); renderRedFilesView(); return; }
+
+  // One in-progress Red File at a time — someone who already has a
+  // claimed CampID they haven't marked Done or AV yet can't claim a
+  // second one until they finish the first.
+  const ongoing = state.redFiles.find(x => x.status === 'claimed' && x.claimed_by === state.profile.employee_id);
+  if (ongoing) {
+    showToast(`You already have ${ongoing.camp_id} claimed — mark it Done or AV before claiming another.`, true);
+    return;
+  }
 
   // Only claim if it's still open — protects against two people
   // clicking Claim at nearly the same moment.
