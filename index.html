@@ -1287,7 +1287,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-ot-actual-hours-cleanup-fix';
+const APP_VERSION = '2026-07-13-red-files-campid-copy';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5129,6 +5129,21 @@ function renderRedFilesView() {
     return emp ? emp.display_name : '—';
   }
 
+  // A CampID rendered as a click-to-copy button — a small copy icon
+  // sits right next to it so it's clear at a glance that clicking will
+  // copy it, rather than someone having to discover that by accident.
+  function campIdCopyHtml(campId) {
+    return `
+      <button type="button" class="red-file-campid-copy" data-camp-id="${escapeHtml(campId)}" title="Click to copy"
+        style="display:inline-flex; align-items:center; gap:5px; background:none; border:none; padding:0; cursor:pointer; font-family:var(--font-mono); font-weight:700; font-size:13px; color:inherit;">
+        <span>${escapeHtml(campId)}</span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5; flex-shrink:0;">
+          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      </button>
+    `;
+  }
+
   function fileChip(f) {
     const isOpen = f.status === 'open';
     const isMine = f.claimed_by === state.profile.employee_id;
@@ -5140,7 +5155,7 @@ function renderRedFilesView() {
         background:${isMine ? '#DCEFEA' : 'var(--paper)'};">
         <div style="flex:1; min-width:0;">
           <div style="display:flex; align-items:center; gap:7px;">
-            <span style="font-family:var(--font-mono); font-weight:700; font-size:13px;">${escapeHtml(f.camp_id)}</span>
+            ${campIdCopyHtml(f.camp_id)}
             ${isMine ? `<span style="font-size:9px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--teal); color:#F7F3E8;">YOURS</span>` : ''}
           </div>
           <div class="faint" style="font-size:10.5px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
@@ -5160,7 +5175,7 @@ function renderRedFilesView() {
   function doneChip(f) {
     return `
       <div style="display:flex; align-items:center; gap:8px; padding:7px 11px; border-radius:10px; border:1px solid var(--line-soft); background:var(--paper); font-size:12px;">
-        <span style="font-family:var(--font-mono); font-weight:700;">${escapeHtml(f.camp_id)}</span>
+        ${campIdCopyHtml(f.camp_id)}
         <span style="font-size:9.5px; font-weight:700; padding:1px 8px; border-radius:999px;
           background:${f.status === 'done' ? 'var(--green-wash)' : 'var(--amber-wash)'};
           color:${f.status === 'done' ? 'var(--green)' : 'var(--amber)'};">${f.status === 'done' ? '✓ Done' : 'AV'}</span>
@@ -5214,8 +5229,50 @@ function renderRedFilesView() {
   document.querySelectorAll('.red-file-delete-btn').forEach(btn => {
     btn.addEventListener('click', () => deleteRedFile(btn.dataset.id));
   });
+  document.querySelectorAll('.red-file-campid-copy').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyCampIdToClipboard(btn.dataset.campId, btn);
+    });
+  });
   attachRedFileEntryCells();
 }
+
+// Copies a CampID to the clipboard and briefly swaps its icon to a
+// checkmark so the click visibly registered, then reverts. Falls back
+// to a manual copy method if the async Clipboard API isn't available
+// (e.g. an insecure/non-HTTPS context).
+async function copyCampIdToClipboard(campId, btn) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(campId);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = campId;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    showToast(`Copied ${campId}.`);
+    const icon = btn.querySelector('svg');
+    if (icon) {
+      const original = icon.outerHTML;
+      icon.outerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><polyline points="20 6 9 17 4 12"/></svg>`;
+      setTimeout(() => {
+        const freshBtn = document.querySelector(`.red-file-campid-copy[data-camp-id="${CSS.escape(campId)}"]`);
+        const freshIcon = freshBtn && freshBtn.querySelector('svg');
+        if (freshIcon) freshIcon.outerHTML = original;
+      }, 1200);
+    }
+  } catch (err) {
+    console.error('Copy failed:', err);
+    showToast('Could not copy — please copy manually.', true);
+  }
+}
+
 
 // Spreadsheet-style entry cells: typing a CampID and pressing Enter (or
 // clicking away) inserts it immediately, clears the cell, and keeps
