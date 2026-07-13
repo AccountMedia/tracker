@@ -1288,7 +1288,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-red-files-one-claim-limit';
+const APP_VERSION = '2026-07-13-red-files-undo';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5197,7 +5197,8 @@ function renderRedFilesView() {
           background:${f.status === 'done' ? 'var(--green-wash)' : 'var(--amber-wash)'};
           color:${f.status === 'done' ? 'var(--green)' : 'var(--amber)'};">${f.status === 'done' ? '✓ Done' : 'AV'}</span>
         <span class="faint" style="font-size:10.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(claimedName(f))}</span>
-        ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:1px 6px; font-size:10.5px; margin-left:auto;">✕</button>` : ''}
+        ${admin ? `<button class="btn btn-ghost btn-sm red-file-undo-btn" data-id="${f.id}" data-camp-id="${escapeHtml(f.camp_id)}" title="Revert back to claimed — for a mistaken Done/AV" style="color:var(--amber); padding:1px 8px; font-size:10.5px; margin-left:auto;">Undo</button>` : ''}
+        ${admin ? `<button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:1px 6px; font-size:10.5px;">✕</button>` : ''}
       </div>
     `;
   }
@@ -5245,6 +5246,9 @@ function renderRedFilesView() {
   });
   document.querySelectorAll('.red-file-delete-btn').forEach(btn => {
     btn.addEventListener('click', () => deleteRedFile(btn.dataset.id));
+  });
+  document.querySelectorAll('.red-file-undo-btn').forEach(btn => {
+    btn.addEventListener('click', () => undoRedFile(btn.dataset.id, btn.dataset.campId));
   });
   document.querySelectorAll('.red-file-campid-copy').forEach(btn => {
     btn.addEventListener('click', (e) => {
@@ -5380,6 +5384,24 @@ async function finishRedFile(id, status) {
     .eq('id', id);
   if (error) { showToast('Could not update the CampID.', true); return; }
   showToast(status === 'done' ? `${f.camp_id} marked Done.` : `${f.camp_id} marked AV.`);
+  await loadRedFiles();
+  renderRedFilesView();
+}
+
+// Admin-only correction for a mistaken Done/AV — reverts the CampID
+// back to 'claimed' (under whoever originally claimed it, unchanged)
+// and clears completed_at, so it reappears in Active Red Files exactly
+// as it looked before it was marked finished, ready to be corrected or
+// genuinely completed later.
+async function undoRedFile(id, campId) {
+  if (!isAdmin()) { showToast('Only admins can undo a completed CampID.', true); return; }
+  if (!confirm(`Undo "${campId}"? It will move back to Active Red Files as claimed, not Done/AV.`)) return;
+
+  const { error } = await sb.from('priolist_red_files')
+    .update({ status: 'claimed', completed_at: null })
+    .eq('id', id);
+  if (error) { showToast('Could not undo this CampID.', true); return; }
+  showToast(`${campId} moved back to claimed.`);
   await loadRedFiles();
   renderRedFilesView();
 }
