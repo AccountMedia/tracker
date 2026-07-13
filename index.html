@@ -1287,7 +1287,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-ot-delete-means-delete';
+const APP_VERSION = '2026-07-13-dashboard-denom-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2021,11 +2021,19 @@ function renderDashboard() {
   // nothing has been logged yet.
   const otDates = state.otFilingDates.map(d => d.filing_date).sort();
   const latestOtDate = otDates.length ? otDates[otDates.length - 1] : null;
+  // Denominator: anyone with a CURRENTLY ACTIVE number in their field —
+  // assumed_hours (still typing/estimating) or actual_hours (already
+  // confirmed). Someone who deleted their field is fully excluded here,
+  // not counted as "in progress" — this is the piece that was missing
+  // before (otEntryHasData also matched stale total_output/confirmed
+  // leftovers from OLD, already-cleared entries, which is what let a
+  // deleted person still count). Numerator: the subset of those who are
+  // confirmed.
   const otEntriesForDate = latestOtDate
-    ? state.otHoursEntries.filter(e => e.filing_date === latestOtDate && otEntryHasData(e))
+    ? state.otHoursEntries.filter(e => e.filing_date === latestOtDate && (e.assumed_hours != null || e.actual_hours != null))
     : [];
   const otLoggedCount = otEntriesForDate.length;
-  const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed).length;
+  const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed === true).length;
 
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
