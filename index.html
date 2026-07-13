@@ -1288,7 +1288,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-red-files-name-fix';
+const APP_VERSION = '2026-07-13-red-files-layout-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5191,20 +5191,22 @@ function renderRedFilesView() {
 
   function doneChip(f) {
     return `
-      <div style="display:flex; align-items:center; gap:8px; padding:7px 11px; border-radius:10px; border:1px solid var(--line-soft); background:var(--paper); font-size:12px;">
-        <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
+      <div style="display:flex; flex-direction:column; gap:6px; padding:8px 11px; border-radius:10px; border:1px solid var(--line-soft); background:var(--paper); font-size:12px;">
+        <div style="display:flex; align-items:center; gap:7px; flex-wrap:wrap;">
           ${campIdCopyHtml(f.camp_id)}
           <span style="font-size:9.5px; font-weight:700; padding:1px 8px; border-radius:999px; flex-shrink:0;
             background:${f.status === 'done' ? 'var(--green-wash)' : 'var(--amber-wash)'};
             color:${f.status === 'done' ? 'var(--green)' : 'var(--amber)'};">${f.status === 'done' ? '✓ Done' : 'AV'}</span>
-          <span class="faint" style="font-size:10.5px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(claimedName(f))}">${escapeHtml(claimedName(f))}</span>
         </div>
-        ${admin ? `
-          <div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">
-            <button class="btn btn-ghost btn-sm red-file-undo-btn" data-id="${f.id}" data-camp-id="${escapeHtml(f.camp_id)}" title="Revert back to claimed — for a mistaken Done/AV" style="color:var(--amber); padding:1px 8px; font-size:10.5px;">Undo</button>
-            <button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:1px 6px; font-size:10.5px;">✕</button>
-          </div>
-        ` : ''}
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <span class="faint" style="font-size:10.5px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(claimedName(f))}">${escapeHtml(claimedName(f))}</span>
+          ${admin ? `
+            <div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">
+              <button class="btn btn-ghost btn-sm red-file-undo-btn" data-id="${f.id}" data-camp-id="${escapeHtml(f.camp_id)}" title="Revert back to claimed — for a mistaken Done/AV" style="color:var(--amber); padding:1px 8px; font-size:10.5px;">Undo</button>
+              <button class="btn btn-ghost btn-sm red-file-delete-btn" data-id="${f.id}" style="color:var(--coral); padding:1px 6px; font-size:10.5px;">✕</button>
+            </div>
+          ` : ''}
+        </div>
       </div>
     `;
   }
@@ -5235,7 +5237,7 @@ function renderRedFilesView() {
     <div class="card" style="padding:18px 20px; margin-top:16px;">
       <h3 style="margin:0 0 10px; font-family:var(--font-display); font-size:15px; color:var(--teal);">✓ Done / AV <span class="faint" style="font-size:11.5px; font-weight:400;">(${doneFiles.length})</span></h3>
       ${doneFiles.length ? `
-        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr)); gap:6px; max-height:280px; overflow-y:auto; padding-right:4px;">
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:8px; max-height:320px; overflow-y:auto; padding-right:4px;">
           ${doneFiles.map(doneChip).join('')}
         </div>
       ` : `
