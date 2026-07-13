@@ -1288,7 +1288,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-red-files-layout-fix';
+const APP_VERSION = '2026-07-13-red-files-priolist-color-check';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5116,10 +5116,14 @@ function renderRedFilesView() {
   const admin = isAdmin();
 
   // Whether the current person already has an in-progress claim (any
-  // CampID claimed by them but not yet marked Done/AV) — drives whether
-  // their Claim buttons are enabled at all, not just what happens after
-  // clicking.
+  // CampID claimed by them but not yet marked Done/AV), OR an active
+  // file color set on PrioList — either blocks new Claim buttons, not
+  // just what happens after clicking.
   const myOngoingClaim = state.redFiles.find(f => f.status === 'claimed' && f.claimed_by === state.profile.employee_id);
+  const myPriolistEntryForClaim = state.priolistEntries.find(e => e.employee_id === state.profile.employee_id);
+  const myActiveFileColor = myPriolistEntryForClaim && myPriolistEntryForClaim.file_color && myPriolistEntryForClaim.file_color !== 'none'
+    ? myPriolistEntryForClaim.file_color
+    : null;
 
   const activeFiles = state.redFiles
     .filter(f => f.status === 'open' || f.status === 'claimed')
@@ -5178,7 +5182,9 @@ function renderRedFilesView() {
         ${isOpen ? (
           myOngoingClaim
             ? `<button class="btn btn-ghost btn-sm" disabled title="Finish ${escapeHtml(myOngoingClaim.camp_id)} first" style="padding:4px 12px; font-size:11.5px; opacity:0.45; cursor:not-allowed;">Claim</button>`
-            : `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}" style="padding:4px 12px; font-size:11.5px;">Claim</button>`
+            : myActiveFileColor
+              ? `<button class="btn btn-ghost btn-sm" disabled title="Clear your ${escapeHtml(PRIOLIST_FILE_LABELS[myActiveFileColor] || myActiveFileColor)} file on PrioList first" style="padding:4px 12px; font-size:11.5px; opacity:0.45; cursor:not-allowed;">Claim</button>`
+              : `<button class="btn btn-primary btn-sm red-file-claim-btn" data-id="${f.id}" style="padding:4px 12px; font-size:11.5px;">Claim</button>`
         ) : ''}
         ${canFinish ? `
           <button class="btn btn-sm red-file-finish-btn" data-id="${f.id}" data-status="done" style="background:var(--green); color:#F7F3E8; padding:4px 10px; font-size:11.5px;">Done</button>
@@ -5364,6 +5370,17 @@ async function claimRedFile(id) {
   const ongoing = state.redFiles.find(x => x.status === 'claimed' && x.claimed_by === state.profile.employee_id);
   if (ongoing) {
     showToast(`You already have ${ongoing.camp_id} claimed — mark it Done or AV before claiming another.`, true);
+    return;
+  }
+
+  // Also block claiming if they already have an active file color set
+  // on PrioList (yellow, blue, or red) — that's a separate, still-open
+  // piece of work that needs to be cleared (set back to None) before
+  // taking on a Red File CampID too.
+  const myPriolistEntry = state.priolistEntries.find(e => e.employee_id === state.profile.employee_id);
+  if (myPriolistEntry && myPriolistEntry.file_color && myPriolistEntry.file_color !== 'none') {
+    const colorLabel = PRIOLIST_FILE_LABELS[myPriolistEntry.file_color] || myPriolistEntry.file_color;
+    showToast(`You already have an active ${colorLabel} file on PrioList — clear it before claiming a Red File.`, true);
     return;
   }
 
