@@ -1287,7 +1287,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-11-ot-sort-fix';
+const APP_VERSION = '2026-07-13-ot-cleared-data-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2002,7 +2002,7 @@ function renderDashboard() {
   const otDates = state.otFilingDates.map(d => d.filing_date).sort();
   const latestOtDate = otDates.length ? otDates[otDates.length - 1] : null;
   const otEntriesForDate = latestOtDate
-    ? state.otHoursEntries.filter(e => e.filing_date === latestOtDate && (e.assumed_hours != null || e.actual_hours != null))
+    ? state.otHoursEntries.filter(e => e.filing_date === latestOtDate && otEntryHasData(e))
     : [];
   const otLoggedCount = otEntriesForDate.length;
   const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed).length;
@@ -5884,6 +5884,26 @@ function getOtEntry(employeeId, filingDate) {
   return state.otHoursEntries.find(e => e.employee_id === employeeId && e.filing_date === filingDate);
 }
 
+// The single source of truth for "does this OT entry still represent
+// real, currently-visible data" — checked against EVERY field that
+// could indicate something was logged, not just assumed/actual hours.
+// This exists because deleting the hours value alone used to leave
+// total_output (or a stale confirmed flag) behind, which made an
+// otherwise-empty row still count as "logged" in the sort, the "# of
+// Heads Working" count, and the dashboard's OT Confirmed card — so a
+// fully-cleared entry kept showing up everywhere even though the
+// employee had removed everything. Every place that needs to answer
+// "has this person logged anything for this date" should call this,
+// not re-implement the check inline.
+function otEntryHasData(entry) {
+  return !!entry && (
+    entry.assumed_hours != null ||
+    entry.actual_hours != null ||
+    entry.total_output != null ||
+    entry.confirmed === true
+  );
+}
+
 function formatOtDateHeader(isoStr) {
   const d = new Date(isoStr + 'T00:00:00');
   const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
@@ -5919,10 +5939,7 @@ function renderOtFiling() {
   // every date follows below. Alphabetical (Kristina-first) order is
   // kept within each of those two groups.
   function hasAnyLoggedHours(employeeId) {
-    return dates.some(d => {
-      const entry = getOtEntry(employeeId, d);
-      return entry && (entry.assumed_hours != null || entry.actual_hours != null);
-    });
+    return dates.some(d => otEntryHasData(getOtEntry(employeeId, d)));
   }
 
   const roster = activeRoster()
@@ -5957,11 +5974,7 @@ function renderOtFiling() {
   // "# of Heads working" is a headcount: anyone who has logged anything
   // at all for that date counts as 1, regardless of how many hours.
   function headsForDate(d) {
-    return roster.reduce((count, emp) => {
-      const entry = getOtEntry(emp.id, d);
-      const hasAny = entry && (entry.assumed_hours != null || entry.actual_hours != null);
-      return count + (hasAny ? 1 : 0);
-    }, 0);
+    return roster.reduce((count, emp) => count + (otEntryHasData(getOtEntry(emp.id, d)) ? 1 : 0), 0);
   }
 
   // "# of Leads to Validate" scales with actual hours logged, not with
@@ -6263,11 +6276,7 @@ function downloadOtFilingReport() {
   csvRows.push(['Summary']);
   csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Total Leads Available', 'Pending Leads Available']);
   dates.forEach(d => {
-    const heads = roster.reduce((count, emp) => {
-      const entry = getOtEntry(emp.id, d);
-      const hasAny = entry && (entry.assumed_hours != null || entry.actual_hours != null);
-      return count + (hasAny ? 1 : 0);
-    }, 0);
+    const heads = roster.reduce((count, emp) => count + (otEntryHasData(getOtEntry(emp.id, d)) ? 1 : 0), 0);
     const hours = roster.reduce((sum, emp) => {
       const entry = getOtEntry(emp.id, d);
       if (!entry) return sum;
@@ -6362,6 +6371,11 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
     // Pre-shift: typing here is always the assumed estimate.
     assumed_hours: hours,
     actual_hours: existing ? existing.actual_hours : null,
+    // If the hours value is being cleared entirely, total_output (only
+    // ever set via Confirm) has to go with it — a row that's been fully
+    // cleared shouldn't still carry a leftover output number that makes
+    // it look "logged" on the dashboard or in the sort.
+    total_output: hours === null ? null : (existing ? existing.total_output : null),
   };
 
   const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
