@@ -1054,7 +1054,7 @@ function switchView(viewName) {
   const target = document.getElementById('view-' + viewName);
   if (target) target.classList.add('active');
 
-  if (viewName === 'dashboard') renderDashboard();
+  if (viewName === 'dashboard') renderDashboardEntry();
   if (viewName === 'account-hub') renderAccountHub();
   if (viewName === 'payroll-confirmation') renderPayrollConfirmation();
   if (viewName === 'priolist') renderPrioListEntry();
@@ -1287,7 +1287,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-ot-cleared-data-fix';
+const APP_VERSION = '2026-07-13-dashboard-refresh-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1927,6 +1927,26 @@ function round2(n) {
 // =====================================================================
 // DASHBOARD VIEW
 // =====================================================================
+
+// Entry point when switching INTO the Dashboard. Paints instantly from
+// whatever's cached (no flash), then always fetches every table the
+// Dashboard reads from fresh in the background and repaints. This is
+// the piece that was missing: Realtime only pushes changes to state
+// while THAT table's own subscription is active (e.g. OT Filing's
+// subscription only runs while the OT Filing tab is open) — so if a
+// change happened while nobody had the Dashboard open, its in-memory
+// data could go stale until this ran. Same pattern already used by
+// PrioList, IPS, and Team Funds for the exact same class of bug.
+function renderDashboardEntry() {
+  renderDashboard(); // instant paint from cache, avoids a loading flash
+  Promise.all([
+    loadOtHoursEntries(),
+    loadOtFilingDates(),
+    loadLeaveEntries(),
+    loadPayrollConfirmations(),
+    loadLiRestrictionEntries(),
+  ]).then(renderDashboard).catch(err => console.error('Dashboard refresh failed:', err));
+}
 
 function renderDashboard() {
   const el = document.getElementById('dashboard-content');
