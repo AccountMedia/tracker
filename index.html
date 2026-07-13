@@ -1287,7 +1287,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-dashboard-denom-fix';
+const APP_VERSION = '2026-07-13-ot-actual-hours-cleanup-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6397,13 +6397,16 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
 
   const existing = getOtEntry(employeeId, filingDate);
 
-  // A full clear — the field emptied, and there's no actual_hours
-  // already recorded for this date either — should genuinely DELETE
-  // the row, not leave it behind with every field nulled out. A
-  // leftover row was exactly what caused a fully-cleared entry to
-  // still count as "has data" elsewhere (the sort, the dashboard, the
-  // heads-working count) even long after someone deleted it.
-  if (hours === null && (!existing || existing.actual_hours == null)) {
+  // A full clear should genuinely DELETE the row, not leave it behind
+  // with fields nulled out. This triggers whenever the field is being
+  // emptied AND the row isn't sitting on genuinely confirmed data —
+  // an unconfirmed actual_hours leftover (e.g. from an earlier
+  // unlock-then-abandon cycle) is just as much stale leftover data as
+  // an old unconfirmed assumed_hours value, and must not block the
+  // delete either. Only a CONFIRMED row represents real, settled data
+  // worth preserving — and this function already refuses to reach this
+  // point at all for a confirmed row (see the guard above).
+  if (hours === null) {
     if (existing) {
       const { error: deleteErr } = await sb.from('ot_hours_entries').delete().eq('id', existing.id);
       if (deleteErr) { showToast('Could not clear the entry.', true); return; }
