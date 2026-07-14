@@ -853,11 +853,22 @@ function ipsTodayIsUnlocked(employeeId, dateIso, now) {
   const window = ipsTodayAccessWindow(employeeId, dateIso);
   if (!window) return false; // full-day leave — locked all day, no window at all
   const hour = now.getHours();
+  const realToday = isoDate(now);
   // The window spans midnight (e.g. 7:00 PM today -> 1:00 AM tomorrow),
-  // so "currently inside it" means either at/after the start hour
-  // tonight, OR before 1:00 AM (still within the tail end from last
-  // night's start).
-  return hour >= window.startHour || hour < IPS_GRACE_WINDOW_HOUR;
+  // so "currently inside it" means either at/after the start hour on
+  // dateIso's OWN evening, OR it's still the midnight-to-1AM tail end
+  // of THAT SAME DAY'S window carrying over into the next calendar day.
+  // That tail only ever applies when dateIso is YESTERDAY relative to
+  // the real clock — checking it against dateIso itself (regardless of
+  // which date that is) was the bug: it let a brand-new day's own
+  // window (e.g. 10 PM tonight) look "already open" the instant the
+  // clock crossed midnight, hours before that day's real window starts.
+  if (hour >= window.startHour) return true;
+  if (hour < IPS_GRACE_WINDOW_HOUR) {
+    const yesterday = isoDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+    return dateIso === yesterday;
+  }
+  return false;
 }
 
 function ipsDayKind(dateIso) {
@@ -1375,7 +1386,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-14-ips-emergency-unlock-3pm-gate';
+const APP_VERSION = '2026-07-15-ips-midnight-window-bugfix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
