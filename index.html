@@ -501,7 +501,7 @@
       <div class="page-head">
         <div>
           <span class="eyebrow">PH Team</span>
-          <h1>OT Hours Filing</h1>
+          <h1 style="display:flex; align-items:center; gap:6px;">OT Hours Filing <span id="ot-filing-bell"></span></h1>
           <p class="lede">Log your assumed OT hours before your shift, then confirm or correct them afterward.</p>
         </div>
         <div id="ot-filing-actions"></div>
@@ -651,6 +651,7 @@ const state = {
   teamFundsData: null,       // cached data from last fetch { settings, transactions, accounts, loans, repayments }
   leaveNotifications: [],
   tfNotifications: [], // Team Funds notification stream (separate bell)
+  otFilingNotifications: [], // OT Filing notification stream (separate bell) — fires only when an employee unlocks + edits their own already-submitted OT hours
   notifPanelKind: null, // which bell's panel is open: 'leave' | 'team_funds' | null    // { id, text, time, read } — session-only, cleared on logout
   leaveNotifPanelOpen: false,
   accountHubTab: 'leave-tracker', // active tab in Account Hub
@@ -807,7 +808,42 @@ function canEditIpsRow(employeeId) {
 //           Admin/IPS themselves can still edit past days directly —
 //           they're the approvers, so there's no one above them to ask.
 // FUTURE  — locked for everyone. Nobody types ahead of today.
-const IPS_GRACE_WINDOW_HOUR = 1; // 1:00 AM
+// ── IPS Daily Entry: TODAY's access window, based on leave status ──
+// The old rule was a flat "unlocked from midnight to 1:00 AM" for
+// everyone. That's now replaced with three different windows,
+// depending on whether the employee is on leave that day at all:
+//
+//   FULL-DAY leave      → IPS locked for the entire day. No access.
+//   HALF-DAY/HOURLY leave → 7:00 PM (that day) through 1:00 AM (next day)
+//   NOT on leave         → 10:00 PM (that day) through 1:00 AM (next day)
+//
+// Reuses ipsLeaveHoursOn() — the exact same leave data IPS already
+// trusts for shrinking the PO target — so "on leave" here always
+// agrees with what the Leave Tracker and the rest of IPS already show
+// for that employee on that day. 8 hours = full-day (locked all day);
+// 1–7 hours = partial (7PM window); 0 hours = not on leave (10PM window).
+const IPS_GRACE_WINDOW_HOUR = 1; // 1:00 AM — the shared end time for every access window
+
+function ipsTodayAccessWindow(employeeId, dateIso) {
+  const leaveHours = ipsLeaveHoursOn(employeeId, dateIso);
+  if (leaveHours >= 8) return null; // full-day leave — no access at all, any hour
+  return leaveHours > 0 ? { startHour: 19 } : { startHour: 22 }; // 7:00 PM or 10:00 PM, both through 1:00 AM next day
+}
+
+// Whether IPS is currently open for this employee on this specific
+// calendar day, accounting for their leave status. `now` is passed in
+// (rather than read fresh) so a single render call always evaluates
+// every row against the exact same instant, not a fresh Date() per row.
+function ipsTodayIsUnlocked(employeeId, dateIso, now) {
+  const window = ipsTodayAccessWindow(employeeId, dateIso);
+  if (!window) return false; // full-day leave — locked all day, no window at all
+  const hour = now.getHours();
+  // The window spans midnight (e.g. 7:00 PM today -> 1:00 AM tomorrow),
+  // so "currently inside it" means either at/after the start hour
+  // tonight, OR before 1:00 AM (still within the tail end from last
+  // night's start).
+  return hour >= window.startHour || hour < IPS_GRACE_WINDOW_HOUR;
+}
 
 function ipsDayKind(dateIso) {
   const now = new Date();
@@ -829,13 +865,18 @@ function ipsDayKind(dateIso) {
 // Whether a cell should render as a free, directly-editable input.
 // Admin/IPS get this for today AND past (they approve corrections, so
 // there's no need to route their own edits through the queue). A
-// regular employee only gets it for TODAY (including the 1:00 AM grace
-// window on the prior day) on their own row.
+// regular employee only gets it for TODAY, AND only during their own
+// leave-status-specific access window (see ipsTodayIsUnlocked above) —
+// the 1:00 AM grace-window date-rollover is folded into that check now,
+// rather than being a separate calendar concept.
 function ipsCellDirectlyEditable(employeeId, dateIso) {
   if (!canEditIpsRow(employeeId)) return false;
   const kind = ipsDayKind(dateIso);
   if (kind === 'future') return false; // locked for everyone, no exceptions
-  if (kind === 'today') return true;
+  if (kind === 'today') {
+    if (canManageIps()) return true; // admin/IPS edit freely, unaffected by the employee's own leave-status window
+    return ipsTodayIsUnlocked(employeeId, dateIso, new Date());
+  }
   // kind === 'past'
   return canManageIps(); // admin/IPS edit past days directly; employees must request
 }
@@ -1288,7 +1329,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-red-files-priolist-color-check';
+const APP_VERSION = '2026-07-13-ot-filing-notifications-fixed';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6070,6 +6111,7 @@ function formatOtDateHeader(isoStr) {
 }
 
 function renderOtFiling() {
+  renderOtFilingBell();
   const actionsEl = document.getElementById('ot-filing-actions');
   actionsEl.innerHTML = isAdmin() ? `
     <button class="btn btn-ghost" id="ot-download-report-btn" style="margin-right:8px;">Download report</button>
@@ -6225,7 +6267,7 @@ function renderOtFiling() {
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
-              ${admin ? `<button class="btn btn-ghost btn-sm ot-unlock-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Unlock</button>` : ''}
+              ${(admin || isMe) ? `<button class="btn btn-ghost btn-sm ot-unlock-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Unlock</button>` : ''}
             </div>
           </td>
         ` + outputCell;
@@ -6341,16 +6383,22 @@ function renderOtFiling() {
   });
 }
 
+// Tracks which OT entries were just unlocked, keyed "employeeId|filingDate"
+// — so the NEXT save on that exact row (whether via the assumed-hours
 async function unlockOtEntry(employeeId, filingDate) {
-  if (!isAdmin()) { showToast('Only admins can unlock a confirmed entry.', true); return; }
+  const isOwner = employeeId === state.profile.employee_id;
+  if (!isAdmin() && !isOwner) { showToast('You can only unlock your own OT entry.', true); return; }
   const emp = state.employees.find(e => e.id === employeeId);
-  if (!confirm(`Unlock ${emp ? emp.display_name : 'this'}'s confirmed OT hours for ${formatPrettyDate(filingDate)}? This will make it editable again and clear its Total Output.`)) return;
+  if (!confirm(`Unlock ${isOwner ? 'your' : (emp ? emp.display_name + "'s" : "this")} confirmed OT hours for ${formatPrettyDate(filingDate)}? This will make it editable again and clear its Total Output.`)) return;
 
   // Total Output is cleared on unlock — it's a fresh number typed in at
   // Confirm time, not something that should carry over from the
   // now-invalidated confirmation. Hours (assumed/actual) are left as-is
   // so the person isn't starting from zero on that part.
-  const { error } = await sb.from('ot_hours_entries').update({ confirmed: false, total_output: null }).eq('employee_id', employeeId).eq('filing_date', filingDate);
+  // unlocked_awaiting_edit marks this row so the NEXT save (if any)
+  // can be recognized as following an unlock — that's the specific
+  // moment that should notify admins, not every ordinary pre-shift edit.
+  const { error } = await sb.from('ot_hours_entries').update({ confirmed: false, total_output: null, unlocked_awaiting_edit: true }).eq('employee_id', employeeId).eq('filing_date', filingDate);
   if (error) { showToast('Could not unlock the entry.', true); return; }
   showToast('Entry unlocked — Total Output cleared.');
   await loadOtHoursEntries();
@@ -6527,6 +6575,14 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
 
   const existing = getOtEntry(employeeId, filingDate);
 
+  // Was this row unlocked and now being genuinely edited? Captured
+  // BEFORE the save below, since the save itself will clear the flag —
+  // this is the one-shot signal that distinguishes "an unlock followed
+  // by a real change" from an everyday pre-shift edit (which never sets
+  // this flag at all).
+  const wasAwaitingEditAfterUnlock = !!(existing && existing.unlocked_awaiting_edit);
+  const preUnlockHours = existing ? existing.assumed_hours : null;
+
   // A full clear should genuinely DELETE the row, not leave it behind
   // with fields nulled out. This triggers whenever the field is being
   // emptied AND the row isn't sitting on genuinely confirmed data —
@@ -6559,10 +6615,23 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
     // cleared shouldn't still carry a leftover output number that makes
     // it look "logged" on the dashboard or in the sort.
     total_output: hours === null ? null : (existing ? existing.total_output : null),
+    // Always cleared on save, whether or not this save actually
+    // notifies — the "awaiting edit" window only ever covers ONE save.
+    unlocked_awaiting_edit: false,
   };
 
   const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
   if (error) { showToast('Could not save OT hours.', true); return; }
+
+  // Notify admins ONLY when this save genuinely follows an unlock AND
+  // the value actually changed from what it was before — an unlock
+  // with no real edit, or an ordinary pre-shift edit with no prior
+  // unlock, must never trigger this.
+  if (wasAwaitingEditAfterUnlock && hours !== preUnlockHours) {
+    const emp = state.employees.find(e => e.id === employeeId);
+    pushOtFilingNotification(`${emp ? emp.display_name : 'Someone'} unlocked and changed their OT hours for ${formatPrettyDate(filingDate)} — now ${hours}h (was ${preUnlockHours != null ? preUnlockHours + 'h' : 'blank'}).`);
+  }
+
   await loadOtHoursEntries();
   renderOtFiling();
 }
@@ -6620,6 +6689,7 @@ function openOtConfirmModal(employeeId, filingDate) {
     }
     closeModal();
     showToast('OT hours confirmed.');
+    await maybeNotifyOtUnlockedEdit(employeeId, filingDate);
     await loadOtHoursEntries();
     renderOtFiling();
   });
@@ -7692,6 +7762,33 @@ function renderTfBell() {
   `;
   document.getElementById('btn-tf-notif')?.addEventListener('click', (e) => {
     e.stopPropagation(); toggleTfNotifPanel();
+  });
+}
+
+// OT Filing's own bell — same pattern as Team Funds', badge only shows
+// when there's an unread "unlocked and modified" event to review.
+function renderOtFilingBell() {
+  const slot = document.getElementById('ot-filing-bell');
+  if (!slot) return;
+  if (!state.profile || !isAdmin()) { slot.innerHTML = ''; return; }
+  const unread = unreadNotifCount('ot_filing');
+  slot.innerHTML = `
+    <button id="btn-ot-filing-notif" title="OT Filing notifications" style="
+      position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
+      color:var(--ink-faint); display:flex; align-items:center; border-radius:8px;
+      transition:color 0.12s, background 0.12s;"
+      onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
+      onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      ${unread > 0 ? `<span style="position:absolute;top:0;right:0;background:var(--coral);color:#fff;font-size:9px;font-weight:700;border-radius:999px;min-width:14px;height:14px;display:flex;align-items:center;justify-content:center;padding:0 2px;font-family:inherit;line-height:1;border:1.5px solid var(--paper);">${unread > 9 ? '9+' : unread}</span>` : ''}
+    </button>
+  `;
+  document.getElementById('btn-ot-filing-notif')?.addEventListener('click', (e) => {
+    e.stopPropagation(); toggleNotifPanel('ot_filing');
   });
 }
 
@@ -11978,15 +12075,17 @@ async function loadLeaveNotifications() {
     created_at: n.created_at,
     time: new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
   }));
-  // Two fully separate streams: the Leave Tracker bell never shows Team
-  // Funds items and vice versa.
-  state.leaveNotifications = all.filter(n => n.kind !== 'team_funds');
+  // Three fully separate streams — each bell only ever shows its own kind.
+  state.leaveNotifications = all.filter(n => n.kind !== 'team_funds' && n.kind !== 'ot_filing');
   state.tfNotifications = all.filter(n => n.kind === 'team_funds');
+  state.otFilingNotifications = all.filter(n => n.kind === 'ot_filing');
 }
 
 // Convenience: the notification list for a given kind
 function notifListFor(kind) {
-  return kind === 'team_funds' ? (state.tfNotifications || []) : state.leaveNotifications;
+  if (kind === 'team_funds') return state.tfNotifications || [];
+  if (kind === 'ot_filing') return state.otFilingNotifications || [];
+  return state.leaveNotifications;
 }
 
 // Inserts ONE shared notification row per approval — every admin sees
@@ -12021,12 +12120,21 @@ async function pushLeaveNotification(text, kind = 'leave') {
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }
   if (kind === 'team_funds') renderTfBell();
+  if (kind === 'ot_filing') renderOtFilingBell();
 }
 // Team Funds notifications: their OWN stream and OWN bell in the Team
 // Funds tab — completely separate from the Leave Tracker bell.
 function pushTeamFundsNotification(text) {
   const who = state.profile ? state.profile.display_name.split(' ')[0] : 'Someone';
   return pushLeaveNotification(`${who} ${text}`, 'team_funds');
+}
+
+// OT Filing notifications: their OWN stream and OWN bell in the OT
+// Hours Filing tab — fires only when an employee unlocks and then
+// actually changes their own already-submitted OT hours (see
+// maybeNotifyOtUnlockedEdit). Admins are the only intended audience.
+function pushOtFilingNotification(text) {
+  return pushLeaveNotification(text, 'ot_filing');
 }
 
 
@@ -12066,7 +12174,7 @@ function toggleNotifPanel(kind) {
   }
   updateLeaveNavBadge();
   // Update this bell's badge immediately (no full re-render needed)
-  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : 'btn-leave-notif');
+  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : kind === 'ot_filing' ? 'btn-ot-filing-notif' : 'btn-leave-notif');
   if (bellBtn) {
     const badge = bellBtn.querySelector('span');
     if (badge) badge.remove();
@@ -12078,7 +12186,7 @@ function showLeaveNotifPanel() { showNotifPanel('leave'); }
 function showNotifPanel(kind) {
   const panel = document.getElementById('leave-notif-panel');
   if (!panel) return;
-  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : 'btn-leave-notif');
+  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : kind === 'ot_filing' ? 'btn-ot-filing-notif' : 'btn-leave-notif');
   if (bellBtn) {
     const rect = bellBtn.getBoundingClientRect();
     panel.style.top  = (rect.bottom + 8) + 'px';
@@ -12089,7 +12197,7 @@ function showNotifPanel(kind) {
   const canManage = canManageNotifications();
   panel.innerHTML = `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line-soft); flex-shrink:0;">
-      <span style="font-weight:700; font-size:14px;">${kind === 'team_funds' ? 'Team Funds notifications' : 'Notifications'}</span>
+      <span style="font-weight:700; font-size:14px;">${kind === 'team_funds' ? 'Team Funds notifications' : kind === 'ot_filing' ? 'OT Filing notifications' : 'Notifications'}</span>
       ${notifs.length && canManage ? `<button id="notif-clear-all" style="font-size:11px; color:var(--ink-faint); background:none; border:none; cursor:pointer; font-family:inherit; padding:0;">Clear all</button>` : ''}
     </div>
     <div style="overflow-y:auto; flex:1; max-height:400px;">
@@ -12106,7 +12214,7 @@ function showNotifPanel(kind) {
         <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
           <div style="font-size:28px; margin-bottom:8px;">🔔</div>
           <div style="font-size:13px;">No notifications yet.</div>
-          <div style="font-size:12px; margin-top:4px;">${kind === 'team_funds' ? 'Team Funds changes will appear here.' : 'Leave approvals will appear here.'}</div>
+          <div style="font-size:12px; margin-top:4px;">${kind === 'team_funds' ? 'Team Funds changes will appear here.' : kind === 'ot_filing' ? 'Unlocked-and-edited OT hours will appear here.' : 'Leave approvals will appear here.'}</div>
         </div>
       `}
     </div>
@@ -12117,11 +12225,11 @@ function showNotifPanel(kind) {
 
   panel.querySelector('#notif-clear-all')?.addEventListener('click', async () => {
     if (!canManageNotifications()) { showToast('Only Jeinna can clear notifications.', true); return; }
-    if (kind === 'team_funds') state.tfNotifications = []; else state.leaveNotifications = [];
+    if (kind === 'team_funds') state.tfNotifications = []; else if (kind === 'ot_filing') state.otFilingNotifications = []; else state.leaveNotifications = [];
     state.leaveNotifPanelOpen = false;
     state.notifPanelKind = null;
     hideLeaveNotifPanel();
-    if (kind === 'team_funds') renderTfBell(); else renderLeaveTracker();
+    if (kind === 'team_funds') renderTfBell(); else if (kind === 'ot_filing') renderOtFilingBell(); else renderLeaveTracker();
     updateLeaveNavBadge();
     // Shared stream: clearing removes THIS KIND's notifications for
     // every admin — the other bell's stream is untouched.
@@ -12134,6 +12242,7 @@ function showNotifPanel(kind) {
       if (!canManageNotifications()) { showToast('Only Jeinna can dismiss notifications.', true); return; }
       const id = btn.dataset.id;
       if (kind === 'team_funds') state.tfNotifications = state.tfNotifications.filter(n => String(n.id) !== String(id));
+      else if (kind === 'ot_filing') state.otFilingNotifications = state.otFilingNotifications.filter(n => String(n.id) !== String(id));
       else state.leaveNotifications = state.leaveNotifications.filter(n => String(n.id) !== String(id));
       showNotifPanel(kind); // re-render panel in place
       updateLeaveNavBadge();
@@ -12149,10 +12258,12 @@ function showNotifPanel(kind) {
       const panel = document.getElementById('leave-notif-panel');
       const bellLeave = document.getElementById('btn-leave-notif');
       const bellTf = document.getElementById('btn-tf-notif');
+      const bellOt = document.getElementById('btn-ot-filing-notif');
       if (!panel || panel.style.display === 'none') return;
       if (panel.contains(e.target)) return;
       if (bellLeave && bellLeave.contains(e.target)) return;
       if (bellTf && bellTf.contains(e.target)) return;
+      if (bellOt && bellOt.contains(e.target)) return;
       hideLeaveNotifPanel();
       state.leaveNotifPanelOpen = false;
       state.notifPanelKind = null;
