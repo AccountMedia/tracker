@@ -401,7 +401,7 @@
       <a class="nav-item" data-view="payroll-confirmation"><span class="dot"></span>Payroll Confirmation</a>
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
-      <a class="nav-item" data-view="ot-filing"><span class="dot"></span>OT Hours Filing</a>
+      <a class="nav-item" data-view="ot-filing" id="nav-ot-filing"><span class="dot"></span>OT Hours Filing<span id="nav-ot-filing-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="ips" id="nav-ips"><span class="dot"></span>IPS (Individual Performance Score)</a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
     </nav>
@@ -1042,6 +1042,8 @@ function logout() {
   if (ltBadge) ltBadge.style.display = 'none';
   const tfNavBadge = document.getElementById('nav-tf-badge');
   if (tfNavBadge) tfNavBadge.style.display = 'none';
+  const otNavBadge = document.getElementById('nav-ot-filing-badge');
+  if (otNavBadge) otNavBadge.style.display = 'none';
   stopNavBadgePolling();
   stopMaintenanceWindowWatcher();
   document.getElementById('app').classList.add('hidden');
@@ -1163,6 +1165,8 @@ function updateLeaveNavBadge() {
     badge.style.display = 'none';
     const tfB = document.getElementById('nav-tf-badge');
     if (tfB) tfB.style.display = 'none';
+    const otB = document.getElementById('nav-ot-filing-badge');
+    if (otB) otB.style.display = 'none';
     updateBrowserTabBadge(0);
     return;
   }
@@ -1187,10 +1191,23 @@ function updateLeaveNavBadge() {
       tfBadge.style.display = 'none';
     }
   }
-  // Keep the Team Funds bell badge fresh if that view is on screen
+  // OT Filing gets its own sidebar badge too, same pattern — its unread
+  // stream only, live-updated regardless of which tab is currently open.
+  const otFilingBadge = document.getElementById('nav-ot-filing-badge');
+  const otFilingCount = unreadNotifCount('ot_filing');
+  if (otFilingBadge) {
+    if (otFilingCount > 0) {
+      otFilingBadge.textContent = otFilingCount > 99 ? '99+' : String(otFilingCount);
+      otFilingBadge.style.display = 'inline-flex';
+    } else {
+      otFilingBadge.style.display = 'none';
+    }
+  }
+  // Keep the Team Funds / OT Filing bell badges fresh if that view is on screen
   if (state.currentView === 'team-funds' && !state.leaveNotifPanelOpen) renderTfBell();
-  // Browser tab shows the combined total of both streams
-  updateBrowserTabBadge(count + tfCount);
+  if (state.currentView === 'ot-filing' && !state.leaveNotifPanelOpen) renderOtFilingBell();
+  // Browser tab shows the combined total of all three streams
+  updateBrowserTabBadge(count + tfCount + otFilingCount);
 }
 
 // ---------------------------------------------------------------------
@@ -1288,8 +1305,22 @@ function startNavBadgePolling() {
     applyRealtimePatch(payload, () => state.leaveEntries, (v) => { state.leaveEntries = v; });
     rerenderBadge();
   });
+  // leave_notifications is the single shared table backing ALL THREE
+  // streams (leave, team_funds, ot_filing — split by the `kind`
+  // column) — one subscription is enough to keep every stream's array
+  // in sync from the same pushed row. A second subscription to the
+  // same table would open a genuinely separate WebSocket channel and
+  // double the delivered messages for no benefit, so this stays as one.
   subscribeRealtime('badge_leave_notifications', 'leave_notifications', (payload) => {
-    applyRealtimePatch(payload, () => state.leaveNotifications, (v) => { state.leaveNotifications = v; });
+    const row = payload.new || payload.old;
+    const kind = row.kind || 'leave';
+    if (kind === 'team_funds') {
+      applyRealtimePatch(payload, () => state.tfNotifications, (v) => { state.tfNotifications = v; });
+    } else if (kind === 'ot_filing') {
+      applyRealtimePatch(payload, () => state.otFilingNotifications, (v) => { state.otFilingNotifications = v; });
+    } else {
+      applyRealtimePatch(payload, () => state.leaveNotifications, (v) => { state.leaveNotifications = v; });
+    }
     rerenderBadge();
   });
 
@@ -1338,7 +1369,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-ips-emergency-unlock-v2';
+const APP_VERSION = '2026-07-14-ips-admin-staff-badge-view';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9962,14 +9993,13 @@ function renderIpsTables() {
               ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--ink-faint);">🔒 Locked</div>`
               : dayKind === 'past'
                 ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);">✎ Needs approval</div>`
-                : admin
-                  ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Admin access — always editable</div>`
-                  : (() => {
-                      // For a regular employee, the badge reflects THEIR OWN
-                      // actual access window for today — which depends on
-                      // their leave status (see ipsTodayAccessWindow) and can
-                      // genuinely differ person to person, so this can't be a
-                      // single flat "until 1 AM" message anymore.
+                : (() => {
+                      // Admins see the EXACT SAME badge a staff member would
+                      // see for their own row — this is purely a display
+                      // choice so admins can see how the staff-facing view
+                      // looks. Their actual edit access is untouched: see
+                      // ipsCellDirectlyEditable(), which still grants admins
+                      // free editing regardless of what this badge says.
                       const myWindow = ipsTodayAccessWindow(state.profile.employee_id, day);
                       const alreadyEmergencyUnlocked = (ipsState.emergencyUnlocks || []).some(u => u.employee_id === state.profile.employee_id && u.unlock_date === day);
                       const isOpenNow = ipsTodayIsUnlocked(state.profile.employee_id, day, new Date());
