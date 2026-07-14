@@ -835,6 +835,15 @@ function ipsTodayAccessWindow(employeeId, dateIso) {
 // (rather than read fresh) so a single render call always evaluates
 // every row against the exact same instant, not a fresh Date() per row.
 function ipsTodayIsUnlocked(employeeId, dateIso, now) {
+  // An emergency unlock (self-service, see requestIpsEmergencyUnlock)
+  // overrides the normal window for today. Note: full-day-leave
+  // employees are blocked from CREATING one in the first place (see
+  // requestIpsEmergencyUnlock) — this check just honors whatever rows
+  // genuinely exist, checked first since an unlock takes priority over
+  // the normal window once it's there.
+  if (typeof ipsState !== 'undefined' && ipsState.emergencyUnlocks && ipsState.emergencyUnlocks.some(u => u.employee_id === employeeId && u.unlock_date === dateIso)) {
+    return true;
+  }
   const window = ipsTodayAccessWindow(employeeId, dateIso);
   if (!window) return false; // full-day leave — locked all day, no window at all
   const hour = now.getHours();
@@ -1329,7 +1338,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-13-ot-filing-notifications-fixed';
+const APP_VERSION = '2026-07-13-ips-emergency-unlock-v2';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9500,6 +9509,7 @@ const ipsState = {
   loaded: false,
   myPendingRequests: [],     // this employee's own pending correction requests (any status shown as pending badge)
   pendingApprovals: [],      // ALL pending requests, for admin/IPS's approval inbox
+  emergencyUnlocks: [],       // { employee_id, unlock_date } rows — self-service early/full-day-leave access overrides for TODAY
 };
 
 function ipsDatesForMonth(monthIso) {
@@ -9514,11 +9524,12 @@ async function loadIpsData() {
   const [y, m] = monthStart.split('-').map(Number);
   const monthEnd = isoDate(new Date(y, m, 0));
 
-  const [dailyRes, monthlyRes, settingsRes, correctionsRes] = await Promise.all([
+  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', monthStart).lte('entry_date', monthEnd),
     sb.from('ips_monthly_data').select('*').eq('month', monthStart),
     sb.from('ips_month_settings').select('*').eq('month', monthStart).maybeSingle(),
     sb.from('ips_correction_requests').select('*').order('requested_at', { ascending: false }),
+    sb.from('ips_emergency_unlocks').select('*').eq('unlock_date', isoDate(new Date())),
   ]);
 
   if (dailyRes.error || monthlyRes.error) {
@@ -9541,6 +9552,9 @@ async function loadIpsData() {
       ? all.filter(r => r.employee_id === state.profile.employee_id)
       : [];
   }
+
+  // Emergency unlocks aren't fatal if the table isn't set up yet either.
+  ipsState.emergencyUnlocks = emergencyRes.error ? [] : (emergencyRes.data || []);
 }
 
 function ipsDailyFor(employeeId, dateIso) {
@@ -9719,6 +9733,14 @@ function startIpsRealtime() {
     }
     rerender();
   });
+  // Emergency unlocks — only today's rows matter at all, so anything
+  // for a different date is ignored rather than appended.
+  subscribeRealtime('ips_emergency_unlocks', 'ips_emergency_unlocks', (payload) => {
+    const row = payload.new || payload.old;
+    if (row.unlock_date !== isoDate(new Date())) return;
+    applyRealtimePatch(payload, () => ipsState.emergencyUnlocks, (v) => { ipsState.emergencyUnlocks = v; });
+    rerender();
+  });
 }
 
 function stopIpsRealtime() {
@@ -9726,6 +9748,7 @@ function stopIpsRealtime() {
   unsubscribeRealtime('ips_monthly_data');
   unsubscribeRealtime('ips_month_settings');
   unsubscribeRealtime('ips_correction_requests');
+  unsubscribeRealtime('ips_emergency_unlocks');
 }
 
 function renderIps() {
@@ -9939,9 +9962,35 @@ function renderIpsTables() {
               ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--ink-faint);">🔒 Locked</div>`
               : dayKind === 'past'
                 ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);">✎ Needs approval</div>`
-                : day === isoDate(new Date())
-                  ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Editable (until 1 AM)</div>`
-                  : `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);" title="Still editable until 1:00 AM">🕐 Editable (until 1 AM)</div>`}
+                : admin
+                  ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);">● Admin access — always editable</div>`
+                  : (() => {
+                      // For a regular employee, the badge reflects THEIR OWN
+                      // actual access window for today — which depends on
+                      // their leave status (see ipsTodayAccessWindow) and can
+                      // genuinely differ person to person, so this can't be a
+                      // single flat "until 1 AM" message anymore.
+                      const myWindow = ipsTodayAccessWindow(state.profile.employee_id, day);
+                      const alreadyEmergencyUnlocked = (ipsState.emergencyUnlocks || []).some(u => u.employee_id === state.profile.employee_id && u.unlock_date === day);
+                      const isOpenNow = ipsTodayIsUnlocked(state.profile.employee_id, day, new Date());
+                      if (isOpenNow) {
+                        const openLabel = alreadyEmergencyUnlocked
+                          ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);" title="Unlocked early for an emergency">● Editable (emergency unlock)</div>`
+                          : `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--green);" title="Editable from ${myWindow ? (myWindow.startHour === 19 ? '7 PM' : '10 PM') : ''} tonight until 1:00 AM">● Editable (until 1 AM)</div>`;
+                        return openLabel;
+                      }
+                      // Locked right now — either it isn't the window yet, or
+                      // it's a full-day-leave day with no window at all.
+                      // Full-day leave is NOT eligible for the emergency
+                      // unlock — the only way back in is cancelling the
+                      // leave itself in the Leave Tracker, at which point
+                      // the normal 7PM/10PM rules take over automatically.
+                      if (!myWindow) {
+                        return `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--coral);" title="Full-day leave — IPS is locked for the whole day. Cancel your leave to restore access.">🔒 Locked (full-day leave)</div>`;
+                      }
+                      const lockedLabel = `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);" title="Opens at ${myWindow.startHour === 19 ? '7 PM' : '10 PM'} tonight, through 1:00 AM">🕐 Opens ${myWindow.startHour === 19 ? '7 PM' : '10 PM'}</div>`;
+                      return `${lockedLabel}<button type="button" id="ips-emergency-unlock-btn" style="margin-top:3px; background:none; border:none; padding:0; font-size:9.5px; font-weight:700; color:var(--teal-soft); text-decoration:underline; cursor:pointer; font-family:inherit;">Unlock for emergency leave</button>`;
+                    })()}
           </div>
           <button class="btn btn-ghost btn-sm" id="ips-day-next" ${isLast ? 'disabled' : ''}>→</button>
         </div>
@@ -10270,6 +10319,7 @@ function renderIpsTables() {
   });
   document.getElementById('ips-day-prev')?.addEventListener('click', () => shiftIpsDay(-1));
   document.getElementById('ips-day-next')?.addEventListener('click', () => shiftIpsDay(1));
+  document.getElementById('ips-emergency-unlock-btn')?.addEventListener('click', requestIpsEmergencyUnlock);
 
   // Daily Entry: the day-strip is sticky at the very top, so its table's
   // header must stick just BELOW it — measure the strip's real height
@@ -10443,6 +10493,50 @@ function shiftIpsDay(delta) {
   const next = dates[idx + delta];
   if (!next) return;
   ipsState.day = next;
+  renderIpsTables();
+}
+
+// Self-service emergency access: lets an employee open their OWN IPS
+// Daily Entry for TODAY early — before their normal 7PM/10PM window, or
+// even on a full-day-leave day that's otherwise locked entirely — for
+// genuine emergency/unexpected-leave situations. No admin approval
+// needed; a confirmation prompt is the only gate.
+async function requestIpsEmergencyUnlock() {
+  if (!state.profile || !state.profile.employee_id) { showToast('Your account is not linked to an employee record.', true); return; }
+
+  const today = isoDate(new Date());
+  const myWindow = ipsTodayAccessWindow(state.profile.employee_id, today);
+
+  // Full-day leave has NO window at all (myWindow is null) — this is
+  // deliberately NOT eligible for the emergency unlock. The only way
+  // back in is to cancel the leave in the Leave Tracker itself, at
+  // which point the normal 7PM/10PM rules apply again automatically
+  // (ipsTodayAccessWindow re-evaluates live off the same leave data).
+  if (!myWindow) {
+    showToast('IPS is locked for the whole day while you\'re on full-day leave. Cancel your leave in the Leave Tracker to restore normal access.', true);
+    return;
+  }
+
+  const startLabel = myWindow.startHour === 19 ? '7 PM' : '10 PM';
+  const dateLabel = formatPrettyDate(today);
+  if (!confirm(`Are you sure you want to unlock this for today (${dateLabel})? This day is normally scheduled to unlock at ${startLabel}.`)) return;
+
+  const { error } = await sb.from('ips_emergency_unlocks').insert({
+    employee_id: state.profile.employee_id,
+    unlock_date: today,
+  });
+  if (error) {
+    // 23505 = unique-index conflict — they (or another tab of theirs)
+    // already unlocked today; treat as a harmless success rather than
+    // an error, since the end state is exactly what they wanted anyway.
+    if (error.code !== '23505') {
+      console.error(error);
+      showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_emergency_unlock_schema.sql in Supabase.' : 'Could not unlock — please try again.', true);
+      return;
+    }
+  }
+  showToast('IPS unlocked for today.');
+  await loadIpsData();
   renderIpsTables();
 }
 
