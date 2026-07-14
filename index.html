@@ -823,6 +823,12 @@ function canEditIpsRow(employeeId) {
 // for that employee on that day. 8 hours = full-day (locked all day);
 // 1–7 hours = partial (7PM window); 0 hours = not on leave (10PM window).
 const IPS_GRACE_WINDOW_HOUR = 1; // 1:00 AM — the shared end time for every access window
+// The self-service emergency unlock (see requestIpsEmergencyUnlock)
+// exists specifically for someone who needs to take emergency leave
+// and can't file it in the Leave Tracker beforehand — it's only ever
+// offered starting 3:00 PM, not as a general way to open IPS ahead of
+// the normal evening window.
+const IPS_EMERGENCY_UNLOCK_EARLIEST_HOUR = 15; // 3:00 PM
 
 function ipsTodayAccessWindow(employeeId, dateIso) {
   const leaveHours = ipsLeaveHoursOn(employeeId, dateIso);
@@ -1369,7 +1375,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-14-ips-admin-staff-badge-view';
+const APP_VERSION = '2026-07-14-ips-emergency-unlock-3pm-gate';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10019,6 +10025,14 @@ function renderIpsTables() {
                         return `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--coral);" title="Full-day leave — IPS is locked for the whole day. Cancel your leave to restore access.">🔒 Locked (full-day leave)</div>`;
                       }
                       const lockedLabel = `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--amber);" title="Opens at ${myWindow.startHour === 19 ? '7 PM' : '10 PM'} tonight, through 1:00 AM">🕐 Opens ${myWindow.startHour === 19 ? '7 PM' : '10 PM'}</div>`;
+                      // The emergency unlock itself only becomes available
+                      // starting 3:00 PM — it exists for someone who needs
+                      // to take emergency leave and can't file it in the
+                      // Leave Tracker beforehand, not as a way to open IPS
+                      // hours ahead of the normal evening window in general.
+                      if (new Date().getHours() < IPS_EMERGENCY_UNLOCK_EARLIEST_HOUR) {
+                        return lockedLabel;
+                      }
                       return `${lockedLabel}<button type="button" id="ips-emergency-unlock-btn" style="margin-top:3px; background:none; border:none; padding:0; font-size:9.5px; font-weight:700; color:var(--teal-soft); text-decoration:underline; cursor:pointer; font-family:inherit;">Unlock for emergency leave</button>`;
                     })()}
           </div>
@@ -10534,7 +10548,13 @@ function shiftIpsDay(delta) {
 async function requestIpsEmergencyUnlock() {
   if (!state.profile || !state.profile.employee_id) { showToast('Your account is not linked to an employee record.', true); return; }
 
-  const today = isoDate(new Date());
+  const now = new Date();
+  if (now.getHours() < IPS_EMERGENCY_UNLOCK_EARLIEST_HOUR) {
+    showToast('Emergency unlock is only available starting at 3:00 PM.', true);
+    return;
+  }
+
+  const today = isoDate(now);
   const myWindow = ipsTodayAccessWindow(state.profile.employee_id, today);
 
   // Full-day leave has NO window at all (myWindow is null) — this is
