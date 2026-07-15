@@ -651,7 +651,7 @@ const state = {
   teamFundsData: null,       // cached data from last fetch { settings, transactions, accounts, loans, repayments }
   leaveNotifications: [],
   tfNotifications: [], // Team Funds notification stream (separate bell)
-  otFilingNotifications: [], // OT Filing notification stream (separate bell) — fires only when an employee unlocks + edits their own already-submitted OT hours
+  otFilingNotifications: [], // OT Filing notification stream (separate bell) — fires whenever an employee or admin amends an already-confirmed OT entry
   notifPanelKind: null, // which bell's panel is open: 'leave' | 'team_funds' | null    // { id, text, time, read } — session-only, cleared on logout
   leaveNotifPanelOpen: false,
   accountHubTab: 'leave-tracker', // active tab in Account Hub
@@ -1386,7 +1386,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-ot-sort-priority-restored';
+const APP_VERSION = '2026-07-15-ot-amend-feature';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6319,15 +6319,16 @@ function renderOtFiling() {
       const outputCell = `<td style="padding:8px; text-align:center; font-size:12.5px; color:var(--ink-soft);">${outputVal}</td>`;
 
       if (confirmed) {
-        // Locked for everyone once confirmed — admins get a deliberate
-        // "Unlock" action to override this if a correction is genuinely
-        // needed; staff have no way to edit it from here.
+        // Stays confirmed and visible as such even after being amended —
+        // Amend edits the values directly in one step rather than
+        // unlocking the row for a separate later edit, so there's no
+        // in-between state where it looks unconfirmed to anyone else.
         return `
           <td style="padding:8px; text-align:center; font-size:12.5px;">
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
-              ${(admin || isMe) ? `<button class="btn btn-ghost btn-sm ot-unlock-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Unlock</button>` : ''}
+              ${(admin || isMe) ? `<button class="btn btn-ghost btn-sm ot-amend-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Amend</button>` : ''}
             </div>
           </td>
         ` + outputCell;
@@ -6438,31 +6439,80 @@ function renderOtFiling() {
   document.querySelectorAll('.ot-confirm-btn').forEach(btn => {
     btn.addEventListener('click', () => openOtConfirmModal(btn.dataset.empId, btn.dataset.date));
   });
-  document.querySelectorAll('.ot-unlock-btn').forEach(btn => {
-    btn.addEventListener('click', () => unlockOtEntry(btn.dataset.empId, btn.dataset.date));
+  document.querySelectorAll('.ot-amend-btn').forEach(btn => {
+    btn.addEventListener('click', () => openOtAmendModal(btn.dataset.empId, btn.dataset.date));
   });
 }
 
-// Tracks which OT entries were just unlocked, keyed "employeeId|filingDate"
-// — so the NEXT save on that exact row (whether via the assumed-hours
-async function unlockOtEntry(employeeId, filingDate) {
+// Amend replaces the old Unlock — instead of unlocking the field for a
+// later, separate edit-then-reconfirm cycle, this prompts for BOTH the
+// actual hours and total output in one step, exactly like the original
+// Confirm modal, and saves them directly. The row never leaves its
+// confirmed state in between, so there's no window where the entry
+// looks "unconfirmed" to anyone else viewing the table. Available to
+// the row's owner AND admins, identically — everyone sees "Amend", not
+// a different label per role.
+function openOtAmendModal(employeeId, filingDate) {
+  const entry = getOtEntry(employeeId, filingDate);
+  if (!entry) return;
   const isOwner = employeeId === state.profile.employee_id;
-  if (!isAdmin() && !isOwner) { showToast('You can only unlock your own OT entry.', true); return; }
-  const emp = state.employees.find(e => e.id === employeeId);
-  if (!confirm(`Unlock ${isOwner ? 'your' : (emp ? emp.display_name + "'s" : "this")} confirmed OT hours for ${formatPrettyDate(filingDate)}? This will make it editable again and clear its Total Output.`)) return;
+  if (!isAdmin() && !isOwner) { showToast('You can only amend your own OT entry.', true); return; }
 
-  // Total Output is cleared on unlock — it's a fresh number typed in at
-  // Confirm time, not something that should carry over from the
-  // now-invalidated confirmation. Hours (assumed/actual) are left as-is
-  // so the person isn't starting from zero on that part.
-  // unlocked_awaiting_edit marks this row so the NEXT save (if any)
-  // can be recognized as following an unlock — that's the specific
-  // moment that should notify admins, not every ordinary pre-shift edit.
-  const { error } = await sb.from('ot_hours_entries').update({ confirmed: false, total_output: null, unlocked_awaiting_edit: true }).eq('employee_id', employeeId).eq('filing_date', filingDate);
-  if (error) { showToast('Could not unlock the entry.', true); return; }
-  showToast('Entry unlocked — Total Output cleared.');
-  await loadOtHoursEntries();
-  renderOtFiling();
+  const emp = state.employees.find(e => e.id === employeeId);
+  const formHtml = `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Amending ${isOwner ? 'your' : (emp ? escapeHtml(emp.display_name) + "'s" : 'this')} confirmed OT hours for ${formatPrettyDate(filingDate)}. Enter the corrected values below.</p>
+    <form id="ot-amend-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="ot-amend-hours">Actual time worked (hours)</label>
+        <input type="number" id="ot-amend-hours" min="0" step="0.01" required value="${entry.actual_hours != null ? entry.actual_hours : ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="ot-amend-output">Total output</label>
+        <input type="number" id="ot-amend-output" min="0" step="1" required value="${entry.total_output != null ? entry.total_output : ''}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <p class="faint" style="font-size:11px; margin:4px 0 0;">Type the actual total — there's no automatic formula.</p>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save amendment</button>
+    </form>
+  `;
+
+  openModal('Amend OT hours', formHtml);
+  document.getElementById('ot-amend-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newHours = parseFloat(document.getElementById('ot-amend-hours').value);
+    const newOutput = parseFloat(document.getElementById('ot-amend-output').value);
+    if (isNaN(newHours) || newHours < 0) { showToast('Enter a valid, non-negative number of hours.', true); return; }
+    if (isNaN(newOutput) || newOutput < 0) { showToast('Enter a valid, non-negative total output.', true); return; }
+
+    const prevHours = entry.actual_hours;
+    const prevOutput = entry.total_output;
+
+    const { error } = await sb.from('ot_hours_entries').update({
+      actual_hours: newHours,
+      total_output: newOutput,
+      assumed_hours: newHours, // keeps the pre-shift field consistent with the amended actual value
+      updated_at: new Date().toISOString(),
+    }).eq('employee_id', employeeId).eq('filing_date', filingDate);
+
+    if (error) { showToast('Could not save the amendment.', true); return; }
+    closeModal();
+    showToast('Amendment saved.');
+
+    // Notify admins on EVERY amendment, regardless of who made it —
+    // this is a deliberate, explicit correction to already-confirmed
+    // data, so it's always worth surfacing, unlike an ordinary
+    // pre-shift edit which never notifies.
+    const changedHours = newHours !== prevHours;
+    const changedOutput = newOutput !== prevOutput;
+    if (changedHours || changedOutput) {
+      const parts = [];
+      if (changedHours) parts.push(`hours ${prevHours != null ? prevHours + 'h' : 'blank'} → ${newHours}h`);
+      if (changedOutput) parts.push(`output ${prevOutput != null ? prevOutput : 'blank'} → ${newOutput}`);
+      pushOtFilingNotification(`${emp ? emp.display_name : 'Someone'} amended their OT entry for ${formatPrettyDate(filingDate)} — ${parts.join(', ')}.`);
+    }
+
+    await loadOtHoursEntries();
+    renderOtFiling();
+  });
 }
 
 async function resetOtFiling() {
@@ -6635,14 +6685,6 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
 
   const existing = getOtEntry(employeeId, filingDate);
 
-  // Was this row unlocked and now being genuinely edited? Captured
-  // BEFORE the save below, since the save itself will clear the flag —
-  // this is the one-shot signal that distinguishes "an unlock followed
-  // by a real change" from an everyday pre-shift edit (which never sets
-  // this flag at all).
-  const wasAwaitingEditAfterUnlock = !!(existing && existing.unlocked_awaiting_edit);
-  const preUnlockHours = existing ? existing.assumed_hours : null;
-
   // A full clear should genuinely DELETE the row, not leave it behind
   // with fields nulled out. This triggers whenever the field is being
   // emptied AND the row isn't sitting on genuinely confirmed data —
@@ -6675,22 +6717,10 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
     // cleared shouldn't still carry a leftover output number that makes
     // it look "logged" on the dashboard or in the sort.
     total_output: hours === null ? null : (existing ? existing.total_output : null),
-    // Always cleared on save, whether or not this save actually
-    // notifies — the "awaiting edit" window only ever covers ONE save.
-    unlocked_awaiting_edit: false,
   };
 
   const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
   if (error) { showToast('Could not save OT hours.', true); return; }
-
-  // Notify admins ONLY when this save genuinely follows an unlock AND
-  // the value actually changed from what it was before — an unlock
-  // with no real edit, or an ordinary pre-shift edit with no prior
-  // unlock, must never trigger this.
-  if (wasAwaitingEditAfterUnlock && hours !== preUnlockHours) {
-    const emp = state.employees.find(e => e.id === employeeId);
-    pushOtFilingNotification(`${emp ? emp.display_name : 'Someone'} unlocked and changed their OT hours for ${formatPrettyDate(filingDate)} — now ${hours}h (was ${preUnlockHours != null ? preUnlockHours + 'h' : 'blank'}).`);
-  }
 
   await loadOtHoursEntries();
   renderOtFiling();
@@ -6749,7 +6779,6 @@ function openOtConfirmModal(employeeId, filingDate) {
     }
     closeModal();
     showToast('OT hours confirmed.');
-    await maybeNotifyOtUnlockedEdit(employeeId, filingDate);
     await loadOtHoursEntries();
     renderOtFiling();
   });
@@ -12288,9 +12317,9 @@ function pushTeamFundsNotification(text) {
 }
 
 // OT Filing notifications: their OWN stream and OWN bell in the OT
-// Hours Filing tab — fires only when an employee unlocks and then
-// actually changes their own already-submitted OT hours (see
-// maybeNotifyOtUnlockedEdit). Admins are the only intended audience.
+// Hours Filing tab — fires only when an employee or admin explicitly
+// amends an already-confirmed OT entry (see openOtAmendModal). Admins
+// are the only intended audience.
 function pushOtFilingNotification(text) {
   return pushLeaveNotification(text, 'ot_filing');
 }
@@ -12372,7 +12401,7 @@ function showNotifPanel(kind) {
         <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
           <div style="font-size:28px; margin-bottom:8px;">🔔</div>
           <div style="font-size:13px;">No notifications yet.</div>
-          <div style="font-size:12px; margin-top:4px;">${kind === 'team_funds' ? 'Team Funds changes will appear here.' : kind === 'ot_filing' ? 'Unlocked-and-edited OT hours will appear here.' : 'Leave approvals will appear here.'}</div>
+          <div style="font-size:12px; margin-top:4px;">${kind === 'team_funds' ? 'Team Funds changes will appear here.' : kind === 'ot_filing' ? 'Amended OT entries will appear here.' : 'Leave approvals will appear here.'}</div>
         </div>
       `}
     </div>
