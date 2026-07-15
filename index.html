@@ -1386,7 +1386,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-ot-amend-feature';
+const APP_VERSION = '2026-07-15-ot-delete-jeinna-only';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6136,6 +6136,14 @@ async function submitLiEntry(e, editing) {
 // OT HOURS FILING
 // =====================================================================
 
+// Deleting a confirmed OT entry outright is intentionally narrower than
+// the general admin role — restricted to Jeinna specifically, same
+// named-person pattern as Employee Management and Personal Notes.
+const OT_FILING_DELETE_ALLOWED_NAME = 'Jeinna Louise Perez';
+function canDeleteOtEntry() {
+  return !!state.profile && state.profile.display_name === OT_FILING_DELETE_ALLOWED_NAME;
+}
+
 function getOtEntry(employeeId, filingDate) {
   return state.otHoursEntries.find(e => e.employee_id === employeeId && e.filing_date === filingDate);
 }
@@ -6329,6 +6337,7 @@ function renderOtFiling() {
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
               ${(admin || isMe) ? `<button class="btn btn-ghost btn-sm ot-amend-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Amend</button>` : ''}
+              ${canDeleteOtEntry() ? `<button class="btn btn-ghost btn-sm ot-delete-entry-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--coral);">Delete</button>` : ''}
             </div>
           </td>
         ` + outputCell;
@@ -6442,6 +6451,9 @@ function renderOtFiling() {
   document.querySelectorAll('.ot-amend-btn').forEach(btn => {
     btn.addEventListener('click', () => openOtAmendModal(btn.dataset.empId, btn.dataset.date));
   });
+  document.querySelectorAll('.ot-delete-entry-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteOtEntry(btn.dataset.empId, btn.dataset.date));
+  });
 }
 
 // Amend replaces the old Unlock — instead of unlocking the field for a
@@ -6513,6 +6525,30 @@ function openOtAmendModal(employeeId, filingDate) {
     await loadOtHoursEntries();
     renderOtFiling();
   });
+}
+
+// Permanently deletes an OT entry outright — hours, output, and
+// confirmed status all gone for that employee/date, as if nothing was
+// ever logged. Restricted to Jeinna specifically (see
+// canDeleteOtEntry), separate from the general admin role, since this
+// is more destructive than Amend — Amend corrects the values in place,
+// this removes the record entirely.
+async function deleteOtEntry(employeeId, filingDate) {
+  if (!canDeleteOtEntry()) { showToast('Only Jeinna can delete an OT entry.', true); return; }
+  const entry = getOtEntry(employeeId, filingDate);
+  if (!entry) return;
+  const emp = state.employees.find(e => e.id === employeeId);
+  const name = emp ? emp.display_name : 'this employee';
+  if (!confirm(`Permanently delete ${name}'s OT entry for ${formatPrettyDate(filingDate)}? Hours, output, and confirmed status will all be removed — this cannot be undone.`)) return;
+
+  const { error } = await sb.from('ot_hours_entries').delete().eq('id', entry.id);
+  if (error) { showToast('Could not delete the entry.', true); return; }
+  showToast(`${name}'s OT entry for ${formatPrettyDate(filingDate)} deleted.`);
+
+  pushOtFilingNotification(`Jeinna deleted ${name}'s OT entry for ${formatPrettyDate(filingDate)}.`);
+
+  await loadOtHoursEntries();
+  renderOtFiling();
 }
 
 async function resetOtFiling() {
