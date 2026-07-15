@@ -1386,7 +1386,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-ips-midnight-window-bugfix';
+const APP_VERSION = '2026-07-15-ot-sort-priority-restored';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6191,18 +6191,21 @@ function renderOtFiling() {
   const admin = isAdmin();
   const dates = state.otFilingDates.map(d => d.filing_date);
 
-  // Anyone with at least one CONFIRMED entry across the currently open
-  // dates is listed first; everyone else follows below. Deliberately
-  // NOT counting unconfirmed entries here — an old, never-confirmed
-  // value left behind on a past filing date (e.g. someone typed
-  // something in, never confirmed it, and the date is still technically
-  // "open") shouldn't make that person count as having current data.
-  // Only a genuinely confirmed entry represents real, settled data.
+  // Anyone with active data (typed in, not necessarily confirmed yet)
+  // on one of the MOST RECENT open filing dates is listed first;
+  // everyone else follows below. Deliberately scoped to only the last
+  // few open dates — not the full historical list — since checking
+  // every open date (including ones weeks old that an admin simply
+  // never removed) is exactly what let a stale, long-abandoned entry
+  // keep counting someone as "active" long after it was actually
+  // relevant. Using otEntryHasData (assumed/actual/total_output/
+  // confirmed) rather than confirmed-only restores the original
+  // behavior: someone mid-way through typing in today's hours still
+  // gets priority placement, they don't have to wait until Confirm.
+  const RECENT_DATES_FOR_SORT = 3;
+  const recentDatesForSort = dates.slice().sort().slice(-RECENT_DATES_FOR_SORT);
   function hasAnyLoggedHours(employeeId) {
-    return dates.some(d => {
-      const entry = getOtEntry(employeeId, d);
-      return entry && entry.confirmed === true;
-    });
+    return recentDatesForSort.some(d => otEntryHasData(getOtEntry(employeeId, d)));
   }
 
   const roster = activeRoster()
