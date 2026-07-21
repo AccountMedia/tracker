@@ -1386,7 +1386,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-ot-delete-x-label';
+const APP_VERSION = '2026-07-15-ips-missed-lq-banner';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10066,7 +10066,50 @@ function renderIpsTables() {
       </div>
     ` : '';
 
+    // ── Missed Lead Qualification banner ──────────────────────────
+    // Flags any PAST workday (never today or future — the day isn't
+    // over yet) where an employee was genuinely expected to log a
+    // Lead Qualification output (target > 0, i.e. NOT on leave and NOT
+    // marked "other task" that day) but lq_value is still empty.
+    // Everyone sees their OWN missed dates; admins/IPS additionally see
+    // the whole team's, since they're the ones who'd follow up on it.
+    const todayIso = isoDate(new Date());
+    const pastDatesThisMonth = dates.filter(d => d < todayIso);
+    const missedByEmployee = new Map(); // employeeId -> [dateIso, ...]
+    if (pastDatesThisMonth.length) {
+      const rosterForMissed = admin ? roster : roster.filter(e => e.id === state.profile.employee_id);
+      rosterForMissed.forEach(emp => {
+        const missedDates = pastDatesThisMonth.filter(d => {
+          const target = ipsDayTarget(emp.id, d); // 0 = on leave or "other task" that day — correctly excluded
+          if (target <= 0) return false;
+          const e = ipsDailyFor(emp.id, d);
+          return !e || e.lq_value == null || e.lq_value === '';
+        });
+        if (missedDates.length) missedByEmployee.set(emp.id, missedDates);
+      });
+    }
+    const missedOutputsHtml = missedByEmployee.size ? `
+      <div class="card" style="padding:14px 16px; margin-bottom:16px; background:var(--coral-wash); border-color:var(--coral-wash);">
+        <div style="font-weight:700; font-size:12.5px; margin-bottom:10px; display:flex; align-items:center; gap:6px; color:var(--coral);">
+          <span>⚠️</span> Missing Lead Qualification output — ${missedByEmployee.size} ${missedByEmployee.size === 1 ? 'person' : 'people'}
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${Array.from(missedByEmployee.entries()).map(([empId, missedDates]) => {
+            const emp = roster.find(x => x.id === empId);
+            const dateList = missedDates.map(d => formatMonthDay(d)).join(', ');
+            return `
+              <div style="font-size:12.5px; background:#fff; border-radius:8px; padding:8px 12px;">
+                <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong>
+                <span style="color:var(--ink-soft);"> — ${missedDates.length} day${missedDates.length === 1 ? '' : 's'}: ${escapeHtml(dateList)}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    ` : '';
+
     return `
+      ${missedOutputsHtml}
       ${approvalInboxHtml}
       <div class="ips-sticky-bar" id="ips-daily-nav-bar" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
         <div style="display:flex; align-items:center; gap:10px;">
