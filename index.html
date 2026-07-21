@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-my-alerts-badge-live';
+const APP_VERSION = '2026-07-15-clear-feature-removed';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9633,7 +9633,6 @@ const ipsState = {
   myPendingRequests: [],     // this employee's own pending correction requests (any status shown as pending badge)
   pendingApprovals: [],      // ALL pending requests, for admin/IPS's approval inbox
   emergencyUnlocks: [],       // { employee_id, unlock_date } rows — self-service early/full-day-leave access overrides for TODAY
-  dismissedMissedAlerts: [],  // { employee_id, missed_date, dismissed_on } rows — soft-dismissed missed-LQ alerts, only honored if dismissed_on === today
 };
 
 function ipsDatesForMonth(monthIso) {
@@ -9648,13 +9647,12 @@ async function loadIpsData() {
   const [y, m] = monthStart.split('-').map(Number);
   const monthEnd = isoDate(new Date(y, m, 0));
 
-  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes, dismissedRes] = await Promise.all([
+  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', monthStart).lte('entry_date', monthEnd),
     sb.from('ips_monthly_data').select('*').eq('month', monthStart),
     sb.from('ips_month_settings').select('*').eq('month', monthStart).maybeSingle(),
     sb.from('ips_correction_requests').select('*').order('requested_at', { ascending: false }),
     sb.from('ips_emergency_unlocks').select('*').eq('unlock_date', isoDate(new Date())),
-    sb.from('ips_dismissed_missed_alerts').select('*').eq('dismissed_on', isoDate(new Date())),
   ]);
 
   if (dailyRes.error || monthlyRes.error) {
@@ -9680,9 +9678,6 @@ async function loadIpsData() {
 
   // Emergency unlocks aren't fatal if the table isn't set up yet either.
   ipsState.emergencyUnlocks = emergencyRes.error ? [] : (emergencyRes.data || []);
-
-  // Same for today's dismissed missed-LQ alerts.
-  ipsState.dismissedMissedAlerts = dismissedRes.error ? [] : (dismissedRes.data || []);
 }
 
 function ipsDailyFor(employeeId, dateIso) {
@@ -10377,26 +10372,13 @@ function renderIpsTables() {
   // team's, since they're the ones who'd follow up on it. Computed once
   // here (not per-tab) so it renders above the personal snapshot cards
   // regardless of which IPS tab is currently active.
-  //
-  // Dismissals: an admin/IPS can Clear a specific date, or Clear all —
-  // both are SOFT dismissals that only last for today (see
-  // ips_dismissed_missed_alerts's dismissed_on column). If the same
-  // date is still genuinely missing tomorrow, it reappears on its own
-  // with no extra cleanup needed — nothing has to actively "undo" a
-  // dismissal, it just stops being honored once today moves on.
   const todayIso = isoDate(new Date());
   const pastDatesThisMonth = dates.filter(d => d < todayIso);
-  const dismissedToday = new Set(
-    (ipsState.dismissedMissedAlerts || [])
-      .filter(d => d.dismissed_on === todayIso)
-      .map(d => `${d.employee_id}|${d.missed_date}`)
-  );
   const missedByEmployee = new Map(); // employeeId -> [dateIso, ...]
   if (pastDatesThisMonth.length) {
     const rosterForMissed = admin ? roster : roster.filter(e => e.id === state.profile.employee_id);
     rosterForMissed.forEach(emp => {
       const missedDates = pastDatesThisMonth.filter(d => {
-        if (dismissedToday.has(`${emp.id}|${d}`)) return false; // cleared for today
         const target = ipsDayTarget(emp.id, d); // 0 = on leave or "other task" that day — correctly excluded
         if (target <= 0) return false;
         const e = ipsDailyFor(emp.id, d);
@@ -10407,23 +10389,17 @@ function renderIpsTables() {
   }
   const missedOutputsHtml = missedByEmployee.size ? `
     <div class="card" style="padding:14px 16px; margin-bottom:16px; background:var(--coral-wash); border-color:var(--coral-wash);">
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px;">
-        <div style="font-weight:700; font-size:12.5px; display:flex; align-items:center; gap:6px; color:var(--coral);">
-          <span>⚠️</span> Missing Lead Qualification output — ${missedByEmployee.size} ${missedByEmployee.size === 1 ? 'person' : 'people'}
-        </div>
-        ${admin ? `<button type="button" id="ips-clear-all-missed-btn" style="font-size:11px; font-weight:600; color:var(--coral); background:none; border:1px solid var(--coral); border-radius:999px; padding:4px 12px; cursor:pointer; flex-shrink:0;">Clear all</button>` : ''}
+      <div style="font-weight:700; font-size:12.5px; margin-bottom:10px; display:flex; align-items:center; gap:6px; color:var(--coral);">
+        <span>⚠️</span> Missing Lead Qualification output — ${missedByEmployee.size} ${missedByEmployee.size === 1 ? 'person' : 'people'}
       </div>
       <div style="display:flex; flex-direction:column; gap:6px;">
         ${Array.from(missedByEmployee.entries()).map(([empId, missedDates]) => {
           const emp = roster.find(x => x.id === empId);
           const dateList = missedDates.map(d => formatMonthDay(d)).join(', ');
           return `
-            <div style="font-size:12.5px; background:#fff; border-radius:8px; padding:8px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
-              <div>
-                <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong>
-                <span style="color:var(--ink-soft);"> — ${missedDates.length} day${missedDates.length === 1 ? '' : 's'}: ${escapeHtml(dateList)}</span>
-              </div>
-              ${admin ? `<button type="button" class="ips-clear-missed-btn" data-emp-id="${empId}" data-dates="${missedDates.join(',')}" style="font-size:10.5px; font-weight:600; color:var(--ink-faint); background:none; border:none; cursor:pointer; flex-shrink:0; text-decoration:underline;">Clear</button>` : ''}
+            <div style="font-size:12.5px; background:#fff; border-radius:8px; padding:8px 12px;">
+              <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong>
+              <span style="color:var(--ink-soft);"> — ${missedDates.length} day${missedDates.length === 1 ? '' : 's'}: ${escapeHtml(dateList)}</span>
             </div>
           `;
         }).join('')}
@@ -10546,61 +10522,6 @@ function renderIpsTables() {
 // Loads LAST month's data once (cached per viewed month) to compute each
 // person's previous rank — powers the ▲▼ movement arrows on the
 // leaderboard. Fetched only when the Monthly Score tab is opened.
-// Soft-dismisses one employee's missed-LQ dates for TODAY only — see
-// the schema comment on ips_dismissed_missed_alerts for why this
-// naturally expires rather than needing to be actively "undone."
-async function dismissIpsMissedAlert(employeeId, missedDates) {
-  if (!canManageIps()) { showToast('Only admins and IPS can clear this.', true); return; }
-  const todayIso = isoDate(new Date());
-  const rows = missedDates.map(d => ({
-    employee_id: employeeId, missed_date: d, dismissed_on: todayIso,
-    dismissed_by: state.profile.display_name,
-  }));
-  const { error } = await sb.from('ips_dismissed_missed_alerts').upsert(rows, { onConflict: 'employee_id,missed_date,dismissed_on' });
-  if (error) {
-    console.error(error);
-    showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_dismissed_alerts_schema.sql in Supabase.' : 'Could not clear this alert.', true);
-    return;
-  }
-  showToast('Cleared for today.');
-  await loadIpsData();
-  renderIpsTables();
-}
-
-// Clears EVERY currently-shown missed-LQ alert across the whole team at
-// once — recomputes the same missed list the banner itself uses, then
-// dismisses all of it in one batch.
-async function clearAllIpsMissedAlerts() {
-  if (!canManageIps()) { showToast('Only admins and IPS can clear this.', true); return; }
-  const dates = ipsDatesForMonth(ipsState.month);
-  const todayIso = isoDate(new Date());
-  const pastDates = dates.filter(d => d < todayIso);
-  if (!pastDates.length) return;
-
-  const rows = [];
-  ipsRoster().forEach(emp => {
-    pastDates.forEach(d => {
-      const target = ipsDayTarget(emp.id, d);
-      if (target <= 0) return;
-      const e = ipsDailyFor(emp.id, d);
-      const missing = !e || e.lq_value == null || e.lq_value === '';
-      if (missing) rows.push({ employee_id: emp.id, missed_date: d, dismissed_on: todayIso, dismissed_by: state.profile.display_name });
-    });
-  });
-  if (!rows.length) return;
-  if (!confirm(`Clear all ${rows.length} missed-output alert${rows.length === 1 ? '' : 's'} for today? They'll reappear tomorrow if still genuinely missing.`)) return;
-
-  const { error } = await sb.from('ips_dismissed_missed_alerts').upsert(rows, { onConflict: 'employee_id,missed_date,dismissed_on' });
-  if (error) {
-    console.error(error);
-    showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_dismissed_alerts_schema.sql in Supabase.' : 'Could not clear all alerts.', true);
-    return;
-  }
-  showToast('All missed-output alerts cleared for today.');
-  await loadIpsData();
-  renderIpsTables();
-}
-
 async function loadIpsPrevRanks() {
   if (ipsState._prevRanksLoading === ipsState.month) return;
   ipsState._prevRanksLoading = ipsState.month;
@@ -11256,10 +11177,6 @@ function attachIpsHandlers() {
     ipsState.monthlyEditMode = !ipsState.monthlyEditMode;
     renderIpsTables();
   });
-  document.querySelectorAll('.ips-clear-missed-btn').forEach(btn => {
-    btn.addEventListener('click', () => dismissIpsMissedAlert(btn.dataset.empId, btn.dataset.dates.split(',')));
-  });
-  document.getElementById('ips-clear-all-missed-btn')?.addEventListener('click', clearAllIpsMissedAlerts);
   document.querySelectorAll('.ips-request-correction-btn').forEach(btn => {
     btn.addEventListener('click', () => openIpsCorrectionRequestModal(btn.dataset.empId, btn.dataset.date, btn.dataset.field, btn.dataset.current));
   });
@@ -11766,13 +11683,7 @@ function myPersonalAlertItems() {
     const monthDates = ipsDatesForMonth(ipsState.month);
     const todayIso = isoDate(new Date());
     const pastDates = monthDates.filter(d => d < todayIso);
-    const dismissedToday = new Set(
-      (ipsState.dismissedMissedAlerts || [])
-        .filter(d => d.dismissed_on === todayIso && d.employee_id === myId)
-        .map(d => d.missed_date)
-    );
     const missedDates = pastDates.filter(d => {
-      if (dismissedToday.has(d)) return false;
       const target = ipsDayTarget(myId, d);
       if (target <= 0) return false;
       const e = ipsDailyFor(myId, d);
