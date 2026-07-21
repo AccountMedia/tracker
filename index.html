@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-clear-feature-removed';
+const APP_VERSION = '2026-07-15-missed-outputs-collapsible';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9633,6 +9633,7 @@ const ipsState = {
   myPendingRequests: [],     // this employee's own pending correction requests (any status shown as pending badge)
   pendingApprovals: [],      // ALL pending requests, for admin/IPS's approval inbox
   emergencyUnlocks: [],       // { employee_id, unlock_date } rows — self-service early/full-day-leave access overrides for TODAY
+  missedOutputsExpanded: false, // whether the Missing LQ banner's full list is expanded — collapsed by default for a minimal single-line view
 };
 
 function ipsDatesForMonth(monthIso) {
@@ -10046,35 +10047,7 @@ function renderIpsTables() {
       `;
     }).join('');
 
-    const pendingApprovals = ipsState.pendingApprovals || [];
-    const approvalInboxHtml = (canManageIps() && pendingApprovals.length) ? `
-      <div class="card" style="padding:14px 16px; margin-bottom:16px; background:var(--amber-wash); border-color:var(--amber-wash);">
-        <div style="font-weight:700; font-size:12.5px; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
-          <span>⏳</span> ${pendingApprovals.length} correction request${pendingApprovals.length === 1 ? '' : 's'} awaiting approval
-        </div>
-        <div style="display:flex; flex-direction:column; gap:8px;">
-          ${pendingApprovals.map(r => {
-            const emp = roster.find(x => x.id === r.employee_id);
-            const fieldLabel = r.field === 'errors' ? 'Errors' : r.field === 'md_value' ? 'Missing Data Task' : 'Lead Qualification';
-            return `
-              <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:#fff; border-radius:8px; padding:8px 12px; font-size:12.5px;">
-                <div>
-                  <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong> — ${fieldLabel} on ${formatPrettyDate(r.entry_date)}:
-                  <span style="color:var(--ink-soft);">${r.old_value ?? '—'}</span> → <strong style="color:var(--teal);">${r.new_value ?? '—'}</strong>
-                </div>
-                <div style="display:flex; gap:6px; flex-shrink:0;">
-                  <button class="btn btn-sm ips-approve-correction-btn" data-id="${r.id}" style="background:var(--green); color:#F7F3E8; padding:4px 12px; font-size:11px;">Approve</button>
-                  <button class="btn btn-ghost btn-sm ips-reject-correction-btn" data-id="${r.id}" style="padding:4px 12px; font-size:11px; color:var(--coral);">Reject</button>
-                </div>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    ` : '';
-
     return `
-      ${approvalInboxHtml}
       <div class="ips-sticky-bar" id="ips-daily-nav-bar" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <button class="btn btn-ghost btn-sm" id="ips-day-prev" ${isFirst ? 'disabled' : ''}>←</button>
@@ -10389,17 +10362,56 @@ function renderIpsTables() {
   }
   const missedOutputsHtml = missedByEmployee.size ? `
     <div class="card" style="padding:14px 16px; margin-bottom:16px; background:var(--coral-wash); border-color:var(--coral-wash);">
-      <div style="font-weight:700; font-size:12.5px; margin-bottom:10px; display:flex; align-items:center; gap:6px; color:var(--coral);">
-        <span>⚠️</span> Missing Lead Qualification output — ${missedByEmployee.size} ${missedByEmployee.size === 1 ? 'person' : 'people'}
+      <button type="button" id="ips-missed-outputs-toggle" style="width:100%; background:none; border:none; padding:0; margin:0; cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; font-family:inherit;">
+        <span style="font-weight:700; font-size:12.5px; display:flex; align-items:center; gap:6px; color:var(--coral);">
+          <span>⚠️</span> Missing Lead Qualification output — ${missedByEmployee.size} ${missedByEmployee.size === 1 ? 'person' : 'people'}
+        </span>
+        <span style="font-size:11px; color:var(--coral); transition:transform 0.15s; transform:rotate(${ipsState.missedOutputsExpanded ? '180deg' : '0deg'});">▾</span>
+      </button>
+      ${ipsState.missedOutputsExpanded ? `
+        <div style="display:flex; flex-direction:column; gap:6px; margin-top:10px;">
+          ${Array.from(missedByEmployee.entries()).map(([empId, missedDates]) => {
+            const emp = roster.find(x => x.id === empId);
+            const dateList = missedDates.map(d => formatMonthDay(d)).join(', ');
+            return `
+              <div style="font-size:12.5px; background:#fff; border-radius:8px; padding:8px 12px;">
+                <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong>
+                <span style="color:var(--ink-soft);"> — ${missedDates.length} day${missedDates.length === 1 ? '' : 's'}: ${escapeHtml(dateList)}</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      ` : ''}
+    </div>
+  ` : '';
+
+  // ── Pending correction requests — displayed right under Missing LQ,
+  // for admins/IPS specifically, regardless of which IPS tab is active.
+  // Purely a positioning change: this is the same correction-request
+  // approval feature that's always existed (an employee editing a past
+  // date requires admin/IPS sign-off) — it previously only appeared on
+  // the Daily Entry tab; now it sits consistently alongside the
+  // Missing LQ banner for a cleaner, more visible layout.
+  const pendingApprovalsOuter = ipsState.pendingApprovals || [];
+  const approvalInboxHtml = (canManageIps() && pendingApprovalsOuter.length) ? `
+    <div class="card" style="padding:14px 16px; margin-bottom:16px; background:var(--amber-wash); border-color:var(--amber-wash);">
+      <div style="font-weight:700; font-size:12.5px; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+        <span>⏳</span> ${pendingApprovalsOuter.length} correction request${pendingApprovalsOuter.length === 1 ? '' : 's'} awaiting approval
       </div>
-      <div style="display:flex; flex-direction:column; gap:6px;">
-        ${Array.from(missedByEmployee.entries()).map(([empId, missedDates]) => {
-          const emp = roster.find(x => x.id === empId);
-          const dateList = missedDates.map(d => formatMonthDay(d)).join(', ');
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        ${pendingApprovalsOuter.map(r => {
+          const emp = roster.find(x => x.id === r.employee_id);
+          const fieldLabel = r.field === 'errors' ? 'Errors' : r.field === 'md_value' ? 'Missing Data Task' : 'Lead Qualification';
           return `
-            <div style="font-size:12.5px; background:#fff; border-radius:8px; padding:8px 12px;">
-              <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong>
-              <span style="color:var(--ink-soft);"> — ${missedDates.length} day${missedDates.length === 1 ? '' : 's'}: ${escapeHtml(dateList)}</span>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:#fff; border-radius:8px; padding:8px 12px; font-size:12.5px;">
+              <div>
+                <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong> — ${fieldLabel} on ${formatPrettyDate(r.entry_date)}:
+                <span style="color:var(--ink-soft);">${r.old_value ?? '—'}</span> → <strong style="color:var(--teal);">${r.new_value ?? '—'}</strong>
+              </div>
+              <div style="display:flex; gap:6px; flex-shrink:0;">
+                <button class="btn btn-sm ips-approve-correction-btn" data-id="${r.id}" style="background:var(--green); color:#F7F3E8; padding:4px 12px; font-size:11px;">Approve</button>
+                <button class="btn btn-ghost btn-sm ips-reject-correction-btn" data-id="${r.id}" style="padding:4px 12px; font-size:11px; color:var(--coral);">Reject</button>
+              </div>
             </div>
           `;
         }).join('')}
@@ -10460,6 +10472,7 @@ function renderIpsTables() {
 
   el.innerHTML = `
     ${missedOutputsHtml}
+    ${approvalInboxHtml}
     ${snapshotHtml}
     <div class="card" style="padding:22px;">
       <div style="display:flex; gap:8px; margin:0 0 22px; overflow-x:auto; padding:4px; background:var(--paper); border-radius:999px; border:1px solid var(--line-soft);">
@@ -11175,6 +11188,10 @@ function ipsEditToggleHtml() {
 function attachIpsHandlers() {
   document.getElementById('ips-monthly-edit-toggle')?.addEventListener('click', () => {
     ipsState.monthlyEditMode = !ipsState.monthlyEditMode;
+    renderIpsTables();
+  });
+  document.getElementById('ips-missed-outputs-toggle')?.addEventListener('click', () => {
+    ipsState.missedOutputsExpanded = !ipsState.missedOutputsExpanded;
     renderIpsTables();
   });
   document.querySelectorAll('.ips-request-correction-btn').forEach(btn => {
