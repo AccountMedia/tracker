@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-my-alerts-false-positive-fix';
+const APP_VERSION = '2026-07-15-my-alerts-no-flash';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11813,7 +11813,16 @@ function initPersonalAlerts() {
 }
 
 function renderPersonalAlerts() {
-  renderPersonalAlertsFromCache(); // instant paint from whatever's already loaded, avoids a blank/stale badge
+  // Only paint immediately from cache if we've ALREADY confirmed real
+  // data once before (e.g. re-opening the panel later in the session).
+  // On the very first check of a session, painting immediately would
+  // show a state built from data that hasn't loaded yet — indistinguishable
+  // from "nothing missing" — which is exactly what caused a brief
+  // incorrect flash before settling on the true answer. Better to show
+  // nothing at all for that first instant than show a wrong answer,
+  // even briefly.
+  const alreadyConfirmedOnce = paIpsDataLoadedForMonth === ipsState.month;
+  if (alreadyConfirmedOnce) renderPersonalAlertsFromCache();
   ensureIpsDataForPersonalAlerts().then(renderPersonalAlertsFromCache);
 }
 
