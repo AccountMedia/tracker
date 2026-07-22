@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-missed-banner-shared-teamwide';
+const APP_VERSION = '2026-07-15-my-alerts-false-positive-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11697,7 +11697,17 @@ function myPersonalAlertItems() {
   // rule as the IPS banner (past workdays only, target > 0 so leave/
   // other-task days are correctly excluded), scoped to the current
   // month so this doesn't dredge up unfixable ancient history.
-  if (typeof ipsRoster === 'function' && typeof ipsDatesForMonth === 'function') {
+  //
+  // IMPORTANT: only runs once we're SURE this employee's IPS data for
+  // the month has actually been fetched (either via the lightweight
+  // ensureIpsDataForPersonalAlerts, or by genuinely visiting the IPS
+  // tab). Without this guard, the very first render — before any IPS
+  // data has loaded — would see every date as "missing" (an empty
+  // ipsState.dailyEntries looks identical to "nothing was ever
+  // logged"), which is exactly the false 14-day alert this was
+  // producing on a fresh Dashboard-only session.
+  const ipsDataReadyForMe = paIpsDataLoadedForMonth === ipsState.month || (ipsState.loaded && ipsState._loadedMonth === ipsState.month);
+  if (ipsDataReadyForMe && typeof ipsRoster === 'function' && typeof ipsDatesForMonth === 'function') {
     const monthDates = ipsDatesForMonth(ipsState.month);
     const todayIso = isoDate(new Date());
     const pastDates = monthDates.filter(d => d < todayIso);
@@ -11743,6 +11753,43 @@ function myPersonalAlertItems() {
 // logged in", with the actual gating happening in the stack controller
 // (which decides whether it's the primary shown bubble or fanned out
 // alongside the others).
+// Lightweight, dedicated fetch for the My Alerts bubble's missing-
+// output check — pulls ONLY this employee's own current-month daily
+// entries (just employee_id, entry_date, lq_value, po_excluded,
+// other_task — the columns ipsDayTarget/ipsDailyFor actually need),
+// not the full loadIpsData() sweep (which also pulls corrections,
+// monthly QA data, and settings that this specific check never uses).
+// This exists because the bubble can render before anyone has ever
+// visited the IPS tab this session — without this, ipsState.dailyEntries
+// would still be empty and every day would incorrectly look "missing."
+let paIpsDataLoadedForMonth = null;
+async function ensureIpsDataForPersonalAlerts() {
+  if (!state.profile || !state.profile.employee_id) return;
+  const month = ipsState.month;
+  // Already loaded (by this function OR by actually visiting IPS) for
+  // this month — nothing further to fetch.
+  if (paIpsDataLoadedForMonth === month || (ipsState.loaded && ipsState._loadedMonth === month)) return;
+
+  const [y, m] = month.split('-').map(Number);
+  const monthEnd = isoDate(new Date(y, m, 0));
+  const { data, error } = await sb
+    .from('ips_daily_entries')
+    .select('employee_id, entry_date, lq_value, md_value, po_excluded, other_task')
+    .eq('employee_id', state.profile.employee_id)
+    .gte('entry_date', month)
+    .lte('entry_date', monthEnd);
+  if (error) { console.error('Personal alerts IPS check failed:', error); return; }
+
+  // Merge into ipsState.dailyEntries rather than replacing it — if the
+  // full IPS tab data happens to already be loaded (or loads later),
+  // this shouldn't stomp on rows for OTHER employees that a full
+  // loadIpsData() call would have populated.
+  const existingIds = new Set(ipsState.dailyEntries.map(e => `${e.employee_id}|${e.entry_date}`));
+  const newRows = (data || []).filter(e => !existingIds.has(`${e.employee_id}|${e.entry_date}`));
+  ipsState.dailyEntries = [...ipsState.dailyEntries, ...newRows];
+  paIpsDataLoadedForMonth = month;
+}
+
 function syncPersonalAlertsVisibility() {
   const wrap = document.getElementById('pa-wrap');
   if (!wrap) return;
@@ -11766,6 +11813,11 @@ function initPersonalAlerts() {
 }
 
 function renderPersonalAlerts() {
+  renderPersonalAlertsFromCache(); // instant paint from whatever's already loaded, avoids a blank/stale badge
+  ensureIpsDataForPersonalAlerts().then(renderPersonalAlertsFromCache);
+}
+
+function renderPersonalAlertsFromCache() {
   const list = document.getElementById('pa-list');
   const badge = document.getElementById('pa-badge');
   if (!list || !badge) return;
