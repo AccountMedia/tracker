@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-my-alerts-race-fix';
+const APP_VERSION = '2026-07-15-my-alerts-real-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11820,7 +11820,7 @@ function syncPersonalAlertsVisibility() {
 
 let paInit = false;
 function initPersonalAlerts() {
-  if (paInit) { renderPersonalAlerts(); return; }
+  if (paInit) return; // already set up AND already checked once — the repeated setTimeout re-syncs (for a DIFFERENT bubble's late-session-restore concern) shouldn't re-trigger a fresh check here every time; that repeated re-check was the actual cause of the badge briefly flickering through multiple paints on page load
   paInit = true;
   document.getElementById('pa-toggle').addEventListener('click', () => {
     const panel = document.getElementById('pa-panel');
