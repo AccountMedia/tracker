@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-missed-outputs-collapsible';
+const APP_VERSION = '2026-07-15-missed-banner-shared-teamwide';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10340,17 +10340,18 @@ function renderIpsTables() {
   // Flags any PAST workday (never today or future — the day isn't over
   // yet) where an employee was genuinely expected to log a Lead
   // Qualification output (target > 0, i.e. NOT on leave and NOT marked
-  // "other task" that day) but lq_value is still empty. Everyone sees
-  // their OWN missed dates; admins/IPS additionally see the whole
-  // team's, since they're the ones who'd follow up on it. Computed once
-  // here (not per-tab) so it renders above the personal snapshot cards
-  // regardless of which IPS tab is currently active.
+  // "other task" that day) but lq_value is still empty. This banner is
+  // a SHARED team-wide view — everyone (not just admins/IPS) sees the
+  // full team's missed dates here, collapsed by default behind the
+  // dropdown arrow. The personal, name-filtered version lives
+  // separately in the "My Alerts" floating bubble (myPersonalAlertItems)
+  // — that one only ever shows each person's own gaps, this one is
+  // intentionally the opposite: everyone's, visible to everyone.
   const todayIso = isoDate(new Date());
   const pastDatesThisMonth = dates.filter(d => d < todayIso);
   const missedByEmployee = new Map(); // employeeId -> [dateIso, ...]
   if (pastDatesThisMonth.length) {
-    const rosterForMissed = admin ? roster : roster.filter(e => e.id === state.profile.employee_id);
-    rosterForMissed.forEach(emp => {
+    roster.forEach(emp => {
       const missedDates = pastDatesThisMonth.filter(d => {
         const target = ipsDayTarget(emp.id, d); // 0 = on leave or "other task" that day — correctly excluded
         if (target <= 0) return false;
