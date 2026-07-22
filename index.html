@@ -618,6 +618,7 @@ const WEEKDAY_LETTERS = ['S','M','T','W','T','F','S'];
 const state = {
   session: null,
   profile: null,          // { username, role, employee_id }
+  coreDataLoaded: false,  // true once loadAllData's Phase 1 (employees + leaveEntries) has genuinely completed — distinct from checking array lengths, which can't tell "not loaded yet" apart from "genuinely empty"
   employees: [],          // all employee rows
   leaveEntries: [],        // all leave entries (loaded for the visible range)
   payrollConfirmations: [], // payroll receipt confirmations
@@ -1385,6 +1386,12 @@ function renderCurrentView() {
   else if (v === 'ot-filing') renderOtFiling();
   else if (v === 'team-funds') renderTeamFunds();
   else if (v === 'ips') renderIps();
+  // Re-check My Alerts now that core data (employees + leaveEntries) is
+  // guaranteed loaded — closes the gap where, on a fast page refresh,
+  // the very first alert check could run before state.leaveEntries had
+  // loaded, making every leave day look like a missed workday instead
+  // of being correctly excluded.
+  if (typeof renderPersonalAlerts === 'function' && state.profile) renderPersonalAlerts();
 }
 
 // Bump this on every deploy. Any tab still running an OLDER version will
@@ -1392,7 +1399,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-my-alerts-DEBUG2-TEMP';
+const APP_VERSION = '2026-07-15-my-alerts-leavedata-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1500,6 +1507,7 @@ async function loadAllData() {
   // because the page no longer waits for all 9 tables (plus the
   // year-end holiday generator) before showing anything.
   await Promise.all([loadEmployees(), loadLeaveEntries()]);
+  state.coreDataLoaded = true;
   renderCurrentView();
   updateLeaveNavBadge();
   startNavBadgePolling();
@@ -10530,7 +10538,6 @@ function renderIpsTables() {
   // entering a value and having it save doesn't leave a stale badge
   // count sitting there until something else (like a manual page
   // refresh) happens to touch it.
-  console.log(`[PA-DEBUG2 ${Date.now()}] renderIpsTables end-hook firing renderPersonalAlerts. paIpsDataLoadedForMonth=${typeof paIpsDataLoadedForMonth !== 'undefined' ? paIpsDataLoadedForMonth : 'undef'}`);
   if (typeof renderPersonalAlerts === 'function') renderPersonalAlerts();
 }
 
@@ -11708,7 +11715,7 @@ function myPersonalAlertItems() {
   // logged"), which is exactly the false 14-day alert this was
   // producing on a fresh Dashboard-only session.
   const ipsDataReadyForMe = paIpsDataLoadedForMonth === ipsState.month || (ipsState.loaded && ipsState._loadedMonth === ipsState.month);
-  if (ipsDataReadyForMe && typeof ipsRoster === 'function' && typeof ipsDatesForMonth === 'function') {
+  if (ipsDataReadyForMe && state.coreDataLoaded && typeof ipsRoster === 'function' && typeof ipsDatesForMonth === 'function') {
     const monthDates = ipsDatesForMonth(ipsState.month);
     const todayIso = isoDate(new Date());
     const pastDates = monthDates.filter(d => d < todayIso);
@@ -11821,7 +11828,7 @@ function syncPersonalAlertsVisibility() {
 
 let paInit = false;
 function initPersonalAlerts() {
-  if (paInit) return; // already set up AND already checked once — the repeated setTimeout re-syncs (for a DIFFERENT bubble's late-session-restore concern) shouldn't re-trigger a fresh check here every time; that repeated re-check was the actual cause of the badge briefly flickering through multiple paints on page load
+  if (paInit) return; // already set up AND already checked once — the repeated setTimeout re-syncs (for a DIFFERENT bubble's late-session-restore concern) shouldn't re-trigger a fresh check here every time
   paInit = true;
   document.getElementById('pa-toggle').addEventListener('click', () => {
     const panel = document.getElementById('pa-panel');
@@ -11834,7 +11841,6 @@ function initPersonalAlerts() {
 }
 
 function renderPersonalAlerts() {
-  console.log(`[PA-DEBUG2 ${Date.now()}] renderPersonalAlerts called. alreadyConfirmedOnce check: loadedMonth=${paIpsDataLoadedForMonth}, ipsMonth=${ipsState.month}`);
   // Only paint immediately from cache if we've ALREADY confirmed real
   // data once before (e.g. re-opening the panel later in the session).
   // On the very first check of a session, painting immediately would
@@ -11844,19 +11850,15 @@ function renderPersonalAlerts() {
   // nothing at all for that first instant than show a wrong answer,
   // even briefly.
   const alreadyConfirmedOnce = paIpsDataLoadedForMonth === ipsState.month;
-  if (alreadyConfirmedOnce) { console.log(`[PA-DEBUG2 ${Date.now()}] taking CACHE branch`); renderPersonalAlertsFromCache(); }
-  ensureIpsDataForPersonalAlerts().then(() => {
-    console.log(`[PA-DEBUG2 ${Date.now()}] ensureIpsDataForPersonalAlerts .then() fired, repainting`);
-    renderPersonalAlertsFromCache();
-  });
+  if (alreadyConfirmedOnce) renderPersonalAlertsFromCache();
+  ensureIpsDataForPersonalAlerts().then(renderPersonalAlertsFromCache);
 }
 
 function renderPersonalAlertsFromCache() {
   const list = document.getElementById('pa-list');
   const badge = document.getElementById('pa-badge');
-  if (!list || !badge) { console.log(`[PA-DEBUG2 ${Date.now()}] EARLY RETURN — list or badge element missing! list=${!!list} badge=${!!badge}`); return; }
+  if (!list || !badge) return;
   const items = myPersonalAlertItems();
-  console.log(`[PA-DEBUG2 ${Date.now()}] painting ${items.length} item(s)`, JSON.stringify(items));
   if (items.length) {
     badge.textContent = items.length > 9 ? '9+' : String(items.length);
     badge.style.display = 'flex';
