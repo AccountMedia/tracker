@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-my-alerts-real-fix';
+const APP_VERSION = '2026-07-15-my-alerts-DEBUG2-TEMP';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10530,6 +10530,7 @@ function renderIpsTables() {
   // entering a value and having it save doesn't leave a stale badge
   // count sitting there until something else (like a manual page
   // refresh) happens to touch it.
+  console.log(`[PA-DEBUG2 ${Date.now()}] renderIpsTables end-hook firing renderPersonalAlerts. paIpsDataLoadedForMonth=${typeof paIpsDataLoadedForMonth !== 'undefined' ? paIpsDataLoadedForMonth : 'undef'}`);
   if (typeof renderPersonalAlerts === 'function') renderPersonalAlerts();
 }
 
@@ -11833,6 +11834,7 @@ function initPersonalAlerts() {
 }
 
 function renderPersonalAlerts() {
+  console.log(`[PA-DEBUG2 ${Date.now()}] renderPersonalAlerts called. alreadyConfirmedOnce check: loadedMonth=${paIpsDataLoadedForMonth}, ipsMonth=${ipsState.month}`);
   // Only paint immediately from cache if we've ALREADY confirmed real
   // data once before (e.g. re-opening the panel later in the session).
   // On the very first check of a session, painting immediately would
@@ -11842,15 +11844,19 @@ function renderPersonalAlerts() {
   // nothing at all for that first instant than show a wrong answer,
   // even briefly.
   const alreadyConfirmedOnce = paIpsDataLoadedForMonth === ipsState.month;
-  if (alreadyConfirmedOnce) renderPersonalAlertsFromCache();
-  ensureIpsDataForPersonalAlerts().then(renderPersonalAlertsFromCache);
+  if (alreadyConfirmedOnce) { console.log(`[PA-DEBUG2 ${Date.now()}] taking CACHE branch`); renderPersonalAlertsFromCache(); }
+  ensureIpsDataForPersonalAlerts().then(() => {
+    console.log(`[PA-DEBUG2 ${Date.now()}] ensureIpsDataForPersonalAlerts .then() fired, repainting`);
+    renderPersonalAlertsFromCache();
+  });
 }
 
 function renderPersonalAlertsFromCache() {
   const list = document.getElementById('pa-list');
   const badge = document.getElementById('pa-badge');
-  if (!list || !badge) return;
+  if (!list || !badge) { console.log(`[PA-DEBUG2 ${Date.now()}] EARLY RETURN — list or badge element missing! list=${!!list} badge=${!!badge}`); return; }
   const items = myPersonalAlertItems();
+  console.log(`[PA-DEBUG2 ${Date.now()}] painting ${items.length} item(s)`, JSON.stringify(items));
   if (items.length) {
     badge.textContent = items.length > 9 ? '9+' : String(items.length);
     badge.style.display = 'flex';
