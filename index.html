@@ -1392,7 +1392,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-my-alerts-no-flash';
+const APP_VERSION = '2026-07-15-my-alerts-race-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11763,6 +11763,7 @@ function myPersonalAlertItems() {
 // visited the IPS tab this session — without this, ipsState.dailyEntries
 // would still be empty and every day would incorrectly look "missing."
 let paIpsDataLoadedForMonth = null;
+let paIpsDataLoadingPromise = null; // in-flight fetch, if any — prevents two concurrent calls from racing each other
 async function ensureIpsDataForPersonalAlerts() {
   if (!state.profile || !state.profile.employee_id) return;
   const month = ipsState.month;
@@ -11770,24 +11771,43 @@ async function ensureIpsDataForPersonalAlerts() {
   // this month — nothing further to fetch.
   if (paIpsDataLoadedForMonth === month || (ipsState.loaded && ipsState._loadedMonth === month)) return;
 
-  const [y, m] = month.split('-').map(Number);
-  const monthEnd = isoDate(new Date(y, m, 0));
-  const { data, error } = await sb
-    .from('ips_daily_entries')
-    .select('employee_id, entry_date, lq_value, md_value, po_excluded, other_task')
-    .eq('employee_id', state.profile.employee_id)
-    .gte('entry_date', month)
-    .lte('entry_date', monthEnd);
-  if (error) { console.error('Personal alerts IPS check failed:', error); return; }
+  // A fetch for this exact month is already in flight (e.g. this got
+  // called twice in quick succession during the initial page load) —
+  // return the SAME promise rather than starting a second, redundant
+  // request. Without this, two concurrent calls could each see
+  // "not yet loaded," each fire their own fetch, and each try to
+  // merge their own results into ipsState.dailyEntries independently —
+  // exactly the kind of race that left the badge showing a stale
+  // number from whichever call happened to finish (or start) at the
+  // wrong moment.
+  if (paIpsDataLoadingPromise) return paIpsDataLoadingPromise;
 
-  // Merge into ipsState.dailyEntries rather than replacing it — if the
-  // full IPS tab data happens to already be loaded (or loads later),
-  // this shouldn't stomp on rows for OTHER employees that a full
-  // loadIpsData() call would have populated.
-  const existingIds = new Set(ipsState.dailyEntries.map(e => `${e.employee_id}|${e.entry_date}`));
-  const newRows = (data || []).filter(e => !existingIds.has(`${e.employee_id}|${e.entry_date}`));
-  ipsState.dailyEntries = [...ipsState.dailyEntries, ...newRows];
-  paIpsDataLoadedForMonth = month;
+  paIpsDataLoadingPromise = (async () => {
+    const [y, m] = month.split('-').map(Number);
+    const monthEnd = isoDate(new Date(y, m, 0));
+    const { data, error } = await sb
+      .from('ips_daily_entries')
+      .select('employee_id, entry_date, lq_value, md_value, po_excluded, other_task')
+      .eq('employee_id', state.profile.employee_id)
+      .gte('entry_date', month)
+      .lte('entry_date', monthEnd);
+    if (error) { console.error('Personal alerts IPS check failed:', error); return; }
+
+    // Merge into ipsState.dailyEntries rather than replacing it — if the
+    // full IPS tab data happens to already be loaded (or loads later),
+    // this shouldn't stomp on rows for OTHER employees that a full
+    // loadIpsData() call would have populated.
+    const existingIds = new Set(ipsState.dailyEntries.map(e => `${e.employee_id}|${e.entry_date}`));
+    const newRows = (data || []).filter(e => !existingIds.has(`${e.employee_id}|${e.entry_date}`));
+    ipsState.dailyEntries = [...ipsState.dailyEntries, ...newRows];
+    paIpsDataLoadedForMonth = month;
+  })();
+
+  try {
+    await paIpsDataLoadingPromise;
+  } finally {
+    paIpsDataLoadingPromise = null; // clear regardless of success/failure, so a later call for a NEW month isn't blocked forever
+  }
 }
 
 function syncPersonalAlertsVisibility() {
