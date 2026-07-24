@@ -1399,7 +1399,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-my-alerts-leavedata-fix';
+const APP_VERSION = '2026-07-15-priolist-daily-reset-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1884,14 +1884,14 @@ async function applyDailyPriolistReset() {
 
   const { error } = await sb
     .from('priolist_entries')
-    .update({ md_output: 0, leads: 0, last_reset_date: boundary })
+    .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', last_reset_date: boundary })
     .lt('last_reset_date', boundary);
 
   if (error) { console.error('PrioList auto-reset failed:', error); return; }
 
   // Reflect the reset locally immediately rather than re-fetching.
   state.priolistEntries = state.priolistEntries.map(e =>
-    e.last_reset_date < boundary ? { ...e, md_output: 0, leads: 0, last_reset_date: boundary } : e
+    e.last_reset_date < boundary ? { ...e, md_output: 0, leads: 0, status: '', file_color: null, note: '', last_reset_date: boundary } : e
   );
 }
 
