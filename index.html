@@ -1399,7 +1399,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-priolist-daily-reset-fix';
+const APP_VERSION = '2026-07-15-qa-percent-color';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10203,6 +10203,10 @@ function renderIpsTables() {
       const qa = qaFrac != null ? round2(qaFrac * 100) : '';
       const major = m ? (m.major_count ?? 0) : 0;
       const minor = m ? (m.minor_count ?? 0) : 0;
+      // QA% text color: a logged Major error takes priority and always
+      // shows red, regardless of the score. Otherwise, a 97-100% score
+      // shows blue. Anything else uses the normal ink color.
+      const qaColor = major > 0 ? 'var(--coral)' : (qa !== '' && qa >= 97 && qa <= 100) ? '#2D6A9F' : 'inherit';
       // Only non-empty strings count as notes — cleared/blank lines are ignored
       const majorNotes = (m && Array.isArray(m.major_notes) ? m.major_notes : []).filter(n => n && n.trim());
       const minorNotes = (m && Array.isArray(m.minor_notes) ? m.minor_notes : []).filter(n => n && n.trim());
@@ -10211,7 +10215,7 @@ function renderIpsTables() {
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
           <td style="padding:4px; text-align:center;">
             <input type="number" min="0" max="100" step="0.1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="qa_percent" value="${qa}" ${editable ? '' : 'disabled'}
-              style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; ${editable ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
+              style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; font-weight:700; color:${qaColor}; ${editable ? '' : 'background:var(--line-soft);'}">
           </td>
           <td style="padding:4px; text-align:center;">
             <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="major_count" value="${major}" ${editable ? '' : 'disabled'}
