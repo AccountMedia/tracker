@@ -1399,7 +1399,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-27-lwop-notif-fix';
+const APP_VERSION = '2026-07-27-lwop-vl-spillover-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4209,24 +4209,8 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     const requestedFraction = dayFractionForEntry(row); // in "days" (1 = full day)
     const requestedHours = row.hours != null && row.hours !== '' ? Number(row.hours) : requestedFraction * 8;
 
-    if (balanceBefore <= 0) {
-      // Nothing left at all — the whole row becomes unpaid. Hours are
-      // set explicitly (even for a plain full-day request that never
-      // had an hours value before) so the dashboard badge always shows
-      // exactly how many hours were marked unpaid.
-      updates.push({
-        id: row.id,
-        fields: {
-          leave_type: noPayEquivalent(row.leave_type),
-          hours: requestedHours,
-          note: appendAutoNote(row.note, `Auto-marked Leave Without Pay — no remaining ${fiscalYearLabel(fy)} credit.`),
-        },
-      });
-      return; // virtualUsed unchanged: nothing was actually drawn from the pool
-    }
-
-    const availableHours = round2(balanceBefore * 8);
-    if (availableHours >= requestedHours) {
+    const availableHours = round2(Math.max(0, balanceBefore) * 8);
+    if (availableHours >= requestedHours && availableHours > 0) {
       // Fully covered — leave it exactly as requested, just track usage.
       virtualUsed[key] = round2((virtualUsed[key] || 0) + requestedHours / 8);
       return;
