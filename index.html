@@ -1443,7 +1443,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-27-ips-sidebar-badge';
+const APP_VERSION = '2026-07-27-ips-notif-auto-clear';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11560,11 +11560,11 @@ function openIpsCorrectionRequestModal(employeeId, dateIso, field, currentValue)
     const oldVal = currentValue !== '' ? Number(currentValue) : null;
     if (newVal === oldVal) { showToast('That already matches the current value.', true); return; }
 
-    const { error } = await sb.from('ips_correction_requests').insert({
+    const { data: newRequest, error } = await sb.from('ips_correction_requests').insert({
       employee_id: employeeId, entry_date: dateIso, field,
       old_value: oldVal, new_value: newVal,
       status: 'pending', requested_by: state.profile.display_name,
-    });
+    }).select().single();
     if (error) {
       console.error(error);
       showToast(/relation .* does not exist/i.test(error.message || '') ? 'Correction requests need setup — run ips_correction_requests_schema.sql in Supabase.' : 'Could not submit the request.', true);
@@ -11574,7 +11574,7 @@ function openIpsCorrectionRequestModal(employeeId, dateIso, field, currentValue)
     showToast('Correction submitted — waiting on admin/IPS approval.');
     const requestingEmp = state.employees.find(e => e.id === employeeId);
     const empLabel = requestingEmp ? requestingEmp.display_name : 'Someone';
-    pushIpsNotification(`${empLabel} requested a correction — ${fieldLabel} on ${formatPrettyDate(dateIso)}: ${oldVal ?? '—'} → ${newVal}.`);
+    pushIpsNotification(`${empLabel} requested a correction — ${fieldLabel} on ${formatPrettyDate(dateIso)}: ${oldVal ?? '—'} → ${newVal}.`, newRequest ? newRequest.id : null);
     await loadIpsData();
     renderIpsTables();
   });
@@ -11597,6 +11597,13 @@ async function approveIpsCorrection(requestId) {
     .eq('id', requestId);
   if (statusErr) console.error('Could not mark request approved (value was still applied):', statusErr);
 
+  // Clear the notification tied to THIS request only — other still-
+  // pending requests' notifications (and badge counts) are untouched.
+  // Deleting (not just marking read) is what makes the badge disappear
+  // for every admin/IPS viewer, not just the one who acted — real-time
+  // propagates the delete to everyone else's session automatically.
+  await clearIpsNotificationForRequest(requestId);
+
   showToast('Correction approved and applied.');
   await loadIpsData();
   renderIpsTables();
@@ -11612,9 +11619,34 @@ async function rejectIpsCorrection(requestId) {
     .eq('id', requestId);
   if (error) { showToast('Could not reject the request.', true); return; }
 
+  // Same targeted clear as approval — the notification for this
+  // specific request goes away; anything else pending stays untouched.
+  await clearIpsNotificationForRequest(requestId);
+
   showToast('Correction rejected — the original value stays.');
   await loadIpsData();
   renderIpsTables();
+}
+
+// Deletes the leave_notifications row (kind='ips') linked to a given
+// correction request, if one exists. Used by both approve and reject —
+// a resolved request has nothing left to review, so its notification
+// (and therefore its contribution to the badge count) should disappear
+// for every admin/IPS viewer, not just whoever clicked. Non-fatal if
+// related_id isn't set (e.g. a request submitted before this feature
+// existed) — the badge just won't auto-clear for that older one.
+async function clearIpsNotificationForRequest(requestId) {
+  const { error } = await sb.from('leave_notifications')
+    .delete()
+    .eq('kind', 'ips')
+    .eq('related_id', requestId);
+  if (error) console.error('Could not clear the linked IPS notification:', error);
+  // Refresh my own copy immediately so my badge/bell update without
+  // waiting on the real-time round-trip; other viewers get it via the
+  // DELETE event on the shared subscription.
+  await loadLeaveNotifications();
+  updateLeaveNavBadge();
+  renderIpsBell();
 }
 
 async function saveIpsMonthlyField(employeeId, field, rawValue) {
@@ -12722,7 +12754,7 @@ function notifListFor(kind) {
 // Inserts ONE shared notification row per approval — every admin sees
 // the same list, and dismissing it removes it for everyone (no
 // duplicate rows in Supabase).
-async function pushLeaveNotification(text, kind = 'leave') {
+async function pushLeaveNotification(text, kind = 'leave', relatedId = null) {
   // If the approver is NOT the notification owner (e.g. Kristina), her
   // own action shouldn't light up her own badge — she obviously knows.
   // Note whether she was already fully caught up before this insert.
@@ -12732,7 +12764,7 @@ async function pushLeaveNotification(text, kind = 'leave') {
   // If the OWNER performed the action, insert already-read: her own
   // action shouldn't light her own badges (Kristina still sees it in
   // the shared list, and her unseen state is local anyway).
-  const { error } = await sb.from('leave_notifications').insert({ text, read: approverIsOwner, kind });
+  const { error } = await sb.from('leave_notifications').insert({ text, read: approverIsOwner, kind, related_id: relatedId });
   if (error) {
     console.error('Could not save notification:', error);
     showToast('Approved, but the notification could not be saved — run leave_notifications_schema.sql in Supabase.', true);
@@ -12774,9 +12806,12 @@ function pushOtFilingNotification(text) {
 // request, so admin/IPS reviewers see it immediately rather than only
 // discovering it by noticing the pending-approvals banner. Visible only
 // to admin/IPS role holders (see canManageIps()), same audience as the
-// approval inbox itself.
-function pushIpsNotification(text) {
-  return pushLeaveNotification(text, 'ips');
+// approval inbox itself. relatedId links back to the ips_correction_requests
+// row, so approving/rejecting that specific request can clear just its
+// own notification — not the whole stream — leaving other still-pending
+// requests' notifications untouched.
+function pushIpsNotification(text, relatedId = null) {
+  return pushLeaveNotification(text, 'ips', relatedId);
 }
 
 
