@@ -1399,7 +1399,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-15-qa-percent-color';
+const APP_VERSION = '2026-07-27-lwop-notif-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4406,13 +4406,21 @@ async function decideRequest(id, decision) {
       }
       if (updates.length || inserts.length) {
         showToast(`${label} approved — some days auto-marked Leave Without Pay due to exhausted credit.`);
+        // The conversion above just wrote LNP/VL-spillover changes to the
+        // database, but state.leaveEntries was last refreshed BEFORE those
+        // writes — fiscalPoolBalance below would still compute the
+        // pre-conversion (and potentially negative) balance if we didn't
+        // re-fetch here. This was exactly why the approval notification
+        // could show a negative SL number even though the actual stored
+        // data was already correctly converted to Leave Without Pay.
+        await loadLeaveEntries();
       } else {
         showToast(`${label} approved.`);
       }
 
-      // Capture AFTER: loadLeaveEntries already ran, so the entry is
-      // now 'approved' in local state — fiscalPoolBalance reflects the
-      // deducted balance, exactly matching the Credits section.
+      // Capture AFTER: state.leaveEntries now reflects the LWOP
+      // conversion (if any ran) as well as the original approval, so
+      // fiscalPoolBalance here matches the true, final Credits section.
       if (empForNotif && fyNum && vlBefore !== null) {
         const freshEmp = state.employees.find(e => e.id === notifEmployeeId);
         if (freshEmp) {
