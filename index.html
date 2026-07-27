@@ -550,7 +550,7 @@
       <div class="page-head">
         <div>
           <span class="eyebrow">PH Team</span>
-          <h1>IPS — Individual Performance Score</h1>
+          <h1 style="display:flex; align-items:center; gap:6px;">IPS — Individual Performance Score <span id="ips-bell"></span></h1>
           <p class="lede">Productivity Output — Lead Qualification, Missing Data Task, Error Correction, and QA scoring.</p>
         </div>
         <div id="ips-actions"></div>
@@ -653,6 +653,7 @@ const state = {
   leaveNotifications: [],
   tfNotifications: [], // Team Funds notification stream (separate bell)
   otFilingNotifications: [], // OT Filing notification stream (separate bell) — fires whenever an employee or admin amends an already-confirmed OT entry
+  ipsNotifications: [], // IPS notification stream (separate bell) — fires whenever an employee submits a past-date correction request, for admin/IPS to review
   notifPanelKind: null, // which bell's panel is open: 'leave' | 'team_funds' | null    // { id, text, time, read } — session-only, cleared on logout
   leaveNotifPanelOpen: false,
   accountHubTab: 'leave-tracker', // active tab in Account Hub
@@ -1342,6 +1343,8 @@ function startNavBadgePolling() {
       applyRealtimePatch(payload, () => state.tfNotifications, (v) => { state.tfNotifications = v; });
     } else if (kind === 'ot_filing') {
       applyRealtimePatch(payload, () => state.otFilingNotifications, (v) => { state.otFilingNotifications = v; });
+    } else if (kind === 'ips') {
+      applyRealtimePatch(payload, () => state.ipsNotifications, (v) => { state.ipsNotifications = v; });
     } else {
       applyRealtimePatch(payload, () => state.leaveNotifications, (v) => { state.leaveNotifications = v; });
     }
@@ -1399,7 +1402,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-27-lwop-vl-spillover-fix';
+const APP_VERSION = '2026-07-27-ips-notif-scope-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7923,6 +7926,35 @@ function renderOtFilingBell() {
   });
 }
 
+// IPS's own bell — same pattern as Team Funds'/OT Filing's, but gated
+// on canManageIps() (admin OR the 'ips' role) rather than isAdmin()
+// alone, since IPS-role holders who aren't also admins still need to
+// see and act on correction requests.
+function renderIpsBell() {
+  const slot = document.getElementById('ips-bell');
+  if (!slot) return;
+  if (!canManageIps()) { slot.innerHTML = ''; return; }
+  const unread = unreadNotifCount('ips');
+  slot.innerHTML = `
+    <button id="btn-ips-notif" title="IPS notifications" style="
+      position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
+      color:var(--ink-faint); display:flex; align-items:center; border-radius:8px;
+      transition:color 0.12s, background 0.12s;"
+      onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
+      onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      </svg>
+      ${unread > 0 ? `<span style="position:absolute;top:0;right:0;background:var(--coral);color:#fff;font-size:9px;font-weight:700;border-radius:999px;min-width:14px;height:14px;display:flex;align-items:center;justify-content:center;padding:0 2px;font-family:inherit;line-height:1;border:1.5px solid var(--paper);">${unread > 9 ? '9+' : unread}</span>` : ''}
+    </button>
+  `;
+  document.getElementById('btn-ips-notif')?.addEventListener('click', (e) => {
+    e.stopPropagation(); toggleNotifPanel('ips');
+  });
+}
+
 function renderTeamFundsView() {
   renderTfBell();
   const el = document.getElementById('team-funds-content');
@@ -9881,6 +9913,7 @@ function renderIps() {
   if (!el) return;
 
   startIpsRealtime();
+  renderIpsBell();
 
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:10px;">
@@ -11498,6 +11531,9 @@ function openIpsCorrectionRequestModal(employeeId, dateIso, field, currentValue)
     }
     closeModal();
     showToast('Correction submitted — waiting on admin/IPS approval.');
+    const requestingEmp = state.employees.find(e => e.id === employeeId);
+    const empLabel = requestingEmp ? requestingEmp.display_name : 'Someone';
+    pushIpsNotification(`${empLabel} requested a correction — ${fieldLabel} on ${formatPrettyDate(dateIso)}: ${oldVal ?? '—'} → ${newVal}.`);
     await loadIpsData();
     renderIpsTables();
   });
@@ -12597,7 +12633,12 @@ function canManageNotifications() {
 }
 
 async function loadLeaveNotifications() {
-  if (!state.profile || !isAdmin()) { state.leaveNotifications = []; return; }
+  const admin = isAdmin();
+  const ipsOnly = !admin && state.profile && state.profile.role === 'ips';
+  if (!state.profile || !(admin || ipsOnly)) {
+    state.leaveNotifications = []; state.tfNotifications = []; state.otFilingNotifications = []; state.ipsNotifications = [];
+    return;
+  }
   const { data, error } = await sb
     .from('leave_notifications')
     .select('*')
@@ -12612,16 +12653,28 @@ async function loadLeaveNotifications() {
     created_at: n.created_at,
     time: new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
   }));
-  // Three fully separate streams — each bell only ever shows its own kind.
-  state.leaveNotifications = all.filter(n => n.kind !== 'team_funds' && n.kind !== 'ot_filing');
+  // An IPS-role (non-admin) account only ever gets its own stream
+  // populated — leave/team_funds/ot_filing are admin-only concerns and
+  // stay empty for them, rather than being fetched-but-hidden.
+  if (ipsOnly) {
+    state.leaveNotifications = [];
+    state.tfNotifications = [];
+    state.otFilingNotifications = [];
+    state.ipsNotifications = all.filter(n => n.kind === 'ips');
+    return;
+  }
+  // Four fully separate streams — each bell only ever shows its own kind.
+  state.leaveNotifications = all.filter(n => n.kind !== 'team_funds' && n.kind !== 'ot_filing' && n.kind !== 'ips');
   state.tfNotifications = all.filter(n => n.kind === 'team_funds');
   state.otFilingNotifications = all.filter(n => n.kind === 'ot_filing');
+  state.ipsNotifications = all.filter(n => n.kind === 'ips');
 }
 
 // Convenience: the notification list for a given kind
 function notifListFor(kind) {
   if (kind === 'team_funds') return state.tfNotifications || [];
   if (kind === 'ot_filing') return state.otFilingNotifications || [];
+  if (kind === 'ips') return state.ipsNotifications || [];
   return state.leaveNotifications;
 }
 
@@ -12658,6 +12711,7 @@ async function pushLeaveNotification(text, kind = 'leave') {
   }
   if (kind === 'team_funds') renderTfBell();
   if (kind === 'ot_filing') renderOtFilingBell();
+  if (kind === 'ips') renderIpsBell();
 }
 // Team Funds notifications: their OWN stream and OWN bell in the Team
 // Funds tab — completely separate from the Leave Tracker bell.
@@ -12672,6 +12726,16 @@ function pushTeamFundsNotification(text) {
 // are the only intended audience.
 function pushOtFilingNotification(text) {
   return pushLeaveNotification(text, 'ot_filing');
+}
+
+// IPS notifications: their OWN stream and OWN bell in the IPS tab —
+// fires whenever an employee submits a past-date daily-entry correction
+// request, so admin/IPS reviewers see it immediately rather than only
+// discovering it by noticing the pending-approvals banner. Visible only
+// to admin/IPS role holders (see canManageIps()), same audience as the
+// approval inbox itself.
+function pushIpsNotification(text) {
+  return pushLeaveNotification(text, 'ips');
 }
 
 
@@ -12711,11 +12775,20 @@ function toggleNotifPanel(kind) {
   }
   updateLeaveNavBadge();
   // Update this bell's badge immediately (no full re-render needed)
-  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : kind === 'ot_filing' ? 'btn-ot-filing-notif' : 'btn-leave-notif');
+  const bellBtn = document.getElementById(notifBellButtonId(kind));
   if (bellBtn) {
     const badge = bellBtn.querySelector('span');
     if (badge) badge.remove();
   }
+}
+
+// Maps a notification kind to its bell button's DOM id — shared by
+// every place that needs to find/position/highlight the right bell.
+function notifBellButtonId(kind) {
+  if (kind === 'team_funds') return 'btn-tf-notif';
+  if (kind === 'ot_filing') return 'btn-ot-filing-notif';
+  if (kind === 'ips') return 'btn-ips-notif';
+  return 'btn-leave-notif';
 }
 
 function showLeaveNotifPanel() { showNotifPanel('leave'); }
@@ -12723,7 +12796,7 @@ function showLeaveNotifPanel() { showNotifPanel('leave'); }
 function showNotifPanel(kind) {
   const panel = document.getElementById('leave-notif-panel');
   if (!panel) return;
-  const bellBtn = document.getElementById(kind === 'team_funds' ? 'btn-tf-notif' : kind === 'ot_filing' ? 'btn-ot-filing-notif' : 'btn-leave-notif');
+  const bellBtn = document.getElementById(notifBellButtonId(kind));
   if (bellBtn) {
     const rect = bellBtn.getBoundingClientRect();
     panel.style.top  = (rect.bottom + 8) + 'px';
@@ -12732,9 +12805,11 @@ function showNotifPanel(kind) {
 
   const notifs = notifListFor(kind);
   const canManage = canManageNotifications();
+  const kindLabel = kind === 'team_funds' ? 'Team Funds notifications' : kind === 'ot_filing' ? 'OT Filing notifications' : kind === 'ips' ? 'IPS notifications' : 'Notifications';
+  const emptyLabel = kind === 'team_funds' ? 'Team Funds changes will appear here.' : kind === 'ot_filing' ? 'Amended OT entries will appear here.' : kind === 'ips' ? 'Correction requests will appear here.' : 'Leave approvals will appear here.';
   panel.innerHTML = `
     <div style="display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid var(--line-soft); flex-shrink:0;">
-      <span style="font-weight:700; font-size:14px;">${kind === 'team_funds' ? 'Team Funds notifications' : kind === 'ot_filing' ? 'OT Filing notifications' : 'Notifications'}</span>
+      <span style="font-weight:700; font-size:14px;">${kindLabel}</span>
       ${notifs.length && canManage ? `<button id="notif-clear-all" style="font-size:11px; color:var(--ink-faint); background:none; border:none; cursor:pointer; font-family:inherit; padding:0;">Clear all</button>` : ''}
     </div>
     <div style="overflow-y:auto; flex:1; max-height:400px;">
@@ -12751,7 +12826,7 @@ function showNotifPanel(kind) {
         <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
           <div style="font-size:28px; margin-bottom:8px;">🔔</div>
           <div style="font-size:13px;">No notifications yet.</div>
-          <div style="font-size:12px; margin-top:4px;">${kind === 'team_funds' ? 'Team Funds changes will appear here.' : kind === 'ot_filing' ? 'Amended OT entries will appear here.' : 'Leave approvals will appear here.'}</div>
+          <div style="font-size:12px; margin-top:4px;">${emptyLabel}</div>
         </div>
       `}
     </div>
@@ -12762,11 +12837,17 @@ function showNotifPanel(kind) {
 
   panel.querySelector('#notif-clear-all')?.addEventListener('click', async () => {
     if (!canManageNotifications()) { showToast('Only Jeinna can clear notifications.', true); return; }
-    if (kind === 'team_funds') state.tfNotifications = []; else if (kind === 'ot_filing') state.otFilingNotifications = []; else state.leaveNotifications = [];
+    if (kind === 'team_funds') state.tfNotifications = [];
+    else if (kind === 'ot_filing') state.otFilingNotifications = [];
+    else if (kind === 'ips') state.ipsNotifications = [];
+    else state.leaveNotifications = [];
     state.leaveNotifPanelOpen = false;
     state.notifPanelKind = null;
     hideLeaveNotifPanel();
-    if (kind === 'team_funds') renderTfBell(); else if (kind === 'ot_filing') renderOtFilingBell(); else renderLeaveTracker();
+    if (kind === 'team_funds') renderTfBell();
+    else if (kind === 'ot_filing') renderOtFilingBell();
+    else if (kind === 'ips') renderIpsBell();
+    else renderLeaveTracker();
     updateLeaveNavBadge();
     // Shared stream: clearing removes THIS KIND's notifications for
     // every admin — the other bell's stream is untouched.
@@ -12780,6 +12861,7 @@ function showNotifPanel(kind) {
       const id = btn.dataset.id;
       if (kind === 'team_funds') state.tfNotifications = state.tfNotifications.filter(n => String(n.id) !== String(id));
       else if (kind === 'ot_filing') state.otFilingNotifications = state.otFilingNotifications.filter(n => String(n.id) !== String(id));
+      else if (kind === 'ips') state.ipsNotifications = state.ipsNotifications.filter(n => String(n.id) !== String(id));
       else state.leaveNotifications = state.leaveNotifications.filter(n => String(n.id) !== String(id));
       showNotifPanel(kind); // re-render panel in place
       updateLeaveNavBadge();
@@ -12796,11 +12878,13 @@ function showNotifPanel(kind) {
       const bellLeave = document.getElementById('btn-leave-notif');
       const bellTf = document.getElementById('btn-tf-notif');
       const bellOt = document.getElementById('btn-ot-filing-notif');
+      const bellIps = document.getElementById('btn-ips-notif');
       if (!panel || panel.style.display === 'none') return;
       if (panel.contains(e.target)) return;
       if (bellLeave && bellLeave.contains(e.target)) return;
       if (bellTf && bellTf.contains(e.target)) return;
       if (bellOt && bellOt.contains(e.target)) return;
+      if (bellIps && bellIps.contains(e.target)) return;
       hideLeaveNotifPanel();
       state.leaveNotifPanelOpen = false;
       state.notifPanelKind = null;
