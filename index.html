@@ -402,7 +402,7 @@
       <a class="nav-item" data-view="priolist"><span class="dot"></span>PrioList</a>
       <a class="nav-item" data-view="li-restriction"><span class="dot"></span>LI Restriction Daily Report</a>
       <a class="nav-item" data-view="ot-filing" id="nav-ot-filing"><span class="dot"></span>OT Hours Filing<span id="nav-ot-filing-badge" class="nav-badge" style="display:none;"></span></a>
-      <a class="nav-item" data-view="ips" id="nav-ips"><span class="dot"></span>IPS (Individual Performance Score)</a>
+      <a class="nav-item" data-view="ips" id="nav-ips"><span class="dot"></span>IPS (Individual Performance Score)<span id="nav-ips-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
     </nav>
     <div class="sidebar-foot">
@@ -1067,6 +1067,8 @@ function logout() {
   if (tfNavBadge) tfNavBadge.style.display = 'none';
   const otNavBadge = document.getElementById('nav-ot-filing-badge');
   if (otNavBadge) otNavBadge.style.display = 'none';
+  const ipsNavBadge = document.getElementById('nav-ips-badge');
+  if (ipsNavBadge) ipsNavBadge.style.display = 'none';
   stopNavBadgePolling();
   stopMaintenanceWindowWatcher();
   document.getElementById('app').classList.add('hidden');
@@ -1185,16 +1187,21 @@ function switchView(viewName) {
 // ---------------------------------------------------------------------
 function updateLeaveNavBadge() {
   const badge = document.getElementById('nav-lt-badge');
+  const ipsBadge = document.getElementById('nav-ips-badge');
+  const admin = isAdmin();
+  const ipsAllowed = canManageIps(); // admin OR the 'ips' role — the IPS badge's own audience
   if (!badge) return;
-  if (!state.profile || !isAdmin()) {
+  if (!state.profile || !admin) {
     badge.style.display = 'none';
     const tfB = document.getElementById('nav-tf-badge');
     if (tfB) tfB.style.display = 'none';
     const otB = document.getElementById('nav-ot-filing-badge');
     if (otB) otB.style.display = 'none';
-    updateBrowserTabBadge(0);
-    return;
-  }
+    // IPS badge is handled separately below (not admin-gated), so it's
+    // deliberately NOT touched by this early return — an IPS-role-only
+    // account still needs it to update even though every other badge
+    // here stays hidden for them.
+  } else {
   const pendingCount = state.leaveEntries.filter(e =>
     e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING
   ).length;
@@ -1231,8 +1238,26 @@ function updateLeaveNavBadge() {
   // Keep the Team Funds / OT Filing bell badges fresh if that view is on screen
   if (state.currentView === 'team-funds' && !state.leaveNotifPanelOpen) renderTfBell();
   if (state.currentView === 'ot-filing' && !state.leaveNotifPanelOpen) renderOtFilingBell();
-  // Browser tab shows the combined total of all three streams
+  // Browser tab shows the combined total of all three admin-only streams
   updateBrowserTabBadge(count + tfCount + otFilingCount);
+  }
+  // IPS sidebar badge — its own visibility rule (admin OR ips role),
+  // handled independently of the admin-only block above so an IPS-role
+  // (non-admin) account still sees it update correctly.
+  if (ipsBadge) {
+    if (!ipsAllowed) {
+      ipsBadge.style.display = 'none';
+    } else {
+      const ipsCount = unreadNotifCount('ips');
+      if (ipsCount > 0) {
+        ipsBadge.textContent = ipsCount > 99 ? '99+' : String(ipsCount);
+        ipsBadge.style.display = 'inline-flex';
+      } else {
+        ipsBadge.style.display = 'none';
+      }
+    }
+  }
+  if (state.currentView === 'ips' && !state.leaveNotifPanelOpen) renderIpsBell();
 }
 
 // ---------------------------------------------------------------------
@@ -1314,9 +1339,9 @@ function updateBrowserTabBadge(count) {
 // Kristina, or a Team Funds change from a treasurer now updates the
 // badge the instant it's saved, regardless of which tab is open.
 function startNavBadgePolling() {
-  if (!state.profile || !isAdmin()) return;
+  if (!state.profile || !(isAdmin() || state.profile.role === 'ips')) return;
   const rerenderBadge = debounceRealtime(() => {
-    if (!state.profile || !isAdmin()) return;
+    if (!state.profile || !(isAdmin() || state.profile.role === 'ips')) return;
     updateLeaveNavBadge();
   }, 200); // short debounce — badges should feel instant
 
@@ -1326,12 +1351,16 @@ function startNavBadgePolling() {
   // intentionally different ('badge_leave_entries' vs 'leave_entries')
   // so the badge keeps working even when neither of those tabs is open.
   // Patch state directly from the payload either way — never re-fetch.
+  // For an IPS-role (non-admin) account, this subscription is harmless
+  // to keep open even though updateLeaveNavBadge() ignores leaveEntries
+  // for them — it's the SAME shared subscription an admin would also
+  // need, so there's no separate cost to opening it.
   subscribeRealtime('badge_leave_entries', 'leave_entries', (payload) => {
     applyRealtimePatch(payload, () => state.leaveEntries, (v) => { state.leaveEntries = v; });
     rerenderBadge();
   });
-  // leave_notifications is the single shared table backing ALL THREE
-  // streams (leave, team_funds, ot_filing — split by the `kind`
+  // leave_notifications is the single shared table backing ALL FOUR
+  // streams (leave, team_funds, ot_filing, ips — split by the `kind`
   // column) — one subscription is enough to keep every stream's array
   // in sync from the same pushed row. A second subscription to the
   // same table would open a genuinely separate WebSocket channel and
@@ -1339,6 +1368,18 @@ function startNavBadgePolling() {
   subscribeRealtime('badge_leave_notifications', 'leave_notifications', (payload) => {
     const row = payload.new || payload.old;
     const kind = row.kind || 'leave';
+    const ipsOnly = !isAdmin() && state.profile && state.profile.role === 'ips';
+    if (ipsOnly) {
+      // An IPS-role (non-admin) account only ever tracks its own
+      // stream locally — patching leave/team_funds/ot_filing into
+      // their state would contradict loadLeaveNotifications()
+      // deliberately leaving those empty for them.
+      if (kind === 'ips') {
+        applyRealtimePatch(payload, () => state.ipsNotifications, (v) => { state.ipsNotifications = v; });
+        rerenderBadge();
+      }
+      return;
+    }
     if (kind === 'team_funds') {
       applyRealtimePatch(payload, () => state.tfNotifications, (v) => { state.tfNotifications = v; });
     } else if (kind === 'ot_filing') {
@@ -1359,7 +1400,7 @@ function startNavBadgePolling() {
   if (!window._navBadgeVisHook) {
     window._navBadgeVisHook = true;
     document.addEventListener('visibilitychange', () => {
-      if (!state.profile || !isAdmin()) return;
+      if (!state.profile || !(isAdmin() || state.profile.role === 'ips')) return;
       if (document.hidden) {
         updateLeaveNavBadge(); // paint the tab-title/favicon badge with the latest known count
       } else {
@@ -1402,7 +1443,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-27-ips-notif-scope-fix';
+const APP_VERSION = '2026-07-27-ips-sidebar-badge';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
