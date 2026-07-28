@@ -1443,7 +1443,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-calendar-sidebar-polish';
+const APP_VERSION = '2026-07-28-myrow-blue-highlight';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4506,7 +4506,7 @@ function renderCreditTableCard() {
 
       if (editMode) {
         return `
-          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#DCEFEA;' : ''}">
+          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#E2EEF6;' : ''}">
             <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
             <span style="display:flex; gap:6px; flex-shrink:0; align-items:center;">
               <span title="Vacation credits" style="display:flex; align-items:center; gap:3px;">
@@ -4524,7 +4524,7 @@ function renderCreditTableCard() {
       }
 
       return `
-        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#DCEFEA;' : ''}">
+        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#E2EEF6;' : ''}">
           <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
           <span style="display:flex; gap:10px; align-items:center; flex-shrink:0;">
             <span class="faint" title="Vacation credits">VL ${vl}</span>
@@ -4662,7 +4662,7 @@ function renderPayrollConfirmation() {
       const isMe = emp.id === state.profile.employee_id;
 
       return `
-        <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
+        <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#E2EEF6;' : ''}">
           <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
           <span class="faint">${escapeHtml(emp.bank || '—')}</span>
           ${renderPayrollCell(emp.id, year, month, 1, half1, canMark)}
@@ -5048,7 +5048,7 @@ function renderPrioList() {
     const menuIsOpen = state.priolistOpenMenuId === entry.id;
 
     return `
-      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#DCEFEA;' : ''}">
+      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#E2EEF6;' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</span>
         ${isMe
@@ -5317,7 +5317,7 @@ function renderRedFilesView() {
       <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:9px;
         border:1px solid ${isMine ? 'var(--teal)' : 'var(--line-soft)'};
         border-left:4px solid ${isMine ? 'var(--teal)' : isOpen ? 'var(--coral)' : 'var(--amber)'};
-        background:${isMine ? '#DCEFEA' : 'var(--paper)'};">
+        background:${isMine ? '#E2EEF6' : 'var(--paper)'};">
         <div style="flex:1; min-width:0;">
           <div style="display:flex; align-items:center; gap:7px;">
             ${campIdCopyHtml(f.camp_id)}
@@ -6416,7 +6416,7 @@ function renderOtFiling() {
     }).join('');
 
     return `
-      <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:#DCEFEA;' : ''}">
+      <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:#E2EEF6;' : ''}">
         <td style="padding:8px 10px; font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</td>
         ${cells}
       </tr>
@@ -10014,7 +10014,7 @@ function renderIpsTables() {
   const workingDays = ipsState.monthSettings ? ipsState.monthSettings.working_days : '';
 
   function rosterRowStyle(emp) {
-    return emp.id === state.profile.employee_id ? 'background:#DCEFEA;' : '';
+    return emp.id === state.profile.employee_id ? 'background:#E2EEF6;' : '';
   }
 
   // ── Daily Entry tab: one day at a time ───────────────────────────
@@ -10379,7 +10379,7 @@ function renderIpsTables() {
         <div class="ips-score-row" data-emp-id="${emp.id}" title="Click for ${escapeHtml(emp.display_name)}'s full-year view" style="
           display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:12px; cursor:pointer;
           border:1px solid ${isMe ? 'var(--teal)' : 'var(--line-soft)'};
-          background:${isMe ? '#DCEFEA' : 'var(--paper-raised)'};
+          background:${isMe ? '#E2EEF6' : 'var(--paper-raised)'};
           transition:transform 0.12s, box-shadow 0.12s;"
           onmouseenter="this.style.boxShadow='var(--shadow-md)';this.style.transform='translateX(3px)'"
           onmouseleave="this.style.boxShadow='none';this.style.transform='none'">
