@@ -370,7 +370,7 @@
 </head>
 <body>
 
-<div id="login-screen" class="login-wrap">
+<div id="login-screen" class="login-wrap hidden">
   <div class="login-card">
     <div class="login-mark">Account Media
       <span class="sub">Team Hub</span>
@@ -1036,6 +1036,12 @@ function checkExistingSession() {
   if (stored) {
     state.profile = JSON.parse(stored);
     enterApp();
+  } else {
+    // No saved session — this is a genuine "not logged in" visitor, so
+    // now (and only now) reveal the login screen. Kept hidden by
+    // default in the raw HTML specifically so an already-logged-in
+    // person never sees a flash of it while this check runs.
+    document.getElementById('login-screen').classList.remove('hidden');
   }
 }
 
@@ -1443,7 +1449,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-persistent-login';
+const APP_VERSION = '2026-07-28-no-login-flash';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
