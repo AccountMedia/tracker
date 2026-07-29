@@ -1502,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-fix-undo-button-missing-id';
+const APP_VERSION = '2026-07-29-qa-dispute-priority-sort';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11884,8 +11884,18 @@ function openIpsQaManageModal(employeeId) {
 
 function renderIpsQaManageModalBody(employeeId, emp, admin) {
   const entries = ipsQaEntriesFor(employeeId, ipsState.month);
-  const majorEntries = entries.filter(e => e.kind === 'major');
-  const minorEntries = entries.filter(e => e.kind === 'minor');
+  // Three-tier sort applied within each Major/Minor group, so whatever
+  // needs the admin's attention floats to the top automatically:
+  //   1. 'disputed'              — pending review, needs a decision NOW
+  //   2. 'none'                  — no status/dispute yet, nothing to act on
+  //   3. 'conceded'/'approved'/'rejected' — fully resolved, settled, sinks
+  //      to the bottom regardless of which of the three it is.
+  // Ties within the same tier keep their original relative order
+  // (a stable sort) rather than being further reshuffled.
+  const disputeTier = (status) => status === 'disputed' ? 0 : (status === 'conceded' || status === 'approved' || status === 'rejected') ? 2 : 1;
+  const sortedEntries = [...entries].sort((a, b) => disputeTier(a.dispute_status) - disputeTier(b.dispute_status));
+  const majorEntries = sortedEntries.filter(e => e.kind === 'major');
+  const minorEntries = sortedEntries.filter(e => e.kind === 'minor');
   const disputed = entries.filter(e => e.dispute_status === 'disputed');
   const hasNoCallout = ipsQaHasNoCallout(employeeId, ipsState.month);
   const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
@@ -12228,9 +12238,18 @@ async function openMyQaEntriesModal() {
 
 function renderMyQaEntriesModalBody() {
   const myId = state.profile.employee_id;
+  // Same 3-tier priority as the admin view: pending disputes first
+  // (need my attention least — wait, they need admin's attention, but
+  // I still want to see the status clearly), then no-status entries,
+  // then fully resolved ones sink to the bottom. Status priority wins
+  // over month/date, so an older month's still-pending dispute doesn't
+  // get buried under this month's already-resolved entries.
+  const disputeTier = (status) => status === 'disputed' ? 0 : (status === 'conceded' || status === 'approved' || status === 'rejected') ? 2 : 1;
   const mine = ipsState.qaEntries
     .filter(e => e.employee_id === myId)
-    .sort((a, b) => (b.month || '').localeCompare(a.month || '') || (a.created_at || '').localeCompare(b.created_at || ''));
+    .sort((a, b) => disputeTier(a.dispute_status) - disputeTier(b.dispute_status)
+      || (b.month || '').localeCompare(a.month || '')
+      || (a.created_at || '').localeCompare(b.created_at || ''));
   const majorEntries = mine.filter(e => e.kind === 'major');
   const minorEntries = mine.filter(e => e.kind === 'minor');
   const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
