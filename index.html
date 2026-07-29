@@ -1449,7 +1449,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-clickable-urls';
+const APP_VERSION = '2026-07-28-qa-modal-wide-table';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7653,7 +7653,8 @@ async function submitChangePassword(e) {
 // MODAL (lightweight, shared)
 // =====================================================================
 
-function openModal(title, bodyHtml) {
+function openModal(title, bodyHtml, options) {
+  const width = (options && options.width) || '420px';
   let overlay = document.getElementById('modal-overlay');
   if (!overlay) {
     overlay = document.createElement('div');
@@ -7665,7 +7666,7 @@ function openModal(title, bodyHtml) {
     document.body.appendChild(overlay);
   }
   overlay.innerHTML = `
-    <div class="card" style="width:420px; max-width:100%; max-height:80vh; overflow-y:auto; padding:24px;">
+    <div class="card" style="width:${width}; max-width:100%; max-height:80vh; overflow-y:auto; padding:24px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal);">${escapeHtml(title)}</h3>
         <button class="btn btn-ghost btn-sm" id="modal-close-btn">Close</button>
@@ -11828,7 +11829,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
     ` : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for this month.</p>`}
   `;
 
-  openModal(`QA entries — ${emp ? emp.display_name : ''}`, bodyHtml);
+  openModal(`QA entries — ${emp ? emp.display_name : ''}`, bodyHtml, { width: '900px' });
   attachIpsQaManageModalHandlers(employeeId, emp, admin);
 }
 
@@ -11993,7 +11994,7 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) 
 // no further action) or Dispute (requires a written explanation).
 async function openMyQaEntriesModal() {
   if (!state.profile || !state.profile.employee_id) return;
-  openModal('My QA Notes', '<div class="loading-row">Loading...</div>');
+  openModal('My QA Notes', '<div class="loading-row">Loading...</div>', { width: '900px' });
   await loadMyQaEntries();
   renderMyQaEntriesModalBody();
 }
@@ -12065,7 +12066,7 @@ function renderMyQaEntriesModalBody() {
     ? mine.map(entryCard).join('')
     : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for you yet.</p>`;
 
-  openModal('My QA Notes', bodyHtml);
+  openModal('My QA Notes', bodyHtml, { width: '900px' });
   document.querySelectorAll('.ips-qa-concede-btn').forEach(btn => {
     btn.addEventListener('click', () => concedeMyQaEntry(btn.dataset.id));
   });
