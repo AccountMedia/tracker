@@ -1502,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-qa-dispute-edit-pending';
+const APP_VERSION = '2026-07-29-fix-admin-own-row-routing';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11499,12 +11499,17 @@ function attachIpsHandlers() {
   document.querySelectorAll('.ips-qa-manage-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const empId = btn.dataset.empId;
-      if (canManageIpsQa() || empId === state.profile.employee_id) {
-        // Admins/IPS/QA get the full manage view for anyone; an employee
-        // clicking their OWN row gets the concede/dispute view instead
-        // of the admin editor.
-        if (canManageIpsQa()) openIpsQaManageModal(empId);
-        else openMyQaEntriesModal();
+      const isOwnRow = empId === state.profile.employee_id;
+      if (isOwnRow || canManageIpsQa()) {
+        // "Is this MY OWN row" is checked first and wins: an admin/IPS/QA
+        // account clicking their OWN name still gets the same Concede/
+        // Dispute/Edit-dispute experience as any other employee — having
+        // elevated permissions shouldn't make someone unable to review
+        // and dispute an entry filed against themselves. Clicking
+        // someone ELSE's row (as an admin/IPS/QA) still opens the full
+        // manage editor, exactly as before.
+        if (isOwnRow) openMyQaEntriesModal();
+        else openIpsQaManageModal(empId);
       } else {
         showToast('You can only view your own QA entries.', true);
       }
