@@ -482,7 +482,7 @@
       <div class="page-head">
         <div>
           <span class="eyebrow">PH Team</span>
-          <h1>PrioList</h1>
+          <h1 style="display:flex; align-items:center; gap:6px;">PrioList <span id="priolist-eye"></span></h1>
           <p class="lede">Daily output priority list — resets every day at 8 AM.</p>
         </div>
         <div id="priolist-actions"></div>
@@ -632,6 +632,7 @@ const state = {
   payrollPeriodYear: new Date().getFullYear(),
   payrollPeriodMonth: new Date().getMonth() + 1, // 1-12
   priolistEntries: [],    // PrioList rows
+  priolistVisible: true,  // live app-wide toggle (app_settings.priolist_visible) — controlled by Jeinna; defaults true until loaded so nothing flips unexpectedly during the brief pre-load window
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
   priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
@@ -1187,12 +1188,14 @@ function switchView(viewName) {
     viewName = 'dashboard';
   }
 
-  // PrioList is deactivated in-app for everyone EXCEPT Jeinna, who
-  // still needs the real in-app view — this is a genuine redirect-away,
-  // not just a hidden view, so it's caught here too (not only in the
-  // nav-click handler) to cover a stale saved session restoring this
-  // view on refresh, or any other direct call into switchView('priolist').
-  if (viewName === 'priolist' && state.profile?.display_name !== 'Jeinna Louise Perez') {
+  // PrioList's visibility is a live, app-wide toggle Jeinna controls
+  // (see state.priolistVisible / app_settings.priolist_visible) — when
+  // off, EVERYONE redirects here instead of opening the in-app view;
+  // when on, everyone (including Jeinna) sees the real view normally.
+  // Checked here (not just the nav-click handler) to also catch a
+  // stale saved session restoring this view on refresh, or any other
+  // direct call into switchView('priolist').
+  if (viewName === 'priolist' && !state.priolistVisible) {
     window.location.href = 'https://accountmedia-phteam.com/productivity';
     return;
   }
@@ -1416,6 +1419,18 @@ function updateBrowserTabBadge(count) {
 function startNavBadgePolling() {
   if (!state.profile) return;
   const isAdminOrIps = isAdmin() || state.profile.role === 'ips';
+
+  // Every logged-in employee gets this — the PrioList visibility toggle
+  // needs to be current BEFORE they click the nav item (switchView's
+  // redirect check reads state.priolistVisible synchronously), not just
+  // while already sitting on the PrioList tab.
+  subscribeRealtime('app_settings_priolist', 'app_settings', (payload) => {
+    const row = payload.new || payload.old;
+    if (row.key !== 'priolist_visible') return;
+    state.priolistVisible = row.value === true || row.value === 'true';
+    if (state.currentView === 'priolist') renderPrioList();
+  });
+
   const rerenderBadge = debounceRealtime(() => {
     if (!state.profile || !(isAdmin() || state.profile.role === 'ips')) return;
     updateLeaveNavBadge();
@@ -1519,6 +1534,7 @@ function stopNavBadgePolling() {
   unsubscribeRealtime('badge_leave_entries');
   unsubscribeRealtime('badge_leave_notifications');
   unsubscribeRealtime('my_qa_entries');
+  unsubscribeRealtime('app_settings_priolist');
 }
 
 // Re-renders whichever view is currently on screen, so staged data
@@ -1546,7 +1562,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-priolist-redirect-jeinna-exempt';
+const APP_VERSION = '2026-07-29-priolist-eye-icon';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1653,7 +1669,7 @@ async function loadAllData() {
   // these, then paint the screen immediately: refresh feels ~4x faster
   // because the page no longer waits for all 9 tables (plus the
   // year-end holiday generator) before showing anything.
-  await Promise.all([loadEmployees(), loadLeaveEntries()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPriolistVisibility()]);
   state.coreDataLoaded = true;
   renderCurrentView();
   updateLeaveNavBadge();
@@ -2052,6 +2068,17 @@ async function loadEmployees() {
   const { data, error } = await sb.from('employees').select('*').order('display_name');
   if (error) { showToast('Could not load employees.', true); return; }
   state.employees = data || [];
+}
+
+// Loads the live PrioList visibility toggle (app_settings.priolist_visible).
+// Degrades quietly to visible=true if the table hasn't been set up yet
+// (e.g. the migration hasn't run) — the feature should stay ON by
+// default rather than accidentally redirecting everyone away because
+// of a missing table.
+async function loadPriolistVisibility() {
+  const { data, error } = await sb.from('app_settings').select('value').eq('key', 'priolist_visible').maybeSingle();
+  if (error || !data) { state.priolistVisible = true; return; }
+  state.priolistVisible = data.value === true || data.value === 'true';
 }
 
 async function loadLeaveEntries() {
@@ -5048,6 +5075,7 @@ function renderPrioListEntry() {
 function renderPrioList() {
   const actionsEl = document.getElementById('priolist-actions');
   const onRedFiles = state.priolistTab === 'red-files';
+  renderPriolistEyeIcon();
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:8px;">
       ${!onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset PrioList</button>` : ''}
@@ -5214,6 +5242,63 @@ function renderPrioList() {
   `;
 
   attachPriolistHandlers();
+}
+
+// Restricted to Jeinna — flips the live, app-wide PrioList visibility
+// setting. Other logged-in employees pick up the change immediately
+// via the realtime subscription on app_settings, without needing to
+// refresh; the next time they navigate to (or land on) PrioList, they
+// either see the real view or get redirected, depending on this value.
+// Eye icon next to the PrioList header, visible only to Jeinna — click
+// toggles the live, app-wide visibility setting. Same visual pattern as
+// the notification bells (renderIpsBell etc.): a plain icon button that
+// changes appearance based on current state, rather than a labeled
+// button with text.
+function renderPriolistEyeIcon() {
+  const slot = document.getElementById('priolist-eye');
+  if (!slot) return;
+  if (state.profile?.display_name !== 'Jeinna Louise Perez') { slot.innerHTML = ''; return; }
+  const visible = state.priolistVisible;
+  slot.innerHTML = `
+    <button id="btn-priolist-eye" title="${visible ? 'Hide PrioList for everyone' : 'Show PrioList for everyone'}" style="
+      position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
+      color:var(--ink-faint); display:flex; align-items:center; border-radius:8px;
+      transition:color 0.12s, background 0.12s;"
+      onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
+      onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
+      ${visible ? `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      ` : `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+          <path d="M6.61 6.61C3.35 8.36 1 12 1 12s4 8 11 8a9.26 9.26 0 0 0 5.39-1.61"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
+      `}
+    </button>
+  `;
+  document.getElementById('btn-priolist-eye')?.addEventListener('click', togglePriolistVisibility);
+}
+
+async function togglePriolistVisibility() {
+  if (state.profile?.display_name !== 'Jeinna Louise Perez') { showToast('Only Jeinna can control this.', true); return; }
+  const newValue = !state.priolistVisible;
+  const { error } = await sb.from('app_settings').upsert({
+    key: 'priolist_visible', value: newValue, updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
+  }, { onConflict: 'key' });
+  if (error) {
+    console.error(error);
+    showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run app_settings_priolist_toggle.sql in Supabase.' : 'Could not update this.', true);
+    return;
+  }
+  state.priolistVisible = newValue;
+  showToast(newValue ? 'PrioList is now visible for everyone.' : 'PrioList is now hidden — everyone else will be redirected.');
+  renderPrioList();
 }
 
 function attachPriolistHandlers() {
