@@ -1190,12 +1190,13 @@ function switchView(viewName) {
 
   // PrioList's visibility is a live, app-wide toggle Jeinna controls
   // (see state.priolistVisible / app_settings.priolist_visible) — when
-  // off, EVERYONE redirects here instead of opening the in-app view;
-  // when on, everyone (including Jeinna) sees the real view normally.
+  // off, everyone EXCEPT JEINNA redirects here instead of opening the
+  // in-app view. She stays exempt even when she's the one who hid it —
+  // otherwise she'd lock herself out with no way to turn it back on.
   // Checked here (not just the nav-click handler) to also catch a
   // stale saved session restoring this view on refresh, or any other
   // direct call into switchView('priolist').
-  if (viewName === 'priolist' && !state.priolistVisible) {
+  if (viewName === 'priolist' && !state.priolistVisible && state.profile?.display_name !== 'Jeinna Louise Perez') {
     window.location.href = 'https://accountmedia-phteam.com/productivity';
     return;
   }
@@ -1562,7 +1563,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-priolist-eye-icon';
+const APP_VERSION = '2026-07-29-jeinna-priolist-self-exempt';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
