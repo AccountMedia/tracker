@@ -793,6 +793,18 @@ function canManageIps() {
   if (!state.profile) return false;
   return isAdmin() || state.profile.role === 'ips';
 }
+// QA role: narrower than canManageIps() — grants edit access to ONLY
+// the QA Accuracy section (add/edit/delete Major/Minor entries, No
+// call-out, approve/reject disputes). Does NOT grant access to Daily
+// Entry, Productivity Output, Monthly Score editing, or the correction-
+// request approval inbox — those remain gated by canManageIps() alone.
+// Admins and the full 'ips' role can also edit QA Accuracy (a superset),
+// so this check is "OR"'d with canManageIps() wherever QA editing is
+// gated, rather than replacing it.
+function canManageIpsQa() {
+  if (!state.profile) return false;
+  return canManageIps() || state.profile.role === 'qa' || state.profile.role2 === 'qa';
+}
 function canEditIpsRow(employeeId) {
   if (!state.profile) return false;
   if (state.profile.employee_id === employeeId) return true;
@@ -1478,7 +1490,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-qa-dispute-alert-deeplink';
+const APP_VERSION = '2026-07-28-qa-role-and-second-role';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6972,7 +6984,7 @@ async function removeOtFilingDate(dateId) {
 // =====================================================================
 
 async function loadAppUsers() {
-  const { data, error } = await sb.from('app_users').select('id, username, display_name, role, employee_id');
+  const { data, error } = await sb.from('app_users').select('id, username, display_name, role, role2, employee_id');
   if (error) { showToast('Could not load accounts.', true); return; }
   state.appUsers = data || [];
 }
@@ -7038,7 +7050,7 @@ function renderEmployeeManagementTable() {
           <span class="faint">${emp.birthday ? formatBirthday(emp.birthday) : '—'}</span>
           <span class="faint" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${emp.address ? escapeHtml(emp.address) : ''}">${emp.address ? escapeHtml(emp.address) : '—'}</span>
           <span class="faint">${account ? escapeHtml(account.username) : '— no login —'}</span>
-          <span class="faint" style="text-transform:capitalize;">${account ? account.role : '—'}</span>
+          <span class="faint" style="text-transform:capitalize;">${account ? escapeHtml(account.role) + (account.role2 ? ' + ' + escapeHtml(account.role2) : '') : '—'}</span>
           <span class="faint">${isInactive ? 'Inactive' : 'Active'}</span>
           <span style="display:flex; justify-content:flex-end; position:relative;">
             <button type="button" class="btn btn-ghost btn-sm em-menu-trigger" data-emp-id="${emp.id}" style="font-size:14px; padding:4px 12px; letter-spacing:1px;">⋯</button>
@@ -7177,6 +7189,17 @@ function openAddEmployeeModal() {
             <option value="admin">Admin</option>
             <option value="treasurer">Treasurer</option>
             <option value="ips">IPS</option>
+            <option value="qa">QA</option>
+          </select>
+        </div>
+        <div class="field" style="margin-top:14px;">
+          <label for="ae-role2">Second role (optional)</label>
+          <select id="ae-role2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            <option value="" selected>None</option>
+            <option value="admin">Admin</option>
+            <option value="treasurer">Treasurer</option>
+            <option value="ips">IPS</option>
+            <option value="qa">QA</option>
           </select>
         </div>
       </div>
@@ -7201,6 +7224,8 @@ async function submitAddEmployee(e) {
   const username = document.getElementById('ae-username').value.trim().toLowerCase();
   const password = document.getElementById('ae-password').value;
   const role = document.getElementById('ae-role').value;
+  const role2 = document.getElementById('ae-role2').value || null;
+  if (role2 && role2 === role) { errorBox.textContent = 'The second role must be different from the first.'; errorBox.style.display = 'block'; return; }
 
   if (!display_name) { errorBox.textContent = 'Please enter a name.'; errorBox.style.display = 'block'; return; }
   if (isNaN(vl_balance) || vl_balance < 0 || isNaN(sl_balance) || sl_balance < 0) {
@@ -7234,6 +7259,7 @@ async function submitAddEmployee(e) {
     password_hash,
     display_name,
     role,
+    role2,
     employee_id: newEmployee.id,
   });
 
@@ -7286,6 +7312,17 @@ function openEditRoleModal(employeeId) {
           <option value="admin" ${account.role === 'admin' ? 'selected' : ''}>Admin</option>
           <option value="treasurer" ${account.role === 'treasurer' ? 'selected' : ''}>Treasurer</option>
           <option value="ips" ${account.role === 'ips' ? 'selected' : ''}>IPS</option>
+          <option value="qa" ${account.role === 'qa' ? 'selected' : ''}>QA</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="er-role2">Second role (optional)</label>
+        <select id="er-role2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <option value="" ${!account.role2 ? 'selected' : ''}>None</option>
+          <option value="admin" ${account.role2 === 'admin' ? 'selected' : ''}>Admin</option>
+          <option value="treasurer" ${account.role2 === 'treasurer' ? 'selected' : ''}>Treasurer</option>
+          <option value="ips" ${account.role2 === 'ips' ? 'selected' : ''}>IPS</option>
+          <option value="qa" ${account.role2 === 'qa' ? 'selected' : ''}>QA</option>
         </select>
       </div>
       <button type="submit" class="btn btn-primary" style="justify-content:center;">Save role</button>
@@ -7296,7 +7333,9 @@ function openEditRoleModal(employeeId) {
   document.getElementById('edit-role-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const role = document.getElementById('er-role').value;
-    const { error } = await sb.from('app_users').update({ role }).eq('id', account.id);
+    const role2 = document.getElementById('er-role2').value || null;
+    if (role2 && role2 === role) { showToast('The second role must be different from the first.', true); return; }
+    const { error } = await sb.from('app_users').update({ role, role2 }).eq('id', account.id);
     if (error) { showToast('Could not update the role.', true); return; }
     closeModal();
     showToast('Role updated.');
@@ -10418,6 +10457,7 @@ function renderIpsTables() {
   }
 
   function buildQaSection() {
+    const qaEditor = canManageIpsQa();
     const rows = roster.map(emp => {
       const qaFrac = ipsQaFraction(emp.id, ipsState.month);
       const qa = qaFrac != null ? round2(qaFrac * 100) : '';
@@ -10439,14 +10479,14 @@ function renderIpsTables() {
           <td style="padding:8px; text-align:center; color:var(--ink-soft);">${minor}</td>
           <td style="padding:6px; text-align:center;">
             <button class="btn btn-ghost btn-sm ips-qa-manage-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 12px;">
-              ${allEntries.length} ${allEntries.length === 1 ? 'entry' : 'entries'}${admin ? ' — manage' : ' — view'}
+              ${allEntries.length} ${allEntries.length === 1 ? 'entry' : 'entries'}${qaEditor ? ' — manage' : ' — view'}
             </button>
           </td>
         </tr>
       `;
     }).join('');
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${admin ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${qaEditor ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Entries</th>
@@ -11447,11 +11487,11 @@ function attachIpsHandlers() {
   document.querySelectorAll('.ips-qa-manage-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const empId = btn.dataset.empId;
-      if (canManageIps() || empId === state.profile.employee_id) {
-        // Admins/IPS get the full manage view for anyone; an employee
+      if (canManageIpsQa() || empId === state.profile.employee_id) {
+        // Admins/IPS/QA get the full manage view for anyone; an employee
         // clicking their OWN row gets the concede/dispute view instead
         // of the admin editor.
-        if (canManageIps()) openIpsQaManageModal(empId);
+        if (canManageIpsQa()) openIpsQaManageModal(empId);
         else openMyQaEntriesModal();
       } else {
         showToast('You can only view your own QA entries.', true);
@@ -11461,7 +11501,7 @@ function attachIpsHandlers() {
   document.querySelectorAll('.ips-dispute-badge').forEach(badge => {
     badge.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (canManageIps()) openIpsQaManageModal(badge.dataset.empId);
+      if (canManageIpsQa()) openIpsQaManageModal(badge.dataset.empId);
     });
   });
 }
@@ -11826,7 +11866,7 @@ const IPS_RECENT_ACTIVITY_OPTIONS = ['Recently Active', 'Active', 'Passive', 'Si
 // see openMyQaEntriesModal).
 function openIpsQaManageModal(employeeId) {
   const emp = state.employees.find(e => e.id === employeeId);
-  const admin = canManageIps();
+  const admin = canManageIpsQa();
   renderIpsQaManageModalBody(employeeId, emp, admin);
 }
 
@@ -11974,7 +12014,7 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
 // with it — see markIpsQaNoCallout's own guard and openIpsQaEntryFormModal's
 // cleanup of any existing no-callout record on save).
 async function markIpsQaNoCallout(employeeId, emp) {
-  if (!canManageIps()) { showToast('Only admins and IPS can do this.', true); return; }
+  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can do this.', true); return; }
   const { error } = await sb.from('ips_qa_no_callouts').insert({
     employee_id: employeeId, month: ipsState.month, reviewed_by: state.profile.display_name,
   });
@@ -11990,7 +12030,7 @@ async function markIpsQaNoCallout(employeeId, emp) {
 }
 
 async function clearIpsQaNoCallout(employeeId, emp) {
-  if (!canManageIps()) { showToast('Only admins and IPS can do this.', true); return; }
+  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can do this.', true); return; }
   const { error } = await sb.from('ips_qa_no_callouts').delete().eq('employee_id', employeeId).eq('month', ipsState.month);
   if (error) { showToast('Could not undo.', true); return; }
   showToast('No call-out cleared — QA% is blank again until reviewed.');
@@ -12103,7 +12143,7 @@ function openIpsQaEntryFormModal(employeeId, kind, existing) {
 }
 
 async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
-  if (!canManageIps()) { showToast('Only admins and IPS can delete entries.', true); return; }
+  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can delete entries.', true); return; }
   if (!confirm('Delete this entry? This permanently removes it and recalculates QA%. This cannot be undone.')) return;
   const { error } = await sb.from('ips_qa_entries').delete().eq('id', entryId);
   if (error) { showToast('Could not delete the entry.', true); return; }
@@ -12119,7 +12159,7 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
 // employee can see the outcome, and the notification tied to this
 // dispute is cleared for every admin/IPS viewer.
 async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) {
-  if (!canManageIps()) { showToast('Only admins and IPS can resolve disputes.', true); return; }
+  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can resolve disputes.', true); return; }
   const label = resolution === 'approved' ? 'Approve this dispute? The entry will no longer count against QA%.' : 'Reject this dispute? The entry will continue counting against QA% as before.';
   if (!confirm(label)) return;
   const reviewedAt = new Date().toISOString();
