@@ -1478,7 +1478,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-qa-dispute-alert-clears';
+const APP_VERSION = '2026-07-28-qa-dispute-alert-deeplink';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12600,10 +12600,29 @@ function renderPersonalAlertsFromCache() {
   });
   list.querySelectorAll('.pa-alert-item[data-action="open-qa-accuracy-tab"]').forEach(el => {
     el.addEventListener('click', () => {
+      // Jump straight to the OLDEST pending dispute, not just the
+      // general tab — finds it, switches to its Major/Minor sub-tab,
+      // and opens that specific employee's manage modal directly, so
+      // Kristina/Jeinna don't have to hunt through every row's badge.
+      const pending = (ipsState.qaEntries || [])
+        .filter(e => e.dispute_status === 'disputed')
+        .sort((a, b) => (a.disputed_at || '').localeCompare(b.disputed_at || ''));
+      const oldest = pending[0];
       switchView('ips');
       ipsState.tab = 'qa';
       sessionStorage.setItem('registry_ips_tab', 'qa');
-      renderIpsTables();
+      if (oldest) {
+        // The oldest dispute may belong to a month different from
+        // whatever the IPS tab currently has selected — jump the
+        // month too, or the manage modal would open showing the wrong
+        // month's (empty) entry list for that employee.
+        if (oldest.month && oldest.month !== ipsState.month) ipsState.month = oldest.month;
+        ipsState.qaTab = oldest.kind === 'minor' ? 'minor' : 'major';
+        renderIpsTables();
+        openIpsQaManageModal(oldest.employee_id);
+      } else {
+        renderIpsTables();
+      }
     });
   });
 }
