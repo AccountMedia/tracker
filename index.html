@@ -1502,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-qa-dispute-priority-sort';
+const APP_VERSION = '2026-07-29-qa-dispute-edit-pending';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12259,6 +12259,7 @@ function renderMyQaEntriesModalBody() {
     const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
     const wash = e.kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
     const canAct = e.dispute_status === 'none';
+    const canEditDispute = e.dispute_status === 'disputed'; // only while pending — not once approved/rejected
     const statusLine = {
       none:      '',
       conceded:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ You conceded this entry.</div>`,
@@ -12309,6 +12310,11 @@ function renderMyQaEntriesModalBody() {
             <button class="btn btn-ghost btn-sm ips-qa-dispute-btn" data-id="${e.id}" style="flex:1; justify-content:center; font-size:11.5px; color:var(--coral); border-color:var(--coral-wash);">Dispute</button>
           </div>
         ` : ''}
+        ${canEditDispute ? `
+          <div style="margin-top:10px;">
+            <button class="btn btn-ghost btn-sm ips-qa-edit-dispute-btn" data-id="${e.id}" style="width:100%; justify-content:center; font-size:11.5px;">Edit dispute</button>
+          </div>
+        ` : ''}
       </div>
     `;
   }
@@ -12345,6 +12351,9 @@ function renderMyQaEntriesModalBody() {
   document.querySelectorAll('.ips-qa-dispute-btn').forEach(btn => {
     btn.addEventListener('click', () => openDisputeExplanationModal(btn.dataset.id));
   });
+  document.querySelectorAll('.ips-qa-edit-dispute-btn').forEach(btn => {
+    btn.addEventListener('click', () => openDisputeExplanationModal(btn.dataset.id));
+  });
 }
 
 async function concedeMyQaEntry(entryId) {
@@ -12366,24 +12375,54 @@ async function concedeMyQaEntry(entryId) {
 function openDisputeExplanationModal(entryId) {
   const entry = ipsState.qaEntries.find(e => e.id === entryId);
   if (!entry) return;
-  openModal('Dispute this entry', `
-    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Explain why you believe this ${entry.kind === 'major' ? 'Major' : 'Minor'} entry for <strong>${escapeHtml(entry.lead_name || 'this lead')}</strong> is incorrect. This is required and will be reviewed by an admin/IPS.</p>
+  const isEdit = entry.dispute_status === 'disputed';
+  const existingUrls = isEdit ? (entry.dispute_evidence_urls || []) : [];
+  openModal(isEdit ? 'Edit your dispute' : 'Dispute this entry', `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">${isEdit
+      ? `You can still edit your explanation and evidence while this dispute is pending review.`
+      : `Explain why you believe this ${entry.kind === 'major' ? 'Major' : 'Minor'} entry for <strong>${escapeHtml(entry.lead_name || 'this lead')}</strong> is incorrect. This is required and will be reviewed by an admin/IPS.`}</p>
     <form id="ips-qa-dispute-form" style="display:flex; flex-direction:column; gap:14px;">
       <div class="field">
         <label for="ips-qa-dispute-explanation">Dispute explanation</label>
         <textarea id="ips-qa-dispute-explanation" rows="4" required
           style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
-          placeholder="Explain why this entry should not count..."></textarea>
+          placeholder="Explain why this entry should not count...">${escapeHtml(entry.dispute_explanation || '')}</textarea>
       </div>
+      ${existingUrls.length ? `
+        <div class="field">
+          <label>Current evidence (click ✕ to remove)</label>
+          <div id="ips-qa-dispute-existing-images" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">
+            ${existingUrls.map((u, i) => `
+              <div class="ips-qa-existing-image-wrap" data-url="${escapeHtml(u)}" style="position:relative;">
+                <img src="${escapeHtml(u)}" style="width:56px; height:56px; object-fit:cover; border-radius:6px; border:1px solid var(--line);">
+                <button type="button" class="ips-qa-remove-existing-image-btn" data-url="${escapeHtml(u)}" title="Remove"
+                  style="position:absolute; top:-6px; right:-6px; width:18px; height:18px; border-radius:50%; background:var(--coral); color:#fff; border:2px solid #fff; font-size:11px; line-height:1; cursor:pointer; padding:0;">✕</button>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
       <div class="field">
-        <label for="ips-qa-dispute-images">Supporting screenshots (optional)</label>
+        <label for="ips-qa-dispute-images">${isEdit ? 'Add more screenshots (optional)' : 'Supporting screenshots (optional)'}</label>
         <input type="file" id="ips-qa-dispute-images" accept="image/*" multiple
           style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <div id="ips-qa-dispute-images-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
       </div>
-      <button type="submit" class="btn btn-primary" id="ips-qa-dispute-submit-btn" style="justify-content:center; background:var(--coral);">Submit dispute</button>
+      <button type="submit" class="btn btn-primary" id="ips-qa-dispute-submit-btn" style="justify-content:center; background:var(--coral);">${isEdit ? 'Save changes' : 'Submit dispute'}</button>
     </form>
   `);
+
+  // Track which of the ORIGINAL images the person has removed in this
+  // editing session — kept separate from newly-selected files so the
+  // final save can compute (kept originals) + (newly uploaded) cleanly.
+  let removedUrls = new Set();
+  document.querySelectorAll('.ips-qa-remove-existing-image-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      removedUrls.add(btn.dataset.url);
+      btn.closest('.ips-qa-existing-image-wrap').remove();
+    });
+  });
+
   document.getElementById('ips-qa-dispute-images').addEventListener('change', (e) => {
     const preview = document.getElementById('ips-qa-dispute-images-preview');
     preview.innerHTML = '';
@@ -12402,8 +12441,13 @@ function openDisputeExplanationModal(entryId) {
     const files = Array.from(document.getElementById('ips-qa-dispute-images').files);
     const submitBtn = document.getElementById('ips-qa-dispute-submit-btn');
     submitBtn.disabled = true;
-    submitBtn.textContent = files.length ? 'Uploading images...' : 'Submitting...';
-    await submitQaDispute(entryId, explanation, files);
+    submitBtn.textContent = files.length ? 'Uploading images...' : (isEdit ? 'Saving...' : 'Submitting...');
+    if (isEdit) {
+      const keptUrls = existingUrls.filter(u => !removedUrls.has(u));
+      await updateQaDispute(entryId, explanation, files, keptUrls);
+    } else {
+      await submitQaDispute(entryId, explanation, files);
+    }
   });
 }
 
@@ -12453,6 +12497,36 @@ async function submitQaDispute(entryId, explanation, files = []) {
   const kindLabel = entry ? (entry.kind === 'major' ? 'Major' : 'Minor') : 'QA';
   const leadLabel = entry?.lead_name || 'a lead';
   pushIpsNotification(`${empLabel} disputed a ${kindLabel} QA entry for ${leadLabel} — needs review.`, entryId);
+  await loadMyQaEntries(true);
+  renderMyQaEntriesModalBody();
+}
+
+// Saves edits to an ALREADY-SUBMITTED dispute (text and/or evidence
+// images) while it's still pending review. Re-checks dispute_status is
+// genuinely still 'disputed' right before writing — if an admin
+// approved/rejected it in the moments between the modal opening and
+// this save, the edit is refused rather than silently overwriting a
+// resolved decision. Does not push a new notification: the admin was
+// already notified once when the dispute was first filed, and this is
+// just a refinement of that same pending item.
+async function updateQaDispute(entryId, explanation, newFiles, keptUrls) {
+  const { data: current, error: fetchErr } = await sb.from('ips_qa_entries').select('dispute_status').eq('id', entryId).maybeSingle();
+  if (fetchErr || !current) { showToast('Could not verify this dispute — please try again.', true); return; }
+  if (current.dispute_status !== 'disputed') {
+    showToast('This dispute has already been reviewed and can no longer be edited.', true);
+    await loadMyQaEntries(true);
+    renderMyQaEntriesModalBody();
+    return;
+  }
+  const newUrls = newFiles.length ? await uploadQaDisputeEvidence(entryId, newFiles) : [];
+  const finalUrls = [...keptUrls, ...newUrls];
+  const { error } = await sb.from('ips_qa_entries').update({
+    dispute_explanation: explanation,
+    dispute_evidence_urls: finalUrls.length ? finalUrls : null,
+    updated_at: new Date().toISOString(),
+  }).eq('id', entryId).eq('dispute_status', 'disputed'); // belt-and-suspenders: only writes if STILL disputed at the exact moment of the update
+  if (error) { showToast('Could not save your changes.', true); return; }
+  showToast('Dispute updated.');
   await loadMyQaEntries(true);
   renderMyQaEntriesModalBody();
 }
