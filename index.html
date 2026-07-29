@@ -793,17 +793,29 @@ function canManageIps() {
   if (!state.profile) return false;
   return isAdmin() || state.profile.role === 'ips';
 }
-// QA role: narrower than canManageIps() — grants edit access to ONLY
-// the QA Accuracy section (add/edit/delete Major/Minor entries, No
-// call-out, approve/reject disputes). Does NOT grant access to Daily
-// Entry, Productivity Output, Monthly Score editing, or the correction-
-// request approval inbox — those remain gated by canManageIps() alone.
+// QA role: narrower than canManageIps() — grants edit access to the
+// QA Accuracy section's ENTRIES ONLY (add/edit/delete Major/Minor
+// entries, No call-out). Does NOT grant approve/reject dispute rights
+// (see canResolveIpsQaDisputes below) — nor Daily Entry, Productivity
+// Output, Monthly Score editing, or the correction-request approval
+// inbox, all of which remain gated by canManageIps() alone.
 // Admins and the full 'ips' role can also edit QA Accuracy (a superset),
 // so this check is "OR"'d with canManageIps() wherever QA editing is
 // gated, rather than replacing it.
 function canManageIpsQa() {
   if (!state.profile) return false;
   return canManageIps() || state.profile.role === 'qa' || state.profile.role2 === 'qa';
+}
+// Dispute resolution (Approve/Reject) is intentionally narrower than
+// general QA entry editing — restricted to Jeinna and Kristina BY NAME,
+// not the broader QA role or even the full 'ips' role. A QA-role
+// account can add/edit/delete entries and mark No call-out, but cannot
+// approve or reject an employee's dispute — that decision stays with
+// these two specifically. Matches the same name-based pairing already
+// used for the "QA disputes need your review" My Alerts item.
+function canResolveIpsQaDisputes() {
+  if (!state.profile) return false;
+  return ['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name);
 }
 function canEditIpsRow(employeeId) {
   if (!state.profile) return false;
@@ -1490,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-qa-role-and-second-role';
+const APP_VERSION = '2026-07-28-restrict-dispute-resolution';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10465,7 +10477,7 @@ function renderIpsTables() {
       // QA% text color: any still-counting Major entry takes priority
       // and always shows red, regardless of the score. Otherwise, a
       // 97-100% score shows blue. Anything else uses the normal ink color.
-      const qaColor = major > 0 ? 'var(--coral)' : (qa !== '' && qa >= 97 && qa <= 100) ? '#2D6A9F' : 'inherit';
+      const qaColor = major > 0 ? 'var(--coral)' : (qa !== '' && qa >= 97 && qa <= 100) ? '#2D6A9F' : (qa !== '' && qa <= 95) ? 'var(--coral)' : 'inherit';
       const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
       const pendingDisputeCount = allEntries.filter(e => e.dispute_status === 'disputed').length;
       return `
@@ -11878,6 +11890,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
   const hasNoCallout = ipsQaHasNoCallout(employeeId, ipsState.month);
   const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
   const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
+  const canResolve = canResolveIpsQaDisputes(); // Jeinna/Kristina only — narrower than 'admin' (which also covers QA-role entry editing)
 
   function entryCard(e) {
     const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
@@ -11931,7 +11944,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         <div style="display:flex; gap:6px; margin-top:8px;">
           ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
           ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-delete-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; color:var(--coral);">Delete</button>` : ''}
-          ${admin && e.dispute_status === 'disputed' ? `
+          ${admin && e.dispute_status === 'disputed' && canResolve ? `
             <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
             <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
           ` : ''}
@@ -12159,7 +12172,7 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
 // employee can see the outcome, and the notification tied to this
 // dispute is cleared for every admin/IPS viewer.
 async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) {
-  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can resolve disputes.', true); return; }
+  if (!canResolveIpsQaDisputes()) { showToast('Only Kristina and Jeinna can resolve disputes.', true); return; }
   const label = resolution === 'approved' ? 'Approve this dispute? The entry will no longer count against QA%.' : 'Reject this dispute? The entry will continue counting against QA% as before.';
   if (!confirm(label)) return;
   const reviewedAt = new Date().toISOString();
