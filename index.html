@@ -1449,7 +1449,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-no-login-flash';
+const APP_VERSION = '2026-07-28-clickable-urls';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9707,12 +9707,15 @@ const ipsState = {
   dailyEntries: [],
   monthlyData: [],
   monthSettings: null,
-  monthlyEditMode: false,   // Edit/Done toggle for Error Correction + QA Accuracy fields
+  monthlyEditMode: false,   // Edit/Done toggle for Error Correction fields (QA is now its own structured-entries workflow, no longer a manual field)
   loaded: false,
   myPendingRequests: [],     // this employee's own pending correction requests (any status shown as pending badge)
   pendingApprovals: [],      // ALL pending requests, for admin/IPS's approval inbox
   emergencyUnlocks: [],       // { employee_id, unlock_date } rows — self-service early/full-day-leave access overrides for TODAY
   missedOutputsExpanded: false, // whether the Missing LQ banner's full list is expanded — collapsed by default for a minimal single-line view
+  qaEntries: [],              // structured Major/Minor QA entries (ips_qa_entries) — replaces the old major_notes/minor_notes text arrays
+  qaEntriesLoadedMonth: null, // which month's qaEntries are currently loaded, so a cache-first repaint doesn't show stale data
+  qaPanelExpanded: {},        // { [employeeId]: true } — which employee's QA entry list is expanded in the admin's edit view
 };
 
 function ipsDatesForMonth(monthIso) {
@@ -9727,12 +9730,13 @@ async function loadIpsData() {
   const [y, m] = monthStart.split('-').map(Number);
   const monthEnd = isoDate(new Date(y, m, 0));
 
-  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes] = await Promise.all([
+  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes, qaEntriesRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', monthStart).lte('entry_date', monthEnd),
     sb.from('ips_monthly_data').select('*').eq('month', monthStart),
     sb.from('ips_month_settings').select('*').eq('month', monthStart).maybeSingle(),
     sb.from('ips_correction_requests').select('*').order('requested_at', { ascending: false }),
     sb.from('ips_emergency_unlocks').select('*').eq('unlock_date', isoDate(new Date())),
+    sb.from('ips_qa_entries').select('*').eq('month', monthStart).order('created_at', { ascending: true }),
   ]);
 
   if (dailyRes.error || monthlyRes.error) {
@@ -9758,6 +9762,46 @@ async function loadIpsData() {
 
   // Emergency unlocks aren't fatal if the table isn't set up yet either.
   ipsState.emergencyUnlocks = emergencyRes.error ? [] : (emergencyRes.data || []);
+
+  // QA entries — not fatal if ips_qa_entries.sql hasn't been run yet.
+  if (!qaEntriesRes.error) {
+    ipsState.qaEntries = qaEntriesRes.data || [];
+    ipsState.qaEntriesLoadedMonth = monthStart;
+  } else if (!/relation .* does not exist/i.test(qaEntriesRes.error.message || '')) {
+    console.error('Could not load QA entries:', qaEntriesRes.error);
+  }
+}
+
+// Fetches an employee's OWN QA entries across EVERY month (not just
+// whichever month the admin's IPS tab currently has selected) — used
+// by the employee-facing "My QA Notes" dispute view, since an employee
+// needs to be able to review and dispute entries from any past month,
+// independent of what an admin happens to be looking at right now.
+// Cached per-session via _myQaEntriesLoaded; call forceReload to bypass.
+let _myQaEntriesLoaded = false;
+async function loadMyQaEntries(forceReload) {
+  if (!state.profile || !state.profile.employee_id) return;
+  if (_myQaEntriesLoaded && !forceReload) return;
+  const { data, error } = await sb
+    .from('ips_qa_entries')
+    .select('*')
+    .eq('employee_id', state.profile.employee_id)
+    .order('month', { ascending: false })
+    .order('created_at', { ascending: true });
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load my QA entries:', error);
+    return;
+  }
+  // Merge into ipsState.qaEntries by id, rather than replacing — this
+  // preserves whatever month-scoped rows the admin view already loaded
+  // (avoids two competing sources of truth stomping on each other).
+  const existingIds = new Set(ipsState.qaEntries.map(e => e.id));
+  const newOnes = (data || []).filter(e => !existingIds.has(e.id));
+  ipsState.qaEntries = [...ipsState.qaEntries, ...newOnes];
+  // Also refresh any that already existed, in case their dispute status changed elsewhere
+  const byId = new Map((data || []).map(e => [e.id, e]));
+  ipsState.qaEntries = ipsState.qaEntries.map(e => byId.get(e.id) || e);
+  _myQaEntriesLoaded = true;
 }
 
 function ipsDailyFor(employeeId, dateIso) {
@@ -9827,13 +9871,46 @@ function ipsPoTotal(employeeId, dates) {
   // comparable across days regardless of each day's actual target.
   return round2(ipsPoRatioAverage(employeeId, dates) * 800);
 }
-// QA is stored as a fraction (0.97 = 97%), matching the spreadsheet's
-// formulas. Tolerates legacy values entered as whole percents (97) by
-// normalizing anything > 1 down to a fraction.
-function ipsQaFraction(m) {
-  if (!m || m.qa_percent == null || m.qa_percent === '') return null;
-  const v = Number(m.qa_percent);
-  return v > 1 ? v / 100 : v;
+// Every QA entry for one employee in one month, of a given kind
+// ('major' or 'minor'). Used both for the count/formula and for
+// rendering the detailed table.
+function ipsQaEntriesFor(employeeId, monthIso, kind) {
+  return ipsState.qaEntries.filter(e => e.employee_id === employeeId && e.month === monthIso && (!kind || e.kind === kind));
+}
+
+// Whether a QA entry currently counts against QA% — every entry counts
+// EXCEPT one that has been disputed and the dispute was approved (that
+// removes it from the tally entirely, per the agreed rule: an admin
+// approving a dispute reduces the employee's major/minor count).
+// Rejected disputes, conceded entries, and never-disputed entries all
+// still count normally.
+function ipsQaEntryCounts(employeeId, monthIso) {
+  const effective = (kind) => ipsQaEntriesFor(employeeId, monthIso, kind).filter(e => e.dispute_status !== 'approved').length;
+  return { major: effective('major'), minor: effective('minor') };
+}
+
+// QA% is now fully derived — 100, minus 3 points per still-counting
+// Major entry, minus 1 point per still-counting Minor entry. No manual
+// qa_percent field exists anymore; admins can only affect this by
+// adding/removing/editing structured entries (or by approving a
+// dispute, which removes an entry from the count).
+//
+// Returns null — not 100% — when the employee has ZERO QA entries
+// recorded at all. This is deliberate: an admin simply hasn't reviewed
+// this employee yet, which is a genuinely different state from "was
+// reviewed and found clean" (100%). Returning null lets the display
+// layer show a blank/"not reviewed" indicator instead of a number an
+// employee could mistake for an actual clean score. Scoring math is
+// unaffected — ipsMonthlyScore already falls back to 0 for this exact
+// case via `?? 0`, so the leaderboard/total-score cascade is untouched;
+// only the QA Accuracy tab's own display needs to distinguish the two.
+function ipsQaFraction(employeeId, monthIso) {
+  if (!employeeId || !monthIso) return null;
+  const { major, minor } = ipsQaEntryCounts(employeeId, monthIso);
+  const totalEntries = ipsQaEntriesFor(employeeId, monthIso).length;
+  if (totalEntries === 0) return null; // nothing recorded yet — not the same as a clean 100%
+  const pct = 100 - (major * 3) - (minor * 1);
+  return Math.max(0, pct) / 100;
 }
 
 // Sums each day's logged errors for the given dates — the daily entries
@@ -9856,9 +9933,8 @@ function ipsErrorCorrectionPct(employeeId, dates) {
   // steps and threw every score off.
   return (1 - (errors / workingDays)) * 1;
 }
-function ipsMonthlyScore(employeeId, dates) {
-  const m = ipsMonthlyFor(employeeId);
-  const qa = ipsQaFraction(m) ?? 0;
+function ipsMonthlyScore(employeeId, dates, monthIso) {
+  const qa = ipsQaFraction(employeeId, monthIso || ipsState.month) ?? 0;
   const poRatioAvg = ipsPoRatioAverage(employeeId, dates);
   const ec = ipsErrorCorrectionPct(employeeId, dates);
   const aoScore = qa * 0.5;
@@ -9868,6 +9944,7 @@ function ipsMonthlyScore(employeeId, dates) {
   // the two-decimal PERCENT (e.g. 96.15%), not a whole-percent snap.
   return { qa, poRatioAvg, ec, aoScore, apScore, aqScore, total: aoScore + apScore + aqScore };
 }
+
 
 function ipsMonthLabel(monthIso) {
   const [y, m] = monthIso.split('-').map(Number);
@@ -9882,11 +9959,11 @@ function startIpsRealtime() {
   const rerender = debounceRealtime(() => {
     const active = document.activeElement;
     // Don't yank a field out from under someone mid-keystroke on any of
-    // the IPS input classes.
+    // the IPS input classes, or while the QA entry add/edit modal is open.
     if (active && active.classList && (
       active.classList.contains('ips-daily-input') ||
-      active.classList.contains('ips-qa-input') ||
-      active.id === 'ips-working-days-input'
+      active.id === 'ips-working-days-input' ||
+      active.closest?.('#ips-qa-entry-form')
     )) return;
     renderIpsTables();
   });
@@ -9944,6 +10021,13 @@ function startIpsRealtime() {
     applyRealtimePatch(payload, () => ipsState.emergencyUnlocks, (v) => { ipsState.emergencyUnlocks = v; });
     rerender();
   });
+  // QA entries — NOT month-scoped like daily/monthly data above, since
+  // an employee's own dispute view spans every month they have entries
+  // in, not just whichever month an admin happens to have selected.
+  subscribeRealtime('ips_qa_entries', 'ips_qa_entries', (payload) => {
+    applyRealtimePatch(payload, () => ipsState.qaEntries, (v) => { ipsState.qaEntries = v; });
+    rerender();
+  });
 }
 
 function stopIpsRealtime() {
@@ -9952,6 +10036,7 @@ function stopIpsRealtime() {
   unsubscribeRealtime('ips_month_settings');
   unsubscribeRealtime('ips_correction_requests');
   unsubscribeRealtime('ips_emergency_unlocks');
+  unsubscribeRealtime('ips_qa_entries');
 }
 
 function renderIps() {
@@ -10268,56 +10353,38 @@ function renderIpsTables() {
   }
 
   function buildQaSection() {
-    const editable = admin && ipsState.monthlyEditMode;
     const rows = roster.map(emp => {
-      const m = ipsMonthlyFor(emp.id);
-      const qaFrac = ipsQaFraction(m);
+      const qaFrac = ipsQaFraction(emp.id, ipsState.month);
       const qa = qaFrac != null ? round2(qaFrac * 100) : '';
-      const major = m ? (m.major_count ?? 0) : 0;
-      const minor = m ? (m.minor_count ?? 0) : 0;
-      // QA% text color: a logged Major error takes priority and always
-      // shows red, regardless of the score. Otherwise, a 97-100% score
-      // shows blue. Anything else uses the normal ink color.
+      const { major, minor } = ipsQaEntryCounts(emp.id, ipsState.month);
+      // QA% text color: any still-counting Major entry takes priority
+      // and always shows red, regardless of the score. Otherwise, a
+      // 97-100% score shows blue. Anything else uses the normal ink color.
       const qaColor = major > 0 ? 'var(--coral)' : (qa !== '' && qa >= 97 && qa <= 100) ? '#2D6A9F' : 'inherit';
-      // Only non-empty strings count as notes — cleared/blank lines are ignored
-      const majorNotes = (m && Array.isArray(m.major_notes) ? m.major_notes : []).filter(n => n && n.trim());
-      const minorNotes = (m && Array.isArray(m.minor_notes) ? m.minor_notes : []).filter(n => n && n.trim());
+      const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
+      const pendingDisputeCount = allEntries.filter(e => e.dispute_status === 'disputed').length;
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
-          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
-          <td style="padding:4px; text-align:center;">
-            <input type="number" min="0" max="100" step="0.1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="qa_percent" value="${qa}" ${editable ? '' : 'disabled'}
-              style="width:70px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; font-weight:700; color:${qaColor}; ${editable ? '' : 'background:var(--line-soft);'}">
+          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">
+            ${escapeHtml(emp.display_name)}
+            ${pendingDisputeCount > 0 ? `<span class="ips-dispute-badge" data-emp-id="${emp.id}" title="${pendingDisputeCount} pending dispute${pendingDisputeCount===1?'':''} — click to review" style="cursor:pointer; margin-left:6px; display:inline-flex; align-items:center; justify-content:center; min-width:17px; height:17px; padding:0 4px; border-radius:999px; background:var(--coral); color:#fff; font-size:10px; font-weight:700; vertical-align:middle;">${pendingDisputeCount}</span>` : ''}
           </td>
-          <td style="padding:4px; text-align:center;">
-            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="major_count" value="${major}" ${editable ? '' : 'disabled'}
-              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; ${editable ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
-          </td>
-          <td style="padding:4px; text-align:center;">
-            <input type="number" min="0" step="1" class="ips-qa-input" data-emp-id="${emp.id}" data-field="minor_count" value="${minor}" ${editable ? '' : 'disabled'}
-              style="width:56px; padding:5px; text-align:center; border-radius:6px; border:1px solid ${editable ? 'var(--gold-line)' : 'var(--line)'}; font-family:inherit; font-size:12px; ${editable ? '' : 'background:var(--line-soft); color:var(--ink-soft);'}">
-          </td>
-          <td style="padding:6px;">
-            <button class="btn btn-ghost btn-sm ips-notes-btn" data-emp-id="${emp.id}" data-kind="major" data-mode="${editable ? 'edit' : 'view'}" ${majorNotes.length || editable ? '' : 'disabled'} style="font-size:11px; padding:3px 8px; ${majorNotes.length ? 'color:var(--coral); border-color:var(--coral-wash);' : ''}">${majorNotes.length} note${majorNotes.length===1?'':'s'}${editable ? ' — edit' : majorNotes.length ? ' — view' : ''}</button>
-          </td>
-          <td style="padding:6px;">
-            <button class="btn btn-ghost btn-sm ips-notes-btn" data-emp-id="${emp.id}" data-kind="minor" data-mode="${editable ? 'edit' : 'view'}" ${minorNotes.length || editable ? '' : 'disabled'} style="font-size:11px; padding:3px 8px; ${minorNotes.length ? 'color:var(--amber); border-color:var(--amber-wash);' : ''}">${minorNotes.length} note${minorNotes.length===1?'':'s'}${editable ? ' — edit' : minorNotes.length ? ' — view' : ''}</button>
+          <td style="padding:8px; text-align:center; font-weight:700; color:${qaColor};">${qa !== '' ? qa + '%' : '—'}</td>
+          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${major}</td>
+          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${minor}</td>
+          <td style="padding:6px; text-align:center;">
+            <button class="btn btn-ghost btn-sm ips-qa-manage-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 12px;">
+              ${allEntries.length} ${allEntries.length === 1 ? 'entry' : 'entries'}${admin ? ' — manage' : ' — view'}
+            </button>
           </td>
         </tr>
       `;
     }).join('');
     return `
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
-        <p class="faint" style="font-size:11.5px; margin:0;">${admin ? (ipsState.monthlyEditMode ? 'Edit mode is ON — every field below is unlocked. Click "Done" when finished.' : 'Click "Edit" to unlock all fields at once.') : 'View only — admins and IPS manage this section.'}</p>
-        ${admin ? `
-          <button class="btn ${ipsState.monthlyEditMode ? 'btn-primary' : 'btn-ghost'} btn-sm" id="ips-monthly-edit-toggle" style="padding:6px 16px; flex-shrink:0;">
-            ${ipsState.monthlyEditMode ? '✓ Done' : 'Edit'}
-          </button>
-        ` : ''}
-      </div>
-      <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:640px;">
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${admin ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
+      <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA % (e.g. 97)</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Major notes</th><th style="padding:6px 10px;">Minor notes</th>
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Entries</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -10630,15 +10697,15 @@ async function loadIpsPrevRanks() {
   const prevEnd = prevDates[prevDates.length - 1];
 
   try {
-    const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+    const [dailyRes, qaEntriesRes, settingsRes] = await Promise.all([
       sb.from('ips_daily_entries').select('employee_id, entry_date, lq_value, md_value, po_excluded, errors').gte('entry_date', prevDates[0]).lte('entry_date', prevEnd),
-      sb.from('ips_monthly_data').select('employee_id, qa_percent').eq('month', prevMonthIso),
+      sb.from('ips_qa_entries').select('employee_id, kind, dispute_status').eq('month', prevMonthIso),
       sb.from('ips_month_settings').select('working_days').eq('month', prevMonthIso).maybeSingle(),
     ]);
-    if (dailyRes.error || monthlyRes.error) return;
+    if (dailyRes.error) return;
 
     const daily = dailyRes.data || [];
-    const monthly = monthlyRes.data || [];
+    const qaEntriesPrev = qaEntriesRes.error ? [] : (qaEntriesRes.data || []);
     const wd = settingsRes.data ? Number(settingsRes.data.working_days || 0) : 0;
 
     const totals = ipsRoster().map(emp => {
@@ -10651,11 +10718,13 @@ async function loadIpsPrevRanks() {
         return t > 0 ? t / 800 : null;
       }).filter(r => r != null);
       const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
-      const mData = monthly.find(x => x.employee_id === emp.id) || null;
-      const qa = ipsQaFraction(mData) ?? 0;
+      const myQaEntries = qaEntriesPrev.filter(e => e.employee_id === emp.id && e.dispute_status !== 'approved');
+      const majorCount = myQaEntries.filter(e => e.kind === 'major').length;
+      const minorCount = myQaEntries.filter(e => e.kind === 'minor').length;
+      const qa = Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
       const errorsSum = mine.reduce((s, e) => s + (e.errors != null ? Number(e.errors) : 0), 0);
       const ec = wd ? (1 - (errorsSum / wd)) : 0;
-      return { id: emp.id, total: qa * 0.5 + po * 0.3 + ec * 0.2, hasData: !!(mine.length || mData) };
+      return { id: emp.id, total: qa * 0.5 + po * 0.3 + ec * 0.2, hasData: !!(mine.length || qaEntriesPrev.some(e => e.employee_id === emp.id)) };
     });
 
     const anyData = totals.some(t => t.hasData);
@@ -10684,17 +10753,17 @@ async function openIpsYearModal(employeeId) {
 
   openModal(`${emp.display_name} — ${year}`, '<div class="loading-row">Loading…</div>');
 
-  const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+  const [dailyRes, qaEntriesRes, settingsRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').eq('employee_id', employeeId).gte('entry_date', `${year}-01-01`).lte('entry_date', `${year}-12-31`),
-    sb.from('ips_monthly_data').select('*').eq('employee_id', employeeId).gte('month', `${year}-01-01`).lte('month', `${year}-12-01`),
+    sb.from('ips_qa_entries').select('*').eq('employee_id', employeeId).gte('month', `${year}-01-01`).lte('month', `${year}-12-01`),
     sb.from('ips_month_settings').select('*').gte('month', `${year}-01-01`).lte('month', `${year}-12-01`),
   ]);
-  if (dailyRes.error || monthlyRes.error || settingsRes.error) {
+  if (dailyRes.error || settingsRes.error) {
     openModal(`${emp.display_name} — ${year}`, '<p class="muted">Could not load the year data.</p>');
     return;
   }
   const daily = dailyRes.data || [];
-  const monthly = monthlyRes.data || [];
+  const qaEntriesYear = qaEntriesRes.error ? [] : (qaEntriesRes.data || []);
   const settings = settingsRes.data || [];
 
   const monthRows = [];
@@ -10702,9 +10771,9 @@ async function openIpsYearModal(employeeId) {
     const monthIso = `${year}-${String(m + 1).padStart(2, '0')}-01`;
     const dates = ipsDatesForMonth(monthIso);
     const dEntries = daily.filter(e => e.entry_date >= dates[0] && e.entry_date <= dates[dates.length - 1]);
-    const mData = monthly.find(x => x.month === monthIso) || null;
+    const monthQaEntries = qaEntriesYear.filter(e => e.month === monthIso);
     const setting = settings.find(x => x.month === monthIso) || null;
-    const hasAny = dEntries.length || mData;
+    const hasAny = dEntries.length || monthQaEntries.length;
     if (!hasAny) { monthRows.push({ m, empty: true }); continue; }
 
     // Same formulas as the live tabs, scoped to this month's fetched rows
@@ -10717,7 +10786,10 @@ async function openIpsYearModal(employeeId) {
       return t > 0 ? t / 800 : null;
     }).filter(r => r != null);
     const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
-    const qa = ipsQaFraction(mData) ?? 0;
+    const effectiveEntries = monthQaEntries.filter(e => e.dispute_status !== 'approved');
+    const majorCount = effectiveEntries.filter(e => e.kind === 'major').length;
+    const minorCount = effectiveEntries.filter(e => e.kind === 'minor').length;
+    const qa = Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
     const wd = setting ? Number(setting.working_days || 0) : 0;
     const errorsSum = dEntries.reduce((s, e) => s + (e.errors != null ? Number(e.errors) : 0), 0);
     const ec = wd ? (1 - (errorsSum / wd)) : null;
@@ -10938,14 +11010,14 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
   const rangeStart = months[0];
   const rangeEndDate = isoDate(new Date(ey, em, 0));
 
-  const [dailyRes, monthlyRes, settingsRes] = await Promise.all([
+  const [dailyRes, qaEntriesRes, settingsRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', rangeStart).lte('entry_date', rangeEndDate),
-    sb.from('ips_monthly_data').select('*').gte('month', rangeStart).lte('month', months[months.length - 1]),
+    sb.from('ips_qa_entries').select('*').gte('month', rangeStart).lte('month', months[months.length - 1]),
     sb.from('ips_month_settings').select('*').gte('month', rangeStart).lte('month', months[months.length - 1]),
   ]);
-  if (dailyRes.error || monthlyRes.error) { showToast('Could not load the report data.', true); return; }
+  if (dailyRes.error) { showToast('Could not load the report data.', true); return; }
   const daily = dailyRes.data || [];
-  const monthly = monthlyRes.data || [];
+  const qaEntriesAll = qaEntriesRes.error ? [] : (qaEntriesRes.data || []);
   const settings = settingsRes.data || [];
 
   const sections = [];
@@ -10957,7 +11029,7 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
     const workingDays = (settings.find(s => s.month === monthIso) || {}).working_days || '';
 
     const dailyFor = (empId, dateIso) => daily.find(e => e.employee_id === empId && e.entry_date === dateIso) || null;
-    const monthlyFor = (empId) => monthly.find(x => x.employee_id === empId && x.month === monthIso) || null;
+    const qaEntriesForMonth = (empId) => qaEntriesAll.filter(e => e.employee_id === empId && e.month === monthIso);
 
     const poRatioAvgFor = (empId) => {
       const ratios = dates.map(d => {
@@ -10970,7 +11042,12 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
     };
     const errorsSumFor = (empId) => dates.reduce((s, d) => { const e = dailyFor(empId, d); return s + (e && e.errors != null ? Number(e.errors) : 0); }, 0);
     const ecFor = (empId) => { const wd = Number(workingDays || 0); return wd ? (1 - (errorsSumFor(empId) / wd)) : null; };
-    const qaFor = (empId) => ipsQaFraction(monthlyFor(empId)) ?? 0;
+    const qaFor = (empId) => {
+      const effective = qaEntriesForMonth(empId).filter(e => e.dispute_status !== 'approved');
+      const majorCount = effective.filter(e => e.kind === 'major').length;
+      const minorCount = effective.filter(e => e.kind === 'minor').length;
+      return Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
+    };
 
     // ── Lead Qualification & Missing Data Task — ONE table, two rows
     //    per employee: an "LQ" row immediately followed by an "MD" row,
@@ -10998,13 +11075,16 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 
     const qaBlock = {
       label: 'QA Accuracy',
-      header: ['Agent', 'QA %', 'Major', 'Minor', 'Major Notes', 'Minor Notes'],
+      header: ['Agent', 'QA %', 'Major (effective)', 'Minor (effective)', 'Pending Disputes', 'Lead Names (Major/Minor)'],
       rows: roster.map(emp => {
-        const mData = monthlyFor(emp.id);
-        const majorNotes = mData && Array.isArray(mData.major_notes) ? mData.major_notes.filter(Boolean).join(' | ') : '';
-        const minorNotes = mData && Array.isArray(mData.minor_notes) ? mData.minor_notes.filter(Boolean).join(' | ') : '';
-        const qaFrac = ipsQaFraction(mData);
-        return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '', mData ? (mData.major_count ?? 0) : 0, mData ? (mData.minor_count ?? 0) : 0, majorNotes, minorNotes];
+        const entries = qaEntriesForMonth(emp.id);
+        const effective = entries.filter(e => e.dispute_status !== 'approved');
+        const majorCount = effective.filter(e => e.kind === 'major').length;
+        const minorCount = effective.filter(e => e.kind === 'minor').length;
+        const pendingDisputes = entries.filter(e => e.dispute_status === 'disputed').length;
+        const leadNames = entries.map(e => `${e.lead_name || '—'} (${e.kind})`).join(' | ');
+        const qaFrac = Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
+        return [emp.display_name, (qaFrac * 100).toFixed(2) + '%', majorCount, minorCount, pendingDisputes, leadNames];
       }),
     };
 
@@ -11085,13 +11165,14 @@ function downloadIpsReport() {
 
   sections.push({
     title: 'QA Accuracy',
-    header: ['Agent', 'QA %', 'Major', 'Minor', 'Major Notes', 'Minor Notes'],
+    header: ['Agent', 'QA %', 'Major (effective)', 'Minor (effective)', 'Pending Disputes', 'Lead Names (Major/Minor)'],
     rows: roster.map(emp => {
-      const m = ipsMonthlyFor(emp.id);
-      const majorNotes = m && Array.isArray(m.major_notes) ? m.major_notes.filter(Boolean).join(' | ') : '';
-      const minorNotes = m && Array.isArray(m.minor_notes) ? m.minor_notes.filter(Boolean).join(' | ') : '';
-      const qaFrac = ipsQaFraction(m);
-      return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '', m ? (m.major_count ?? 0) : 0, m ? (m.minor_count ?? 0) : 0, majorNotes, minorNotes];
+      const entries = ipsQaEntriesFor(emp.id, ipsState.month);
+      const { major, minor } = ipsQaEntryCounts(emp.id, ipsState.month);
+      const pendingDisputes = entries.filter(e => e.dispute_status === 'disputed').length;
+      const leadNames = entries.map(e => `${e.lead_name || '—'} (${e.kind})`).join(' | ');
+      const qaFrac = ipsQaFraction(emp.id, ipsState.month);
+      return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '', major, minor, pendingDisputes, leadNames];
     }),
   });
 
@@ -11256,25 +11337,7 @@ function openIpsTabbedReport(monthLabel, sections) {
   win.document.close();
 }
 
-// The single Edit/Done toggle shared by Error Correction and QA
-// Accuracy — one click unlocks EVERY employee's fields in those two
-// tabs at once, with no per-edit prompts. Admin/IPS only.
-function ipsEditToggleHtml() {
-  const on = ipsState.monthlyEditMode;
-  return `
-    <div style="display:flex; justify-content:flex-end; margin-bottom:12px;">
-      <button class="btn ${on ? 'btn-primary' : 'btn-ghost'} btn-sm" id="ips-monthly-edit-toggle" style="padding:6px 16px;">
-        ${on ? '✓ Done' : 'Edit'}
-      </button>
-    </div>
-  `;
-}
-
 function attachIpsHandlers() {
-  document.getElementById('ips-monthly-edit-toggle')?.addEventListener('click', () => {
-    ipsState.monthlyEditMode = !ipsState.monthlyEditMode;
-    renderIpsTables();
-  });
   document.getElementById('ips-missed-outputs-toggle')?.addEventListener('click', () => {
     ipsState.missedOutputsExpanded = !ipsState.missedOutputsExpanded;
     renderIpsTables();
@@ -11314,14 +11377,25 @@ function attachIpsHandlers() {
       if (next) setTimeout(() => { const fresh = document.querySelectorAll(`.ips-daily-input[data-field="${input.dataset.field}"]`)[idx + 1]; if (fresh) fresh.focus(); }, 350);
     });
   });
-  document.querySelectorAll('.ips-qa-input').forEach(input => {
-    input.addEventListener('change', () => saveIpsMonthlyField(input.dataset.empId, input.dataset.field, input.value));
-  });
   document.getElementById('ips-save-working-days')?.addEventListener('click', saveIpsWorkingDays);
-  document.querySelectorAll('.ips-notes-btn').forEach(btn => {
+  document.querySelectorAll('.ips-qa-manage-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      if (btn.dataset.mode === 'edit') openIpsNotesModal(btn.dataset.empId, btn.dataset.kind);
-      else openIpsNotesViewModal(btn.dataset.empId, btn.dataset.kind);
+      const empId = btn.dataset.empId;
+      if (canManageIps() || empId === state.profile.employee_id) {
+        // Admins/IPS get the full manage view for anyone; an employee
+        // clicking their OWN row gets the concede/dispute view instead
+        // of the admin editor.
+        if (canManageIps()) openIpsQaManageModal(empId);
+        else openMyQaEntriesModal();
+      } else {
+        showToast('You can only view your own QA entries.', true);
+      }
+    });
+  });
+  document.querySelectorAll('.ips-dispute-badge').forEach(badge => {
+    badge.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (canManageIps()) openIpsQaManageModal(badge.dataset.empId);
     });
   });
 }
@@ -11655,39 +11729,7 @@ async function clearIpsNotificationForRequest(requestId) {
   renderIpsBell();
 }
 
-async function saveIpsMonthlyField(employeeId, field, rawValue) {
-  // Errors moved to daily entries (see saveIpsDailyEntry) — this
-  // function now only handles the QA fields, which stay admin/IPS-only
-  // behind the Edit-mode toggle.
-  if (!canManageIps()) { showToast('Only admins and IPS can edit this.', true); renderIpsTables(); return; }
-  if (!ipsState.monthlyEditMode) { showToast('Click "Edit" first to unlock these fields.', true); renderIpsTables(); return; }
 
-  let value = rawValue === '' ? null : parseFloat(rawValue);
-  if (value !== null && (isNaN(value) || value < 0)) { showToast('Enter a valid, non-negative number.', true); return; }
-  // QA is typed as a percent (97) but stored as a fraction (0.97) so the
-  // weighted score math matches the spreadsheet exactly.
-  if (field === 'qa_percent' && value !== null) {
-    if (value > 100) { showToast('QA % cannot exceed 100.', true); return; }
-    value = round2(value) / 100;
-  }
-
-  const existing = ipsMonthlyFor(employeeId);
-  const payload = {
-    employee_id: employeeId, month: ipsState.month,
-    updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
-  };
-  payload[field] = value;
-  if (existing) {
-    ['errors','qa_percent','major_count','minor_count','major_notes','minor_notes'].forEach(f => {
-      if (!(f in payload)) payload[f] = existing[f];
-    });
-  }
-
-  const { error } = await sb.from('ips_monthly_data').upsert(payload, { onConflict: 'employee_id,month' });
-  if (error) { console.error(error); showToast(ipsSaveErrorMsg(error), true); return; }
-  await loadIpsData();
-  renderIpsTables();
-}
 
 async function saveIpsWorkingDays() {
   if (!canManageIps()) { showToast('Only admins and IPS can set working days.', true); return; }
@@ -11705,83 +11747,391 @@ async function saveIpsWorkingDays() {
   renderIpsTables();
 }
 
-function openIpsNotesModal(employeeId, kind) {
-  if (!canManageIps()) return;
+const IPS_RECENT_ACTIVITY_OPTIONS = ['Recently Active', 'Active', 'Passive', 'Silent'];
+
+// Admin-facing entry management modal — lists every Major/Minor QA
+// entry for one employee this month, with add/edit/delete, and (if any
+// exist) a dispute-review section right in the same modal so admins
+// don't have to hunt for pending disputes separately from managing
+// entries. Also reachable for non-admins as read-only (canManageIps()
+// gates the actual write actions, not the modal itself, so IPS-role
+// viewers and the entry's own employee can still open it — though the
+// employee's own dispute flow lives in a separate, dedicated modal;
+// see openMyQaEntriesModal).
+function openIpsQaManageModal(employeeId) {
   const emp = state.employees.find(e => e.id === employeeId);
-  const m = ipsMonthlyFor(employeeId);
-  const declaredCount = kind === 'major' ? (m?.major_count || 0) : (m?.minor_count || 0);
-  const existingNotes = ((kind === 'major' ? m?.major_notes : m?.minor_notes) || []).filter(n => n && n.trim());
-  // Show enough rows for the declared count OR any leftover saved notes —
-  // so stale notes can always be cleared even after the count is zeroed.
-  const count = Math.max(declaredCount, existingNotes.length);
+  const admin = canManageIps();
+  renderIpsQaManageModalBody(employeeId, emp, admin);
+}
 
-  const rowsHtml = Array.from({ length: count }).map((_, i) => `
-    <div class="field">
-      <label>${kind === 'major' ? 'Major' : 'Minor'} error #${i + 1}</label>
-      <input type="text" class="ips-note-line" data-idx="${i}" value="${escapeHtml(existingNotes[i] || '')}"
-        style="width:100%; padding:8px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-    </div>
-  `).join('');
+function renderIpsQaManageModalBody(employeeId, emp, admin) {
+  const entries = ipsQaEntriesFor(employeeId, ipsState.month);
+  const majorEntries = entries.filter(e => e.kind === 'major');
+  const minorEntries = entries.filter(e => e.kind === 'minor');
+  const disputed = entries.filter(e => e.dispute_status === 'disputed');
 
-  openModal(`${kind === 'major' ? 'Major' : 'Minor'} error notes — ${emp ? emp.display_name : ''}`, `
-    ${count === 0 ? `<p class="muted" style="font-size:12.5px;">Set a ${kind} error count above first.</p>` : `
-      <form id="ips-notes-form" style="display:flex; flex-direction:column; gap:12px;">
-        ${rowsHtml}
-        <button type="submit" class="btn btn-primary" style="justify-content:center;">Save notes</button>
-      </form>
-    `}
-  `);
+  function entryCard(e) {
+    const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
+    const wash = e.kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
+    const statusBadge = {
+      none:      '',
+      conceded:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green-wash); color:var(--green);">✓ conceded</span>`,
+      disputed:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--coral); color:#fff;">⚠ disputed — pending review</span>`,
+      approved:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green); color:#fff;">✓ dispute approved — removed from count</span>`,
+      rejected:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--ink-faint); color:#fff;">dispute rejected — still counts</span>`,
+    }[e.dispute_status] || '';
+    const excluded = e.dispute_status === 'approved';
+    return `
+      <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:8px; ${excluded ? 'opacity:0.55;' : ''}">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:6px;">
+          <div>
+            <span style="font-weight:700; font-size:12.5px; color:${accent};">${e.kind === 'major' ? 'Major' : 'Minor'}</span>
+            <span style="font-weight:700; font-size:12.5px; margin-left:6px;">${escapeHtml(e.lead_name || 'Unnamed lead')}</span>
+            ${excluded ? '<span class="faint" style="font-size:10.5px; margin-left:6px;">(excluded from QA%)</span>' : ''}
+          </div>
+          ${statusBadge}
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:4px 14px; font-size:11.5px; color:var(--ink-soft); margin-bottom:6px;">
+          <div><span class="faint">Company:</span> ${escapeHtml(e.company || '—')}</div>
+          <div><span class="faint">Job Title:</span> ${escapeHtml(e.job_title || '—')}</div>
+          <div><span class="faint">Domain:</span> ${renderUrlLink(e.domain)}</div>
+          <div><span class="faint">Country:</span> ${escapeHtml(e.country || '—')}</div>
+          <div><span class="faint">Recent Activity:</span> ${escapeHtml(e.recent_activity || '—')}</div>
+          <div><span class="faint">LinkedIn:</span> ${renderUrlLink(e.linkedin_url)}</div>
+        </div>
+        ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
+        ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
+        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Employee's dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}</div>` : ''}
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
+          ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-delete-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; color:var(--coral);">Delete</button>` : ''}
+          ${admin && e.dispute_status === 'disputed' ? `
+            <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
+            <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
+          ` : ''}
+        </div>
+      </div>
+    `;
+  }
 
-  document.getElementById('ips-notes-form')?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    // Drop blank lines — an emptied field means "delete this note"
-    const notes = Array.from(document.querySelectorAll('.ips-note-line')).map(inp => inp.value.trim()).filter(Boolean);
-    const field = kind === 'major' ? 'major_notes' : 'minor_notes';
-    await saveIpsNotes(employeeId, field, notes);
+  const bodyHtml = `
+    ${disputed.length ? `<p class="muted" style="font-size:12px; margin:0 0 12px; color:var(--coral); font-weight:600;">⚠ ${disputed.length} pending dispute${disputed.length===1?'':'s'} below need${disputed.length===1?'s':''} a decision.</p>` : ''}
+    ${admin ? `
+      <div style="display:flex; gap:8px; margin-bottom:14px;">
+        <button class="btn btn-primary btn-sm" id="ips-qa-add-major-btn" style="flex:1; justify-content:center; font-size:12px;">+ Add Major entry</button>
+        <button class="btn btn-primary btn-sm" id="ips-qa-add-minor-btn" style="flex:1; justify-content:center; font-size:12px; background:var(--amber);">+ Add Minor entry</button>
+      </div>
+    ` : ''}
+    ${entries.length ? `
+      ${majorEntries.length ? `<div class="faint" style="font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px;">Major (${majorEntries.length})</div>${majorEntries.map(entryCard).join('')}` : ''}
+      ${minorEntries.length ? `<div class="faint" style="font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; margin:${majorEntries.length ? '14px' : '0'} 0 6px;">Minor (${minorEntries.length})</div>${minorEntries.map(entryCard).join('')}` : ''}
+    ` : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for this month.</p>`}
+  `;
+
+  openModal(`QA entries — ${emp ? emp.display_name : ''}`, bodyHtml);
+  attachIpsQaManageModalHandlers(employeeId, emp, admin);
+}
+
+function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
+  document.getElementById('ips-qa-add-major-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'major', null));
+  document.getElementById('ips-qa-add-minor-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'minor', null));
+  document.querySelectorAll('.ips-qa-edit-entry-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const entry = ipsState.qaEntries.find(e => e.id === btn.dataset.id);
+      if (entry) openIpsQaEntryFormModal(employeeId, entry.kind, entry);
+    });
+  });
+  document.querySelectorAll('.ips-qa-delete-entry-btn').forEach(btn => {
+    btn.addEventListener('click', () => deleteIpsQaEntry(btn.dataset.id, employeeId, emp, admin));
+  });
+  document.querySelectorAll('.ips-qa-approve-dispute-btn').forEach(btn => {
+    btn.addEventListener('click', () => resolveIpsQaDispute(btn.dataset.id, 'approved', employeeId, emp, admin));
+  });
+  document.querySelectorAll('.ips-qa-reject-dispute-btn').forEach(btn => {
+    btn.addEventListener('click', () => resolveIpsQaDispute(btn.dataset.id, 'rejected', employeeId, emp, admin));
   });
 }
 
-// Read-only notes viewer — accessible to EVERYONE, so any agent can see
-// exactly what their QA major/minor errors were.
-function openIpsNotesViewModal(employeeId, kind) {
+// Add/Edit form for a single QA entry — all 8 admin-input fields.
+function openIpsQaEntryFormModal(employeeId, kind, existing) {
   const emp = state.employees.find(e => e.id === employeeId);
-  const m = ipsMonthlyFor(employeeId);
-  const notes = ((kind === 'major' ? m?.major_notes : m?.minor_notes) || []).filter(Boolean);
-  const accent = kind === 'major' ? 'var(--coral)' : 'var(--amber)';
-  const wash = kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
-
-  openModal(`${kind === 'major' ? 'Major' : 'Minor'} error notes — ${emp ? emp.display_name : ''}`, `
-    ${notes.length ? `
-      <div style="display:flex; flex-direction:column; gap:10px;">
-        ${notes.map((n, i) => `
-          <div style="display:flex; gap:10px; align-items:flex-start; padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px;">
-            <span style="font-weight:700; color:${accent}; font-size:12px; flex-shrink:0;">#${i + 1}</span>
-            <span style="font-size:13px; line-height:1.5;">${escapeHtml(n)}</span>
-          </div>
-        `).join('')}
+  const activityOptions = IPS_RECENT_ACTIVITY_OPTIONS.map(o => `<option value="${o}" ${existing?.recent_activity === o ? 'selected' : ''}>${o}</option>`).join('');
+  openModal(`${existing ? 'Edit' : 'Add'} ${kind === 'major' ? 'Major' : 'Minor'} entry — ${emp ? emp.display_name : ''}`, `
+    <form id="ips-qa-entry-form" style="display:flex; flex-direction:column; gap:12px;">
+      <div class="field">
+        <label for="ips-qa-lead-name">Lead Name</label>
+        <input type="text" id="ips-qa-lead-name" value="${escapeHtml(existing?.lead_name || '')}" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
       </div>
-    ` : `<p class="muted" style="font-size:13px; margin:0;">No ${kind} error notes recorded for this month.</p>`}
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label for="ips-qa-company">Company</label>
+          <input type="text" id="ips-qa-company" value="${escapeHtml(existing?.company || '')}"
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div style="flex:1;">
+          <label for="ips-qa-job-title">Job Title</label>
+          <input type="text" id="ips-qa-job-title" value="${escapeHtml(existing?.job_title || '')}"
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      <div class="field" style="display:flex; gap:10px;">
+        <div style="flex:1;">
+          <label for="ips-qa-domain">Domain</label>
+          <input type="text" id="ips-qa-domain" value="${escapeHtml(existing?.domain || '')}" placeholder="e.g. company.com"
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+        <div style="flex:1;">
+          <label for="ips-qa-country">Country</label>
+          <input type="text" id="ips-qa-country" value="${escapeHtml(existing?.country || '')}"
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        </div>
+      </div>
+      <div class="field">
+        <label for="ips-qa-linkedin">LinkedIn URL</label>
+        <input type="text" id="ips-qa-linkedin" value="${escapeHtml(existing?.linkedin_url || '')}" placeholder="e.g. linkedin.com/in/username"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <div class="field">
+        <label for="ips-qa-activity">Recent Activity</label>
+        <select id="ips-qa-activity" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <option value="">—</option>
+          ${activityOptions}
+        </select>
+      </div>
+      <div class="field">
+        <label for="ips-qa-status-reason">Status Reason</label>
+        <textarea id="ips-qa-status-reason" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(existing?.status_reason || '')}</textarea>
+      </div>
+      <div class="field">
+        <label for="ips-qa-reviewer-comment">Reviewer Comment</label>
+        <textarea id="ips-qa-reviewer-comment" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(existing?.reviewer_comment || '')}</textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">${existing ? 'Save changes' : 'Add entry'}</button>
+    </form>
   `);
+
+  document.getElementById('ips-qa-entry-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const payload = {
+      employee_id: employeeId, month: ipsState.month, kind,
+      lead_name: document.getElementById('ips-qa-lead-name').value.trim() || null,
+      company: document.getElementById('ips-qa-company').value.trim() || null,
+      job_title: document.getElementById('ips-qa-job-title').value.trim() || null,
+      domain: document.getElementById('ips-qa-domain').value.trim() || null,
+      country: document.getElementById('ips-qa-country').value.trim() || null,
+      linkedin_url: document.getElementById('ips-qa-linkedin').value.trim() || null,
+      recent_activity: document.getElementById('ips-qa-activity').value || null,
+      status_reason: document.getElementById('ips-qa-status-reason').value.trim() || null,
+      reviewer_comment: document.getElementById('ips-qa-reviewer-comment').value.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+    if (!payload.lead_name) { showToast('Lead Name is required.', true); return; }
+
+    let error;
+    if (existing) {
+      ({ error } = await sb.from('ips_qa_entries').update(payload).eq('id', existing.id));
+    } else {
+      payload.created_by = state.profile.display_name;
+      payload.dispute_status = 'none';
+      ({ error } = await sb.from('ips_qa_entries').insert(payload));
+    }
+    if (error) {
+      console.error(error);
+      showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_qa_entries_schema.sql in Supabase.' : 'Could not save the entry.', true);
+      return;
+    }
+    showToast(existing ? 'Entry updated.' : 'Entry added — QA% recalculated.');
+    await loadIpsData();
+    renderIpsTables();
+    const emp = state.employees.find(x => x.id === employeeId);
+    openIpsQaManageModal(employeeId); // reopen the manage list showing the new/updated entry
+  });
 }
 
-async function saveIpsNotes(employeeId, field, notes) {
-  const existing = ipsMonthlyFor(employeeId);
-  const payload = {
-    employee_id: employeeId, month: ipsState.month,
-    updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
-  };
-  payload[field] = notes;
-  if (existing) {
-    ['errors','qa_percent','major_count','minor_count','major_notes','minor_notes'].forEach(f => {
-      if (!(f in payload)) payload[f] = existing[f];
-    });
-  }
-  const { error } = await sb.from('ips_monthly_data').upsert(payload, { onConflict: 'employee_id,month' });
-  if (error) { console.error(error); showToast('Could not save the notes.', true); return; }
-  closeModal();
-  showToast('Notes saved.');
+async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
+  if (!canManageIps()) { showToast('Only admins and IPS can delete entries.', true); return; }
+  if (!confirm('Delete this entry? This permanently removes it and recalculates QA%. This cannot be undone.')) return;
+  const { error } = await sb.from('ips_qa_entries').delete().eq('id', entryId);
+  if (error) { showToast('Could not delete the entry.', true); return; }
+  showToast('Entry deleted — QA% recalculated.');
   await loadIpsData();
   renderIpsTables();
+  openIpsQaManageModal(employeeId);
+}
+
+// Admin resolves a pending dispute. Approving removes the entry from
+// the QA% count (per the agreed rule); rejecting leaves it counting
+// exactly as before — either way the dispute_status is updated so the
+// employee can see the outcome, and the notification tied to this
+// dispute is cleared for every admin/IPS viewer.
+async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) {
+  if (!canManageIps()) { showToast('Only admins and IPS can resolve disputes.', true); return; }
+  const label = resolution === 'approved' ? 'Approve this dispute? The entry will no longer count against QA%.' : 'Reject this dispute? The entry will continue counting against QA% as before.';
+  if (!confirm(label)) return;
+  const { error } = await sb.from('ips_qa_entries').update({
+    dispute_status: resolution,
+    dispute_reviewed_by: state.profile.display_name,
+    dispute_reviewed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq('id', entryId);
+  if (error) { showToast('Could not resolve the dispute.', true); return; }
+  showToast(resolution === 'approved' ? 'Dispute approved — QA% recalculated.' : 'Dispute rejected — entry still counts.');
+  await clearIpsNotificationForRequest(entryId);
+  await loadIpsData();
+  renderIpsTables();
+  openIpsQaManageModal(employeeId);
+}
+
+// =====================================================================
+// EMPLOYEE-FACING QA DISPUTE VIEW — "My QA Notes"
+// =====================================================================
+// Shows an employee every Major/Minor entry recorded against THEM,
+// across every month (not scoped to whichever month an admin's IPS tab
+// currently has selected — see loadMyQaEntries). For each entry that
+// hasn't been decided yet, the employee can Concede (accept it as-is,
+// no further action) or Dispute (requires a written explanation).
+async function openMyQaEntriesModal() {
+  if (!state.profile || !state.profile.employee_id) return;
+  openModal('My QA Notes', '<div class="loading-row">Loading...</div>');
+  await loadMyQaEntries();
+  renderMyQaEntriesModalBody();
+}
+
+function renderMyQaEntriesModalBody() {
+  const myId = state.profile.employee_id;
+  const mine = ipsState.qaEntries
+    .filter(e => e.employee_id === myId)
+    .sort((a, b) => (b.month || '').localeCompare(a.month || '') || (a.created_at || '').localeCompare(b.created_at || ''));
+
+  function entryCard(e) {
+    const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
+    const wash = e.kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
+    const canAct = e.dispute_status === 'none';
+    const statusLine = {
+      none:      '',
+      conceded:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ You conceded this entry.</div>`,
+      disputed:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--coral);">⚠ Dispute submitted — waiting on admin/IPS review.</div>`,
+      approved:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ Your dispute was approved — this entry no longer counts against your QA%.</div>`,
+      rejected:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--ink-soft);">Your dispute was reviewed and rejected — this entry still counts.</div>`,
+    }[e.dispute_status] || '';
+    return `
+      <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
+          <span style="font-weight:700; font-size:12.5px; color:${accent};">${e.kind === 'major' ? 'Major' : 'Minor'}</span>
+          <span class="faint" style="font-size:11px;">${ipsMonthLabel(e.month)}</span>
+        </div>
+        <div style="overflow-x:auto; margin-bottom:8px;">
+          <table style="border-collapse:collapse; width:100%; min-width:640px; background:#fff; border-radius:6px; overflow:hidden;">
+            <thead>
+              <tr style="background:var(--line-soft);">
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Lead Name</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Company</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Job Title</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Domain</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Country</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">LinkedIn URL</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="padding:7px 9px; font-size:12px; font-weight:600; white-space:nowrap;">${escapeHtml(e.lead_name || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.company || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.job_title || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.domain)}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.country || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.linkedin_url)}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
+        ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
+        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Your dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}</div>` : ''}
+        ${statusLine}
+        ${canAct ? `
+          <div style="display:flex; gap:8px; margin-top:10px;">
+            <button class="btn btn-sm ips-qa-concede-btn" data-id="${e.id}" style="flex:1; justify-content:center; background:var(--green); color:#fff; font-size:11.5px;">Concede</button>
+            <button class="btn btn-ghost btn-sm ips-qa-dispute-btn" data-id="${e.id}" style="flex:1; justify-content:center; font-size:11.5px; color:var(--coral); border-color:var(--coral-wash);">Dispute</button>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  const bodyHtml = mine.length
+    ? mine.map(entryCard).join('')
+    : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for you yet.</p>`;
+
+  openModal('My QA Notes', bodyHtml);
+  document.querySelectorAll('.ips-qa-concede-btn').forEach(btn => {
+    btn.addEventListener('click', () => concedeMyQaEntry(btn.dataset.id));
+  });
+  document.querySelectorAll('.ips-qa-dispute-btn').forEach(btn => {
+    btn.addEventListener('click', () => openDisputeExplanationModal(btn.dataset.id));
+  });
+}
+
+async function concedeMyQaEntry(entryId) {
+  if (!confirm('Concede this entry? This confirms you accept it as recorded — it will continue counting against your QA%.')) return;
+  const { error } = await sb.from('ips_qa_entries').update({
+    dispute_status: 'conceded',
+    updated_at: new Date().toISOString(),
+  }).eq('id', entryId);
+  if (error) { showToast('Could not save your response.', true); return; }
+  showToast('Entry conceded.');
+  await loadMyQaEntries(true);
+  renderMyQaEntriesModalBody();
+}
+
+// Separate small modal for the mandatory dispute explanation, opened
+// from within "My QA Notes" — kept as its own step (rather than an
+// inline textarea) so the explanation can't be accidentally submitted
+// empty, and so the person has a clear moment to write their case.
+function openDisputeExplanationModal(entryId) {
+  const entry = ipsState.qaEntries.find(e => e.id === entryId);
+  if (!entry) return;
+  openModal('Dispute this entry', `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Explain why you believe this ${entry.kind === 'major' ? 'Major' : 'Minor'} entry for <strong>${escapeHtml(entry.lead_name || 'this lead')}</strong> is incorrect. This is required and will be reviewed by an admin/IPS.</p>
+    <form id="ips-qa-dispute-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="ips-qa-dispute-explanation">Dispute explanation</label>
+        <textarea id="ips-qa-dispute-explanation" rows="4" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
+          placeholder="Explain why this entry should not count..."></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; background:var(--coral);">Submit dispute</button>
+    </form>
+  `);
+  document.getElementById('ips-qa-dispute-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const explanation = document.getElementById('ips-qa-dispute-explanation').value.trim();
+    if (!explanation) { showToast('A dispute explanation is required.', true); return; }
+    await submitQaDispute(entryId, explanation);
+  });
+}
+
+async function submitQaDispute(entryId, explanation) {
+  const entry = ipsState.qaEntries.find(e => e.id === entryId);
+  const { data: updated, error } = await sb.from('ips_qa_entries').update({
+    dispute_status: 'disputed',
+    dispute_explanation: explanation,
+    disputed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }).eq('id', entryId).select().single();
+  if (error) { showToast('Could not submit your dispute.', true); return; }
+  showToast('Dispute submitted — an admin/IPS will review it.');
+  // Notify admin/IPS — same pattern as the correction-request stream,
+  // linked to this entry's id so the notification/badge clears
+  // automatically once an admin approves or rejects the dispute.
+  const empLabel = state.profile.display_name;
+  const kindLabel = entry ? (entry.kind === 'major' ? 'Major' : 'Minor') : 'QA';
+  const leadLabel = entry?.lead_name || 'a lead';
+  pushIpsNotification(`${empLabel} disputed a ${kindLabel} QA entry for ${leadLabel} — needs review.`, entryId);
+  await loadMyQaEntries(true);
+  renderMyQaEntriesModalBody();
 }
 
 // =====================================================================
@@ -11864,6 +12214,22 @@ function myPersonalAlertItems() {
     });
   }
 
+  // 3. QA entries awaiting my Concede/Dispute decision — spans every
+  // month I have entries in, not just the currently-viewed IPS month.
+  // Relies on ipsState.qaEntries already being populated (either by an
+  // admin's month-scoped IPS visit, or by this employee having opened
+  // "My QA Notes" at least once this session via loadMyQaEntries) —
+  // deliberately does NOT trigger its own fetch here, to keep this
+  // check as lightweight as the other two items above.
+  const myPendingQaEntries = (ipsState.qaEntries || []).filter(e => e.employee_id === myId && e.dispute_status === 'none');
+  if (myPendingQaEntries.length) {
+    items.push({
+      icon: '📋', label: 'QA entries need your response',
+      detail: `${myPendingQaEntries.length} ${myPendingQaEntries.length === 1 ? 'entry needs' : 'entries need'} you to Concede or Dispute`,
+      sortKey: myPendingQaEntries.reduce((m, e) => (e.created_at || '') > m ? e.created_at : m, ''),
+    });
+  }
+
   return items.sort((a, b) => (b.sortKey || '').localeCompare(a.sortKey || ''));
 }
 
@@ -11904,12 +12270,20 @@ async function ensureIpsDataForPersonalAlerts() {
   paIpsDataLoadingPromise = (async () => {
     const [y, m] = month.split('-').map(Number);
     const monthEnd = isoDate(new Date(y, m, 0));
-    const { data, error } = await sb
-      .from('ips_daily_entries')
-      .select('employee_id, entry_date, lq_value, md_value, po_excluded, other_task')
-      .eq('employee_id', state.profile.employee_id)
-      .gte('entry_date', month)
-      .lte('entry_date', monthEnd);
+    const [dailyRes] = await Promise.all([
+      sb
+        .from('ips_daily_entries')
+        .select('employee_id, entry_date, lq_value, md_value, po_excluded, other_task')
+        .eq('employee_id', state.profile.employee_id)
+        .gte('entry_date', month)
+        .lte('entry_date', monthEnd),
+      // Runs alongside the daily-entries fetch so this doesn't add any
+      // extra wait time — populates ipsState.qaEntries with this
+      // employee's own entries across every month, needed for the
+      // "QA entries need your response" alert item.
+      loadMyQaEntries(),
+    ]);
+    const { data, error } = dailyRes;
     if (error) { console.error('Personal alerts IPS check failed:', error); return; }
 
     // Merge into ipsState.dailyEntries rather than replacing it — if the
@@ -11977,7 +12351,7 @@ function renderPersonalAlertsFromCache() {
     badge.style.display = 'none';
   }
   list.innerHTML = items.length ? items.map(item => `
-    <div style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start;">
+    <div class="pa-alert-item" data-action="${item.label === 'QA entries need your response' ? 'open-qa-notes' : ''}" style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start; ${item.label === 'QA entries need your response' ? 'cursor:pointer;' : ''}">
       <span style="font-size:16px; flex-shrink:0; margin-top:1px;">${item.icon}</span>
       <div style="flex:1; min-width:0;">
         <div style="font-size:12.5px; font-weight:600; color:var(--ink);">${escapeHtml(item.label)}</div>
@@ -11990,6 +12364,9 @@ function renderPersonalAlertsFromCache() {
       <div style="font-size:13px;">Nothing to flag right now.</div>
     </div>
   `;
+  list.querySelectorAll('.pa-alert-item[data-action="open-qa-notes"]').forEach(el => {
+    el.addEventListener('click', () => openMyQaEntriesModal());
+  });
 }
 
 // ── Shared bubble stack controller ──────────────────────────────────
@@ -12988,6 +13365,20 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// Renders a URL-like value (LinkedIn URL, Domain, etc.) as a clickable
+// link that opens in a new tab. Values typed without a protocol (e.g.
+// "linkedin.com/in/username" or just "company.com" — the common way
+// people paste these) get "https://" prepended before being used as
+// the href, so the link actually navigates out to the real site
+// instead of resolving as a broken relative path on this app's own
+// domain. The visible text always stays exactly what was typed.
+function renderUrlLink(value, colorVar) {
+  if (!value || !value.trim()) return '—';
+  const trimmed = value.trim();
+  const href = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" style="color:${colorVar || 'var(--gold-line)'}; text-decoration:underline;">${escapeHtml(trimmed)}</a>`;
 }
 
 // =====================================================================
