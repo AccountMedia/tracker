@@ -1346,11 +1346,31 @@ function updateBrowserTabBadge(count) {
 // Kristina, or a Team Funds change from a treasurer now updates the
 // badge the instant it's saved, regardless of which tab is open.
 function startNavBadgePolling() {
-  if (!state.profile || !(isAdmin() || state.profile.role === 'ips')) return;
+  if (!state.profile) return;
+  const isAdminOrIps = isAdmin() || state.profile.role === 'ips';
   const rerenderBadge = debounceRealtime(() => {
     if (!state.profile || !(isAdmin() || state.profile.role === 'ips')) return;
     updateLeaveNavBadge();
   }, 200); // short debounce — badges should feel instant
+
+  // Every logged-in employee (not just admin/IPS) gets a lightweight,
+  // always-on subscription to their OWN QA entries — this is what lets
+  // "My Alerts" show a brand-new Major/Minor entry (or a dispute
+  // outcome) in real time, on whatever tab they happen to be on, not
+  // only while the IPS tab is open. Scoped with a Postgres RLS-style
+  // filter isn't available on realtime channels, so this patches
+  // client-side and ignores anything not belonging to this employee.
+  const rerenderAlerts = debounceRealtime(() => {
+    if (state.profile) renderPersonalAlerts();
+  }, 200);
+  subscribeRealtime('my_qa_entries', 'ips_qa_entries', (payload) => {
+    const row = payload.new || payload.old;
+    if (!state.profile || row.employee_id !== state.profile.employee_id) return; // not mine — ignore
+    applyRealtimePatch(payload, () => ipsState.qaEntries, (v) => { ipsState.qaEntries = v; });
+    rerenderAlerts();
+  });
+
+  if (!isAdminOrIps) return; // everything below is admin/IPS-only, as before
 
   // Only open a SEPARATE leave_entries subscription if one doesn't
   // already exist (e.g. from the Leave Tracker tab or Dashboard being
@@ -1423,6 +1443,7 @@ function startNavBadgePolling() {
 function stopNavBadgePolling() {
   unsubscribeRealtime('badge_leave_entries');
   unsubscribeRealtime('badge_leave_notifications');
+  unsubscribeRealtime('my_qa_entries');
 }
 
 // Re-renders whichever view is currently on screen, so staged data
@@ -1450,7 +1471,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-qa-table-parity-tab-persist';
+const APP_VERSION = '2026-07-28-qa-tabs-nocallout-live-notify';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9718,6 +9739,8 @@ const ipsState = {
   qaEntries: [],              // structured Major/Minor QA entries (ips_qa_entries) — replaces the old major_notes/minor_notes text arrays
   qaEntriesLoadedMonth: null, // which month's qaEntries are currently loaded, so a cache-first repaint doesn't show stale data
   qaPanelExpanded: {},        // { [employeeId]: true } — which employee's QA entry list is expanded in the admin's edit view
+  qaNoCallouts: [],           // explicit "reviewed, no Major/Minor issues" records (ips_qa_no_callouts) — distinguishes "reviewed and clean" from "not yet reviewed" for QA%
+  qaTab: 'major',             // 'major' | 'minor' — which tab is active inside the QA entry manage/view modals
 };
 
 function ipsDatesForMonth(monthIso) {
@@ -9732,13 +9755,14 @@ async function loadIpsData() {
   const [y, m] = monthStart.split('-').map(Number);
   const monthEnd = isoDate(new Date(y, m, 0));
 
-  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes, qaEntriesRes] = await Promise.all([
+  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes, qaEntriesRes, noCalloutsRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', monthStart).lte('entry_date', monthEnd),
     sb.from('ips_monthly_data').select('*').eq('month', monthStart),
     sb.from('ips_month_settings').select('*').eq('month', monthStart).maybeSingle(),
     sb.from('ips_correction_requests').select('*').order('requested_at', { ascending: false }),
     sb.from('ips_emergency_unlocks').select('*').eq('unlock_date', isoDate(new Date())),
     sb.from('ips_qa_entries').select('*').eq('month', monthStart).order('created_at', { ascending: true }),
+    sb.from('ips_qa_no_callouts').select('*').eq('month', monthStart),
   ]);
 
   if (dailyRes.error || monthlyRes.error) {
@@ -9771,6 +9795,14 @@ async function loadIpsData() {
     ipsState.qaEntriesLoadedMonth = monthStart;
   } else if (!/relation .* does not exist/i.test(qaEntriesRes.error.message || '')) {
     console.error('Could not load QA entries:', qaEntriesRes.error);
+  }
+
+  // No-callout reviews — not fatal if ips_qa_no_callouts.sql hasn't
+  // been run yet either.
+  if (!noCalloutsRes.error) {
+    ipsState.qaNoCallouts = noCalloutsRes.data || [];
+  } else if (!/relation .* does not exist/i.test(noCalloutsRes.error.message || '')) {
+    console.error('Could not load QA no-callout reviews:', noCalloutsRes.error);
   }
 }
 
@@ -9891,6 +9923,12 @@ function ipsQaEntryCounts(employeeId, monthIso) {
   return { major: effective('major'), minor: effective('minor') };
 }
 
+// Whether an admin has explicitly marked this employee as reviewed-
+// and-clean for this month (see "No call-out" in the manage modal).
+function ipsQaHasNoCallout(employeeId, monthIso) {
+  return ipsState.qaNoCallouts.some(n => n.employee_id === employeeId && n.month === monthIso);
+}
+
 // QA% is now fully derived — 100, minus 3 points per still-counting
 // Major entry, minus 1 point per still-counting Minor entry. No manual
 // qa_percent field exists anymore; admins can only affect this by
@@ -9898,19 +9936,25 @@ function ipsQaEntryCounts(employeeId, monthIso) {
 // dispute, which removes an entry from the count).
 //
 // Returns null — not 100% — when the employee has ZERO QA entries
-// recorded at all. This is deliberate: an admin simply hasn't reviewed
-// this employee yet, which is a genuinely different state from "was
-// reviewed and found clean" (100%). Returning null lets the display
-// layer show a blank/"not reviewed" indicator instead of a number an
-// employee could mistake for an actual clean score. Scoring math is
-// unaffected — ipsMonthlyScore already falls back to 0 for this exact
-// case via `?? 0`, so the leaderboard/total-score cascade is untouched;
-// only the QA Accuracy tab's own display needs to distinguish the two.
+// recorded AND no explicit "No call-out" review either. This is
+// deliberate: an admin simply hasn't reviewed this employee yet, which
+// is a genuinely different state from "was reviewed and found clean"
+// (100%, either via a No call-out record or via zero still-counting
+// entries after review). Returning null lets the display layer show a
+// blank/"not reviewed" indicator instead of a number an employee could
+// mistake for an actual clean score. Scoring math is unaffected —
+// ipsMonthlyScore already falls back to 0 for this exact case via
+// `?? 0`, so the leaderboard/total-score cascade is untouched; only
+// the QA Accuracy tab's own display needs to distinguish the two.
 function ipsQaFraction(employeeId, monthIso) {
   if (!employeeId || !monthIso) return null;
   const { major, minor } = ipsQaEntryCounts(employeeId, monthIso);
   const totalEntries = ipsQaEntriesFor(employeeId, monthIso).length;
-  if (totalEntries === 0) return null; // nothing recorded yet — not the same as a clean 100%
+  if (totalEntries === 0) {
+    // Nothing recorded yet — genuinely 100% ONLY if an admin explicitly
+    // confirmed "No call-out" for this month; otherwise stays blank.
+    return ipsQaHasNoCallout(employeeId, monthIso) ? 1 : null;
+  }
   const pct = 100 - (major * 3) - (minor * 1);
   return Math.max(0, pct) / 100;
 }
@@ -11772,6 +11816,9 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
   const majorEntries = entries.filter(e => e.kind === 'major');
   const minorEntries = entries.filter(e => e.kind === 'minor');
   const disputed = entries.filter(e => e.dispute_status === 'disputed');
+  const hasNoCallout = ipsQaHasNoCallout(employeeId, ipsState.month);
+  const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
+  const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
 
   function entryCard(e) {
     const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
@@ -11802,8 +11849,8 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Job Title</th>
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Domain</th>
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Country</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">LinkedIn URL</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
               </tr>
             </thead>
             <tbody>
@@ -11813,8 +11860,8 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.job_title || '—')}</td>
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.domain)}</td>
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.country || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.linkedin_url)}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
               </tr>
             </tbody>
           </table>
@@ -11834,18 +11881,39 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
     `;
   }
 
+  const tabBtn = (kind, label, count) => `
+    <button type="button" class="ips-qa-subtab-btn" data-tab="${kind}" style="
+      flex:1; padding:9px 10px; font-size:12.5px; font-weight:600; font-family:inherit; cursor:pointer;
+      border:none; background:none;
+      border-bottom:${activeTab === kind ? `3px solid ${kind === 'major' ? 'var(--coral)' : 'var(--amber)'}` : '3px solid transparent'};
+      color:${activeTab === kind ? (kind === 'major' ? 'var(--coral)' : 'var(--amber)') : 'var(--ink-faint)'};
+      margin-bottom:-2px;">
+      ${label} (${count})
+    </button>
+  `;
+
   const bodyHtml = `
     ${disputed.length ? `<p class="muted" style="font-size:12px; margin:0 0 12px; color:var(--coral); font-weight:600;">⚠ ${disputed.length} pending dispute${disputed.length===1?'':'s'} below need${disputed.length===1?'s':''} a decision.</p>` : ''}
+    ${hasNoCallout ? `
+      <div style="padding:10px 14px; margin-bottom:14px; background:var(--green-wash); border-radius:8px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
+        <span style="font-size:12.5px; font-weight:600; color:var(--green);">✓ Reviewed — no Major or Minor issues found for ${ipsMonthLabel(ipsState.month)}. QA% is 100%.</span>
+        ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-clear-no-callout-btn" style="font-size:10.5px; padding:3px 9px; flex-shrink:0;">Undo</button>` : ''}
+      </div>
+    ` : ''}
     ${admin ? `
       <div style="display:flex; gap:8px; margin-bottom:14px;">
         <button class="btn btn-primary btn-sm" id="ips-qa-add-major-btn" style="flex:1; justify-content:center; font-size:12px;">+ Add Major entry</button>
         <button class="btn btn-primary btn-sm" id="ips-qa-add-minor-btn" style="flex:1; justify-content:center; font-size:12px; background:var(--amber);">+ Add Minor entry</button>
+        ${!hasNoCallout && !entries.length ? `<button class="btn btn-ghost btn-sm" id="ips-qa-no-callout-btn" style="flex:1; justify-content:center; font-size:12px;">No call-out</button>` : ''}
       </div>
     ` : ''}
     ${entries.length ? `
-      ${majorEntries.length ? `<div class="faint" style="font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px;">Major (${majorEntries.length})</div>${majorEntries.map(entryCard).join('')}` : ''}
-      ${minorEntries.length ? `<div class="faint" style="font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; margin:${majorEntries.length ? '14px' : '0'} 0 6px;">Minor (${minorEntries.length})</div>${minorEntries.map(entryCard).join('')}` : ''}
-    ` : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for this month.</p>`}
+      <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin-bottom:14px;">
+        ${tabBtn('major', 'Major', majorEntries.length)}
+        ${tabBtn('minor', 'Minor', minorEntries.length)}
+      </div>
+      ${activeEntries.length ? activeEntries.map(entryCard).join('') : `<p class="muted" style="font-size:13px; margin:0;">No ${activeTab === 'major' ? 'Major' : 'Minor'} entries for this month.</p>`}
+    ` : hasNoCallout ? '' : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for this month.</p>`}
   `;
 
   openModal(`QA entries — ${emp ? emp.display_name : ''}`, bodyHtml, { width: '900px' });
@@ -11855,6 +11923,14 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
 function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   document.getElementById('ips-qa-add-major-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'major', null));
   document.getElementById('ips-qa-add-minor-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'minor', null));
+  document.getElementById('ips-qa-no-callout-btn')?.addEventListener('click', () => markIpsQaNoCallout(employeeId, emp));
+  document.getElementById('ips-qa-clear-no-callout-btn')?.addEventListener('click', () => clearIpsQaNoCallout(employeeId, emp));
+  document.querySelectorAll('.ips-qa-subtab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ipsState.qaTab = btn.dataset.tab;
+      openIpsQaManageModal(employeeId);
+    });
+  });
   document.querySelectorAll('.ips-qa-edit-entry-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const entry = ipsState.qaEntries.find(e => e.id === btn.dataset.id);
@@ -11870,6 +11946,38 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   document.querySelectorAll('.ips-qa-reject-dispute-btn').forEach(btn => {
     btn.addEventListener('click', () => resolveIpsQaDispute(btn.dataset.id, 'rejected', employeeId, emp, admin));
   });
+}
+
+// Admin explicitly confirms "I reviewed this employee for this month
+// and found nothing" — creates a record so QA% shows a genuine 100%
+// instead of staying blank. Only offered when zero entries exist yet
+// (adding a real entry later should replace this state, not coexist
+// with it — see markIpsQaNoCallout's own guard and openIpsQaEntryFormModal's
+// cleanup of any existing no-callout record on save).
+async function markIpsQaNoCallout(employeeId, emp) {
+  if (!canManageIps()) { showToast('Only admins and IPS can do this.', true); return; }
+  const { error } = await sb.from('ips_qa_no_callouts').insert({
+    employee_id: employeeId, month: ipsState.month, reviewed_by: state.profile.display_name,
+  });
+  if (error) {
+    console.error(error);
+    showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_qa_no_callouts_schema.sql in Supabase.' : 'Could not save.', true);
+    return;
+  }
+  showToast(`${emp ? emp.display_name : 'Employee'} marked reviewed — QA% is now 100%.`);
+  await loadIpsData();
+  renderIpsTables();
+  openIpsQaManageModal(employeeId);
+}
+
+async function clearIpsQaNoCallout(employeeId, emp) {
+  if (!canManageIps()) { showToast('Only admins and IPS can do this.', true); return; }
+  const { error } = await sb.from('ips_qa_no_callouts').delete().eq('employee_id', employeeId).eq('month', ipsState.month);
+  if (error) { showToast('Could not undo.', true); return; }
+  showToast('No call-out cleared — QA% is blank again until reviewed.');
+  await loadIpsData();
+  renderIpsTables();
+  openIpsQaManageModal(employeeId);
 }
 
 // Add/Edit form for a single QA entry — all 8 admin-input fields.
@@ -11955,6 +12063,12 @@ function openIpsQaEntryFormModal(employeeId, kind, existing) {
       payload.created_by = state.profile.display_name;
       payload.dispute_status = 'none';
       ({ error } = await sb.from('ips_qa_entries').insert(payload));
+      // A real entry and a "No call-out" review can't both be true for
+      // the same employee/month — clear the no-callout record if one
+      // exists, since adding this entry means the month is no longer clean.
+      if (!error) {
+        await sb.from('ips_qa_no_callouts').delete().eq('employee_id', employeeId).eq('month', ipsState.month);
+      }
     }
     if (error) {
       console.error(error);
