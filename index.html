@@ -1187,11 +1187,12 @@ function switchView(viewName) {
     viewName = 'dashboard';
   }
 
-  // PrioList is deactivated in-app — this is a genuine redirect-away,
+  // PrioList is deactivated in-app for everyone EXCEPT Jeinna, who
+  // still needs the real in-app view — this is a genuine redirect-away,
   // not just a hidden view, so it's caught here too (not only in the
   // nav-click handler) to cover a stale saved session restoring this
   // view on refresh, or any other direct call into switchView('priolist').
-  if (viewName === 'priolist') {
+  if (viewName === 'priolist' && state.profile?.display_name !== 'Jeinna Louise Perez') {
     window.location.href = 'https://accountmedia-phteam.com/productivity';
     return;
   }
@@ -1545,7 +1546,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-priolist-redirect';
+const APP_VERSION = '2026-07-29-priolist-redirect-jeinna-exempt';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
