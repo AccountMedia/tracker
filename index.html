@@ -1357,15 +1357,22 @@ function startNavBadgePolling() {
   // always-on subscription to their OWN QA entries — this is what lets
   // "My Alerts" show a brand-new Major/Minor entry (or a dispute
   // outcome) in real time, on whatever tab they happen to be on, not
-  // only while the IPS tab is open. Scoped with a Postgres RLS-style
-  // filter isn't available on realtime channels, so this patches
-  // client-side and ignores anything not belonging to this employee.
+  // only while the IPS tab is open.
+  //
+  // Jeinna and Kristina specifically (the two people who review
+  // disputes) get an UNSCOPED view — every employee's entries, not just
+  // their own — since their My Alerts needs to surface "QA disputes
+  // need your review" for anyone's dispute, not only their own.
+  // Scoping with a Postgres RLS-style filter isn't available on
+  // realtime channels, so this patches client-side per-row instead.
+  const isQaReviewer = state.profile && ['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name);
   const rerenderAlerts = debounceRealtime(() => {
     if (state.profile) renderPersonalAlerts();
   }, 200);
   subscribeRealtime('my_qa_entries', 'ips_qa_entries', (payload) => {
     const row = payload.new || payload.old;
-    if (!state.profile || row.employee_id !== state.profile.employee_id) return; // not mine — ignore
+    if (!state.profile) return;
+    if (!isQaReviewer && row.employee_id !== state.profile.employee_id) return; // not mine, and I'm not a reviewer — ignore
     applyRealtimePatch(payload, () => ipsState.qaEntries, (v) => { ipsState.qaEntries = v; });
     rerenderAlerts();
   });
@@ -1471,7 +1478,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-qa-tabs-nocallout-live-notify';
+const APP_VERSION = '2026-07-28-qa-dispute-alert-clears';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9790,8 +9797,20 @@ async function loadIpsData() {
   ipsState.emergencyUnlocks = emergencyRes.error ? [] : (emergencyRes.data || []);
 
   // QA entries — not fatal if ips_qa_entries.sql hasn't been run yet.
+  // Merge rather than replace: this fetch is scoped to whichever month
+  // the IPS tab currently has selected, but ipsState.qaEntries may
+  // already hold OTHER months' rows too (an employee's own cross-month
+  // dispute view, or a reviewer's cross-employee pending-dispute list —
+  // see loadMyQaEntries and the reviewer cold-start fetch in
+  // ensureIpsDataForPersonalAlerts). A full replacement here would
+  // silently drop those, which was exactly why a resolved dispute could
+  // keep showing under "QA disputes need your review" — this month's
+  // fresh data would overwrite the correction that same in-memory
+  // patch had just made moments earlier if their timing ever crossed.
   if (!qaEntriesRes.error) {
-    ipsState.qaEntries = qaEntriesRes.data || [];
+    const freshRows = qaEntriesRes.data || [];
+    const otherMonthsOrAlreadyTracked = ipsState.qaEntries.filter(e => e.month !== monthStart);
+    ipsState.qaEntries = [...otherMonthsOrAlreadyTracked, ...freshRows];
     ipsState.qaEntriesLoadedMonth = monthStart;
   } else if (!/relation .* does not exist/i.test(qaEntriesRes.error.message || '')) {
     console.error('Could not load QA entries:', qaEntriesRes.error);
@@ -12103,14 +12122,25 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) 
   if (!canManageIps()) { showToast('Only admins and IPS can resolve disputes.', true); return; }
   const label = resolution === 'approved' ? 'Approve this dispute? The entry will no longer count against QA%.' : 'Reject this dispute? The entry will continue counting against QA% as before.';
   if (!confirm(label)) return;
+  const reviewedAt = new Date().toISOString();
   const { error } = await sb.from('ips_qa_entries').update({
     dispute_status: resolution,
     dispute_reviewed_by: state.profile.display_name,
-    dispute_reviewed_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    dispute_reviewed_at: reviewedAt,
+    updated_at: reviewedAt,
   }).eq('id', entryId);
   if (error) { showToast('Could not resolve the dispute.', true); return; }
   showToast(resolution === 'approved' ? 'Dispute approved — QA% recalculated.' : 'Dispute rejected — entry still counts.');
+  // Patch the in-memory row immediately — don't wait on loadIpsData()
+  // below, which only re-fetches whichever month the IPS tab currently
+  // has selected. If this entry belongs to a DIFFERENT month than what's
+  // showing, that fetch would silently miss it (and its full-array
+  // replacement would leave the resolved entry's stale 'disputed'
+  // status sitting in memory), which is exactly what let this dispute
+  // keep showing under "QA disputes need your review" after being
+  // resolved. This patch guarantees My Alerts sees the change instantly
+  // regardless of month scoping.
+  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, dispute_status: resolution, dispute_reviewed_by: state.profile.display_name, dispute_reviewed_at: reviewedAt } : e);
   await clearIpsNotificationForRequest(entryId);
   await loadIpsData();
   renderIpsTables();
@@ -12137,6 +12167,10 @@ function renderMyQaEntriesModalBody() {
   const mine = ipsState.qaEntries
     .filter(e => e.employee_id === myId)
     .sort((a, b) => (b.month || '').localeCompare(a.month || '') || (a.created_at || '').localeCompare(b.created_at || ''));
+  const majorEntries = mine.filter(e => e.kind === 'major');
+  const minorEntries = mine.filter(e => e.kind === 'minor');
+  const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
+  const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
 
   function entryCard(e) {
     const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
@@ -12164,8 +12198,8 @@ function renderMyQaEntriesModalBody() {
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Job Title</th>
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Domain</th>
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Country</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
                 <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">LinkedIn URL</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
               </tr>
             </thead>
             <tbody>
@@ -12175,8 +12209,8 @@ function renderMyQaEntriesModalBody() {
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.job_title || '—')}</td>
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.domain)}</td>
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.country || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
                 <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.linkedin_url)}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
               </tr>
             </tbody>
           </table>
@@ -12195,11 +12229,32 @@ function renderMyQaEntriesModalBody() {
     `;
   }
 
-  const bodyHtml = mine.length
-    ? mine.map(entryCard).join('')
-    : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for you yet.</p>`;
+  const tabBtn = (kind, label, count) => `
+    <button type="button" class="ips-qa-subtab-btn" data-tab="${kind}" style="
+      flex:1; padding:9px 10px; font-size:12.5px; font-weight:600; font-family:inherit; cursor:pointer;
+      border:none; background:none;
+      border-bottom:${activeTab === kind ? `3px solid ${kind === 'major' ? 'var(--coral)' : 'var(--amber)'}` : '3px solid transparent'};
+      color:${activeTab === kind ? (kind === 'major' ? 'var(--coral)' : 'var(--amber)') : 'var(--ink-faint)'};
+      margin-bottom:-2px;">
+      ${label} (${count})
+    </button>
+  `;
+
+  const bodyHtml = mine.length ? `
+    <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin-bottom:14px;">
+      ${tabBtn('major', 'Major', majorEntries.length)}
+      ${tabBtn('minor', 'Minor', minorEntries.length)}
+    </div>
+    ${activeEntries.length ? activeEntries.map(entryCard).join('') : `<p class="muted" style="font-size:13px; margin:0;">No ${activeTab === 'major' ? 'Major' : 'Minor'} entries recorded.</p>`}
+  ` : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for you yet.</p>`;
 
   openModal('My QA Notes', bodyHtml, { width: '900px' });
+  document.querySelectorAll('.ips-qa-subtab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      ipsState.qaTab = btn.dataset.tab;
+      renderMyQaEntriesModalBody();
+    });
+  });
   document.querySelectorAll('.ips-qa-concede-btn').forEach(btn => {
     btn.addEventListener('click', () => concedeMyQaEntry(btn.dataset.id));
   });
@@ -12364,6 +12419,27 @@ function myPersonalAlertItems() {
     });
   }
 
+  // 4. Pending QA disputes awaiting admin review — visible ONLY to
+  // Jeinna and Kristina by name (the two people who actually review
+  // these), not the broader admin/IPS role in general. Shows in THEIR
+  // own My Alerts regardless of which employee's entry was disputed —
+  // this is the "notify the reviewers" counterpart to item #3 above
+  // (which notifies the employee whose entry it is).
+  if (['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name)) {
+    const pendingDisputes = (ipsState.qaEntries || []).filter(e => e.dispute_status === 'disputed');
+    if (pendingDisputes.length) {
+      const names = [...new Set(pendingDisputes.map(e => {
+        const emp = state.employees.find(x => x.id === e.employee_id);
+        return emp ? emp.display_name : 'Someone';
+      }))];
+      items.push({
+        icon: '⚠️', label: 'QA disputes need your review',
+        detail: `${pendingDisputes.length} pending: ${names.join(', ')}`,
+        sortKey: pendingDisputes.reduce((m, e) => (e.disputed_at || '') > m ? e.disputed_at : m, ''),
+      });
+    }
+  }
+
   return items.sort((a, b) => (b.sortKey || '').localeCompare(a.sortKey || ''));
 }
 
@@ -12404,6 +12480,7 @@ async function ensureIpsDataForPersonalAlerts() {
   paIpsDataLoadingPromise = (async () => {
     const [y, m] = month.split('-').map(Number);
     const monthEnd = isoDate(new Date(y, m, 0));
+    const isQaReviewer = ['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name);
     const [dailyRes] = await Promise.all([
       sb
         .from('ips_daily_entries')
@@ -12416,6 +12493,19 @@ async function ensureIpsDataForPersonalAlerts() {
       // employee's own entries across every month, needed for the
       // "QA entries need your response" alert item.
       loadMyQaEntries(),
+      // Reviewers ALSO need every pending dispute across every
+      // employee, not just their own entries — this is the cold-start
+      // counterpart to the always-on realtime subscription in
+      // startNavBadgePolling, covering disputes that already existed
+      // before this session's subscription connected.
+      isQaReviewer
+        ? sb.from('ips_qa_entries').select('*').eq('dispute_status', 'disputed').then(({ data: disputedRows, error: disputedErr }) => {
+            if (disputedErr) { console.error('Could not load pending QA disputes for reviewer:', disputedErr); return; }
+            const existingIds = new Set(ipsState.qaEntries.map(e => e.id));
+            const newOnes = (disputedRows || []).filter(e => !existingIds.has(e.id));
+            ipsState.qaEntries = [...ipsState.qaEntries, ...newOnes];
+          })
+        : Promise.resolve(),
     ]);
     const { data, error } = dailyRes;
     if (error) { console.error('Personal alerts IPS check failed:', error); return; }
@@ -12484,15 +12574,22 @@ function renderPersonalAlertsFromCache() {
   } else {
     badge.style.display = 'none';
   }
-  list.innerHTML = items.length ? items.map(item => `
-    <div class="pa-alert-item" data-action="${item.label === 'QA entries need your response' ? 'open-qa-notes' : ''}" style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start; ${item.label === 'QA entries need your response' ? 'cursor:pointer;' : ''}">
+  const alertActions = {
+    'QA entries need your response': 'open-qa-notes',
+    'QA disputes need your review': 'open-qa-accuracy-tab',
+  };
+  list.innerHTML = items.length ? items.map(item => {
+    const action = alertActions[item.label] || '';
+    return `
+    <div class="pa-alert-item" data-action="${action}" style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start; ${action ? 'cursor:pointer;' : ''}">
       <span style="font-size:16px; flex-shrink:0; margin-top:1px;">${item.icon}</span>
       <div style="flex:1; min-width:0;">
         <div style="font-size:12.5px; font-weight:600; color:var(--ink);">${escapeHtml(item.label)}</div>
         <div class="faint" style="font-size:11.5px; margin-top:2px;">${escapeHtml(item.detail)}</div>
       </div>
     </div>
-  `).join('') : `
+  `;
+  }).join('') : `
     <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
       <div style="font-size:28px; margin-bottom:8px;">🔔</div>
       <div style="font-size:13px;">Nothing to flag right now.</div>
@@ -12500,6 +12597,14 @@ function renderPersonalAlertsFromCache() {
   `;
   list.querySelectorAll('.pa-alert-item[data-action="open-qa-notes"]').forEach(el => {
     el.addEventListener('click', () => openMyQaEntriesModal());
+  });
+  list.querySelectorAll('.pa-alert-item[data-action="open-qa-accuracy-tab"]').forEach(el => {
+    el.addEventListener('click', () => {
+      switchView('ips');
+      ipsState.tab = 'qa';
+      sessionStorage.setItem('registry_ips_tab', 'qa');
+      renderIpsTables();
+    });
   });
 }
 
