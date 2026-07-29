@@ -1502,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-qa-percent-color-94';
+const APP_VERSION = '2026-07-29-qa-reject-reason';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11941,6 +11941,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
         ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Employee's dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}</div>` : ''}
+        ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
         <div style="display:flex; gap:6px; margin-top:8px;">
           ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
           ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-delete-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; color:var(--coral);">Delete</button>` : ''}
@@ -12173,13 +12174,23 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
 // dispute is cleared for every admin/IPS viewer.
 async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) {
   if (!canResolveIpsQaDisputes()) { showToast('Only Kristina and Jeinna can resolve disputes.', true); return; }
-  const label = resolution === 'approved' ? 'Approve this dispute? The entry will no longer count against QA%.' : 'Reject this dispute? The entry will continue counting against QA% as before.';
-  if (!confirm(label)) return;
+  let rejectReason = null;
+  if (resolution === 'approved') {
+    if (!confirm('Approve this dispute? The entry will no longer count against QA%.')) return;
+  } else {
+    // Optional explanation for a rejection — same pattern as correction
+    // request rejections: prompt() returns null only if the whole thing
+    // was cancelled (abort entirely); an empty string means they chose
+    // to skip the explanation but still want to proceed with the reject.
+    rejectReason = prompt('Reject this dispute? The entry will continue counting against QA% as before.\n\nOptional: explain why (visible to the employee).');
+    if (rejectReason === null) return; // cancelled entirely
+  }
   const reviewedAt = new Date().toISOString();
   const { error } = await sb.from('ips_qa_entries').update({
     dispute_status: resolution,
     dispute_reviewed_by: state.profile.display_name,
     dispute_reviewed_at: reviewedAt,
+    dispute_reject_reason: resolution === 'rejected' ? (rejectReason || null) : null,
     updated_at: reviewedAt,
   }).eq('id', entryId);
   if (error) { showToast('Could not resolve the dispute.', true); return; }
@@ -12193,7 +12204,7 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) 
   // keep showing under "QA disputes need your review" after being
   // resolved. This patch guarantees My Alerts sees the change instantly
   // regardless of month scoping.
-  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, dispute_status: resolution, dispute_reviewed_by: state.profile.display_name, dispute_reviewed_at: reviewedAt } : e);
+  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, dispute_status: resolution, dispute_reviewed_by: state.profile.display_name, dispute_reviewed_at: reviewedAt, dispute_reject_reason: resolution === 'rejected' ? (rejectReason || null) : null } : e);
   await clearIpsNotificationForRequest(entryId);
   await loadIpsData();
   renderIpsTables();
@@ -12271,6 +12282,7 @@ function renderMyQaEntriesModalBody() {
         ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
         ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Your dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}</div>` : ''}
+        ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
         ${statusLine}
         ${canAct ? `
           <div style="display:flex; gap:8px; margin-top:10px;">
