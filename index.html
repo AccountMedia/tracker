@@ -1502,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-ips-role-report-restrict';
+const APP_VERSION = '2026-07-28-qa-percent-color-94';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10477,7 +10477,7 @@ function renderIpsTables() {
       // QA% text color: any still-counting Major entry takes priority
       // and always shows red, regardless of the score. Otherwise, a
       // 97-100% score shows blue. Anything else uses the normal ink color.
-      const qaColor = major > 0 ? 'var(--coral)' : (qa !== '' && qa >= 97 && qa <= 100) ? '#2D6A9F' : (qa !== '' && qa <= 95) ? 'var(--coral)' : 'inherit';
+      const qaColor = major > 0 ? 'var(--coral)' : qa === '' ? 'inherit' : (qa >= 95 ? '#2D6A9F' : 'var(--coral)');
       const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
       const pendingDisputeCount = allEntries.filter(e => e.dispute_status === 'disputed').length;
       return `
