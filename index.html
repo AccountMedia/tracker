@@ -1502,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-qa-reject-reason';
+const APP_VERSION = '2026-07-29-qa-dispute-evidence-upload';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11940,7 +11940,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         </div>
         ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
-        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Employee's dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}</div>` : ''}
+        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Employee's dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
         ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
         <div style="display:flex; gap:6px; margin-top:8px;">
           ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
@@ -12281,7 +12281,7 @@ function renderMyQaEntriesModalBody() {
         </div>
         ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
-        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Your dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}</div>` : ''}
+        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Your dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
         ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
         ${statusLine}
         ${canAct ? `
@@ -12356,26 +12356,76 @@ function openDisputeExplanationModal(entryId) {
           style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
           placeholder="Explain why this entry should not count..."></textarea>
       </div>
-      <button type="submit" class="btn btn-primary" style="justify-content:center; background:var(--coral);">Submit dispute</button>
+      <div class="field">
+        <label for="ips-qa-dispute-images">Supporting screenshots (optional)</label>
+        <input type="file" id="ips-qa-dispute-images" accept="image/*" multiple
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        <div id="ips-qa-dispute-images-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
+      </div>
+      <button type="submit" class="btn btn-primary" id="ips-qa-dispute-submit-btn" style="justify-content:center; background:var(--coral);">Submit dispute</button>
     </form>
   `);
+  document.getElementById('ips-qa-dispute-images').addEventListener('change', (e) => {
+    const preview = document.getElementById('ips-qa-dispute-images-preview');
+    preview.innerHTML = '';
+    Array.from(e.target.files).forEach(file => {
+      const url = URL.createObjectURL(file);
+      const thumb = document.createElement('img');
+      thumb.src = url;
+      thumb.style.cssText = 'width:56px; height:56px; object-fit:cover; border-radius:6px; border:1px solid var(--line);';
+      preview.appendChild(thumb);
+    });
+  });
   document.getElementById('ips-qa-dispute-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const explanation = document.getElementById('ips-qa-dispute-explanation').value.trim();
     if (!explanation) { showToast('A dispute explanation is required.', true); return; }
-    await submitQaDispute(entryId, explanation);
+    const files = Array.from(document.getElementById('ips-qa-dispute-images').files);
+    const submitBtn = document.getElementById('ips-qa-dispute-submit-btn');
+    submitBtn.disabled = true;
+    submitBtn.textContent = files.length ? 'Uploading images...' : 'Submitting...';
+    await submitQaDispute(entryId, explanation, files);
   });
 }
 
-async function submitQaDispute(entryId, explanation) {
+// Uploads each file to the qa-dispute-evidence Storage bucket under a
+// path scoped to this entry, so all evidence for one dispute stays
+// together. Returns the list of public URLs — any file that fails to
+// upload is skipped (with a toast) rather than blocking the whole
+// dispute submission, since the written explanation is the required
+// part and images are supplementary.
+async function uploadQaDisputeEvidence(entryId, files) {
+  const urls = [];
+  for (const file of files) {
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+    const path = `${entryId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error: uploadErr } = await sb.storage.from('qa-dispute-evidence').upload(path, file, { upsert: false });
+    if (uploadErr) {
+      console.error('Evidence upload failed:', uploadErr);
+      showToast(/Bucket not found/i.test(uploadErr.message || '') ? 'Image upload needs setup — run qa_dispute_evidence_storage.sql in Supabase.' : `Could not upload ${file.name} — dispute will still be submitted without it.`, true);
+      continue;
+    }
+    const { data: pub } = sb.storage.from('qa-dispute-evidence').getPublicUrl(path);
+    if (pub?.publicUrl) urls.push(pub.publicUrl);
+  }
+  return urls;
+}
+
+async function submitQaDispute(entryId, explanation, files = []) {
   const entry = ipsState.qaEntries.find(e => e.id === entryId);
+  const evidenceUrls = files.length ? await uploadQaDisputeEvidence(entryId, files) : [];
   const { data: updated, error } = await sb.from('ips_qa_entries').update({
     dispute_status: 'disputed',
     dispute_explanation: explanation,
+    dispute_evidence_urls: evidenceUrls.length ? evidenceUrls : null,
     disputed_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   }).eq('id', entryId).select().single();
-  if (error) { showToast('Could not submit your dispute.', true); return; }
+  if (error) {
+    console.error(error);
+    showToast(/column .*dispute_evidence_urls.* does not exist/i.test(error.message || '') ? 'Needs setup — run qa_dispute_evidence_storage.sql in Supabase.' : 'Could not submit your dispute.', true);
+    return;
+  }
   showToast('Dispute submitted — an admin/IPS will review it.');
   // Notify admin/IPS — same pattern as the correction-request stream,
   // linked to this entry's id so the notification/badge clears
@@ -13702,6 +13752,19 @@ function renderUrlLink(value, colorVar) {
   const trimmed = value.trim();
   const href = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   return `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" style="color:${colorVar || 'var(--gold-line)'}; text-decoration:underline;">${escapeHtml(trimmed)}</a>`;
+}
+
+// Renders a row of clickable thumbnails for dispute evidence images —
+// each opens the full-size image in a new tab. Returns '' if there are
+// no images, so callers can drop it straight into a template literal.
+function renderDisputeEvidenceGallery(urls) {
+  if (!urls || !urls.length) return '';
+  const thumbs = urls.map(u => `
+    <a href="${escapeHtml(u)}" target="_blank" rel="noopener noreferrer">
+      <img src="${escapeHtml(u)}" style="width:64px; height:64px; object-fit:cover; border-radius:6px; border:1px solid var(--line);">
+    </a>
+  `).join('');
+  return `<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${thumbs}</div>`;
 }
 
 // =====================================================================
