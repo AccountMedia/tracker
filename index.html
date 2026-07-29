@@ -1049,6 +1049,7 @@ function logout() {
   localStorage.removeItem('registry_profile');
   sessionStorage.removeItem('registry_active_view');
   sessionStorage.removeItem('registry_priolist_tab');
+  sessionStorage.removeItem('registry_ips_tab');
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
@@ -1449,7 +1450,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-qa-modal-wide-table';
+const APP_VERSION = '2026-07-28-qa-table-parity-tab-persist';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9704,7 +9705,7 @@ const ipsState = {
   // earlier month (e.g. June for sampling) — everything stays editable.
   month: (() => { const n = new Date(); return isoDate(new Date(n.getFullYear(), n.getMonth(), 1)); })(),
   day: null,                 // the ISO date shown in the Daily Entry tab (defaults per month)
-  tab: 'daily',              // 'daily' | 'ec' | 'po' | 'qa' | 'score'
+  tab: (() => { const saved = sessionStorage.getItem('registry_ips_tab'); return ['daily','po','qa','score'].includes(saved) ? saved : 'daily'; })(), // 'daily' | 'po' | 'qa' | 'score' — persisted so a refresh stays on whichever sub-tab was open
   dailyEntries: [],
   monthlyData: [],
   monthSettings: null,
@@ -10655,6 +10656,7 @@ function renderIpsTables() {
   document.querySelectorAll('.ips-tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       ipsState.tab = btn.dataset.tab;
+      sessionStorage.setItem('registry_ips_tab', btn.dataset.tab);
       renderIpsTables();
     });
   });
@@ -11784,21 +11786,38 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
     const excluded = e.dispute_status === 'approved';
     return `
       <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:8px; ${excluded ? 'opacity:0.55;' : ''}">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
           <div>
             <span style="font-weight:700; font-size:12.5px; color:${accent};">${e.kind === 'major' ? 'Major' : 'Minor'}</span>
-            <span style="font-weight:700; font-size:12.5px; margin-left:6px;">${escapeHtml(e.lead_name || 'Unnamed lead')}</span>
             ${excluded ? '<span class="faint" style="font-size:10.5px; margin-left:6px;">(excluded from QA%)</span>' : ''}
           </div>
           ${statusBadge}
         </div>
-        <div style="display:grid; grid-template-columns: repeat(2, 1fr); gap:4px 14px; font-size:11.5px; color:var(--ink-soft); margin-bottom:6px;">
-          <div><span class="faint">Company:</span> ${escapeHtml(e.company || '—')}</div>
-          <div><span class="faint">Job Title:</span> ${escapeHtml(e.job_title || '—')}</div>
-          <div><span class="faint">Domain:</span> ${renderUrlLink(e.domain)}</div>
-          <div><span class="faint">Country:</span> ${escapeHtml(e.country || '—')}</div>
-          <div><span class="faint">Recent Activity:</span> ${escapeHtml(e.recent_activity || '—')}</div>
-          <div><span class="faint">LinkedIn:</span> ${renderUrlLink(e.linkedin_url)}</div>
+        <div style="overflow-x:auto; margin-bottom:8px;">
+          <table style="border-collapse:collapse; width:100%; min-width:640px; background:#fff; border-radius:6px; overflow:hidden;">
+            <thead>
+              <tr style="background:var(--line-soft);">
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Lead Name</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Company</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Job Title</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Domain</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Country</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
+                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">LinkedIn URL</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="padding:7px 9px; font-size:12px; font-weight:600; white-space:nowrap;">${escapeHtml(e.lead_name || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.company || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.job_title || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.domain)}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.country || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
+                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.linkedin_url)}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
         ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
