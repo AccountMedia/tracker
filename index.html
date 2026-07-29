@@ -1502,7 +1502,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-28-restrict-dispute-resolution';
+const APP_VERSION = '2026-07-28-ips-role-report-restrict';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10165,7 +10165,7 @@ function renderIps() {
 
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:10px;">
-      ${canManageIps() ? `<button class="btn btn-ghost" id="ips-download-report">Download report</button>` : ''}
+      ${isAdmin() ? `<button class="btn btn-ghost" id="ips-download-report">Download report</button>` : ''}
       <button class="btn btn-ghost btn-sm" id="ips-prev-month">←</button>
       <span style="font-weight:600; min-width:110px; text-align:center;">${ipsMonthLabel(ipsState.month)}</span>
       <button class="btn btn-ghost btn-sm" id="ips-next-month">→</button>
@@ -11024,7 +11024,7 @@ async function requestIpsEmergencyUnlock() {
 // employee monthly-summary report instead, since a multi-month wide
 // daily grid with one column per day would be unreadable).
 function openIpsReportRangeModal() {
-  if (!canManageIps()) { showToast('Only admins and IPS can download this report.', true); return; }
+  if (!isAdmin()) { showToast('Only admins can download this report.', true); return; }
 
   const defaultStart = ipsState.month;
   openModal('Download IPS Report', `
@@ -11231,7 +11231,7 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 }
 
 function downloadIpsReport() {
-  if (!canManageIps()) { showToast('Only admins and IPS can download this report.', true); return; }
+  if (!isAdmin()) { showToast('Only admins can download this report.', true); return; }
 
   const dates = ipsDatesForMonth(ipsState.month);
   const roster = ipsRoster();
