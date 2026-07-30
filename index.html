@@ -1169,14 +1169,66 @@ function initNav() {
 
 
 
+  const hashSlug = (window.location.hash || '').replace(/^#/, '');
   const savedView = sessionStorage.getItem('registry_active_view');
   const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips'];
   // Redirect any saved view that has moved into Account Hub
   const hubViews = ['leave-tracker', 'employee-management'];
-  const startView = hubViews.includes(savedView) ? 'account-hub'
-    : validViews.includes(savedView) ? savedView : 'dashboard';
-  if (hubViews.includes(savedView)) state.accountHubTab = savedView;
+  // A URL hash (someone opened/pasted a direct link) takes priority
+  // over the saved session — it's a more explicit signal than a
+  // leftover value from a previous visit in the same browser tab.
+  let startView, startAccountHubTab = null;
+  if (HASH_TO_VIEW[hashSlug]) {
+    startView = HASH_TO_VIEW[hashSlug];
+    if (HASH_TO_ACCOUNT_HUB_TAB[hashSlug]) startAccountHubTab = HASH_TO_ACCOUNT_HUB_TAB[hashSlug];
+  } else {
+    startView = hubViews.includes(savedView) ? 'account-hub'
+      : validViews.includes(savedView) ? savedView : 'dashboard';
+    if (hubViews.includes(savedView)) startAccountHubTab = savedView;
+  }
+  if (startAccountHubTab) state.accountHubTab = startAccountHubTab;
   switchView(startView);
+}
+
+// Maps internal view (and, for Account Hub, its active sub-tab) to the
+// friendly URL hash slug shown in the address bar — lets the link end
+// in something readable like #leave-tracker instead of exposing
+// internal names like "account-hub". Reversed by HASH_TO_VIEW below for
+// reading the hash back on page load / back-forward navigation.
+const VIEW_TO_HASH = {
+  'dashboard': 'dashboard',
+  'account-hub': null, // resolved dynamically below based on state.accountHubTab
+  'payroll-confirmation': 'payroll-confirmation',
+  'priolist': 'priolist',
+  'li-restriction': 'li-restriction-report',
+  'ot-filing': 'ot-hours-filing',
+  'team-funds': 'team-funds',
+  'ips': 'ips',
+};
+// account-hub's own sub-tabs get their own distinct hash slugs
+const ACCOUNT_HUB_TAB_TO_HASH = {
+  'leave-tracker': 'leave-tracker',
+  'employee-management': 'employee-management',
+};
+const HASH_TO_VIEW = { 'dashboard': 'dashboard', 'payroll-confirmation': 'payroll-confirmation', 'priolist': 'priolist', 'li-restriction-report': 'li-restriction', 'ot-hours-filing': 'ot-filing', 'team-funds': 'team-funds', 'ips': 'ips', 'leave-tracker': 'account-hub', 'employee-management': 'account-hub' };
+const HASH_TO_ACCOUNT_HUB_TAB = { 'leave-tracker': 'leave-tracker', 'employee-management': 'employee-management' };
+
+// Writes the current view (and, for Account Hub, its active sub-tab)
+// into the URL hash, so the address bar reads e.g.
+// accountmedia.github.io/tracker/#leave-tracker. Safe to call on every
+// switchView — replaceState avoids polluting browser history with one
+// entry per tab click (a plain hash assignment would do that instead).
+function updateUrlHashForView(viewName) {
+  let slug;
+  if (viewName === 'account-hub') {
+    slug = ACCOUNT_HUB_TAB_TO_HASH[state.accountHubTab] || 'leave-tracker';
+  } else {
+    slug = VIEW_TO_HASH[viewName] || viewName;
+  }
+  const newHash = '#' + slug;
+  if (window.location.hash !== newHash) {
+    history.replaceState(null, '', newHash);
+  }
 }
 
 function switchView(viewName) {
@@ -1204,6 +1256,7 @@ function switchView(viewName) {
 
   state.currentView = viewName;
   sessionStorage.setItem('registry_active_view', viewName);
+  updateUrlHashForView(viewName);
   document.querySelectorAll('.nav-item[data-view]').forEach(item => {
     item.classList.toggle('active', item.getAttribute('data-view') === viewName);
   });
@@ -1563,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-jeinna-priolist-self-exempt';
+const APP_VERSION = '2026-07-29-url-hash-routing';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2555,6 +2608,7 @@ function renderAccountHub() {
   document.querySelectorAll('.account-hub-tab').forEach(btn => {
     btn.addEventListener('click', () => {
       state.accountHubTab = btn.dataset.tab;
+      updateUrlHashForView('account-hub');
       renderAccountHub();
     });
   });
@@ -14034,6 +14088,17 @@ document.addEventListener('focusin', (e) => {
       }
     }, 0);
   }
+});
+
+// Browser back/forward buttons change window.location.hash without
+// calling switchView directly — this catches that and routes it the
+// same way the initial page load does.
+window.addEventListener('hashchange', () => {
+  if (!state.profile) return; // not logged in yet — checkExistingSession's own hash read handles the first load
+  const hashSlug = (window.location.hash || '').replace(/^#/, '');
+  if (!HASH_TO_VIEW[hashSlug]) return;
+  if (HASH_TO_ACCOUNT_HUB_TAB[hashSlug]) state.accountHubTab = HASH_TO_ACCOUNT_HUB_TAB[hashSlug];
+  switchView(HASH_TO_VIEW[hashSlug]);
 });
 
 checkExistingSession();
