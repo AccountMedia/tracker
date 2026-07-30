@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-fix-po-leave-aware-target';
+const APP_VERSION = '2026-07-29-qa-approve-note-lock-resolved';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12121,6 +12121,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
       rejected:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--ink-faint); color:#fff;">dispute rejected — still counts</span>`,
     }[e.dispute_status] || '';
     const excluded = e.dispute_status === 'approved';
+    const isEditable = !['conceded', 'approved', 'rejected'].includes(e.dispute_status);
     return `
       <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:8px; ${excluded ? 'opacity:0.55;' : ''}">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
@@ -12160,9 +12161,11 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
         ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Employee's dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
         ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
-        <div style="display:flex; gap:6px; margin-top:8px;">
-          ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
-          ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-delete-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; color:var(--coral);">Delete</button>` : ''}
+        ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
+        <div style="display:flex; gap:6px; margin-top:8px; align-items:center;">
+          ${admin && isEditable ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
+          ${admin && isEditable ? `<button class="btn btn-ghost btn-sm ips-qa-delete-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; color:var(--coral);">Delete</button>` : ''}
+          ${admin && !isEditable ? `<span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>` : ''}
           ${admin && e.dispute_status === 'disputed' && canResolve ? `
             <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
             <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
@@ -12232,10 +12235,10 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
     btn.addEventListener('click', () => deleteIpsQaEntry(btn.dataset.id, employeeId, emp, admin));
   });
   document.querySelectorAll('.ips-qa-approve-dispute-btn').forEach(btn => {
-    btn.addEventListener('click', () => resolveIpsQaDispute(btn.dataset.id, 'approved', employeeId, emp, admin));
+    btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'approved', employeeId, emp, admin));
   });
   document.querySelectorAll('.ips-qa-reject-dispute-btn').forEach(btn => {
-    btn.addEventListener('click', () => resolveIpsQaDispute(btn.dataset.id, 'rejected', employeeId, emp, admin));
+    btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'rejected', employeeId, emp, admin));
   });
 }
 
@@ -12376,6 +12379,15 @@ function openIpsQaEntryFormModal(employeeId, kind, existing) {
 
 async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
   if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can delete entries.', true); return; }
+  const { data: current, error: fetchErr } = await sb.from('ips_qa_entries').select('dispute_status').eq('id', entryId).maybeSingle();
+  if (fetchErr || !current) { showToast('Could not verify this entry — please try again.', true); return; }
+  if (['conceded', 'approved', 'rejected'].includes(current.dispute_status)) {
+    showToast('This entry has been resolved and can no longer be deleted.', true);
+    await loadIpsData();
+    renderIpsTables();
+    openIpsQaManageModal(employeeId);
+    return;
+  }
   if (!confirm('Delete this entry? This permanently removes it and recalculates QA%. This cannot be undone.')) return;
   const { error } = await sb.from('ips_qa_entries').delete().eq('id', entryId);
   if (error) { showToast('Could not delete the entry.', true); return; }
@@ -12390,27 +12402,45 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
 // exactly as before — either way the dispute_status is updated so the
 // employee can see the outcome, and the notification tied to this
 // dispute is cleared for every admin/IPS viewer.
-async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) {
+// Opens a proper modal (replacing the old confirm()/prompt() browser
+// dialogs, whose single-line prompt box was too narrow to comfortably
+// type in) for resolving a dispute. Both approve and reject now offer
+// the same optional, appropriately-sized note field.
+function openResolveDisputeModal(entryId, resolution, employeeId, emp, admin) {
+  const isApprove = resolution === 'approved';
+  openModal(isApprove ? 'Approve dispute' : 'Reject dispute', `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">${isApprove
+      ? 'This entry will no longer count against QA%.'
+      : 'This entry will continue counting against QA% as before.'}</p>
+    <form id="ips-qa-resolve-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="ips-qa-resolve-note">Note (optional, visible to the employee)</label>
+        <textarea id="ips-qa-resolve-note" rows="6"
+          style="width:100%; padding:10px 12px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:13.5px; resize:vertical; min-height:120px;"
+          placeholder="${isApprove ? 'Optional: explain why this dispute was approved...' : 'Optional: explain why this dispute was rejected...'}"></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; ${isApprove ? 'background:var(--green);' : 'background:var(--coral);'}">${isApprove ? 'Approve dispute' : 'Reject dispute'}</button>
+    </form>
+  `, { width: '600px' });
+  document.getElementById('ips-qa-resolve-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const note = document.getElementById('ips-qa-resolve-note').value.trim();
+    await resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, note);
+  });
+}
+
+async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, note) {
   if (!canResolveIpsQaDisputes()) { showToast('Only Kristina and Jeinna can resolve disputes.', true); return; }
-  let rejectReason = null;
-  if (resolution === 'approved') {
-    if (!confirm('Approve this dispute? The entry will no longer count against QA%.')) return;
-  } else {
-    // Optional explanation for a rejection — same pattern as correction
-    // request rejections: prompt() returns null only if the whole thing
-    // was cancelled (abort entirely); an empty string means they chose
-    // to skip the explanation but still want to proceed with the reject.
-    rejectReason = prompt('Reject this dispute? The entry will continue counting against QA% as before.\n\nOptional: explain why (visible to the employee).');
-    if (rejectReason === null) return; // cancelled entirely
-  }
   const reviewedAt = new Date().toISOString();
-  const { error } = await sb.from('ips_qa_entries').update({
+  const payload = {
     dispute_status: resolution,
     dispute_reviewed_by: state.profile.display_name,
     dispute_reviewed_at: reviewedAt,
-    dispute_reject_reason: resolution === 'rejected' ? (rejectReason || null) : null,
+    dispute_reject_reason: resolution === 'rejected' ? (note || null) : null,
+    dispute_approve_note: resolution === 'approved' ? (note || null) : null,
     updated_at: reviewedAt,
-  }).eq('id', entryId);
+  };
+  const { error } = await sb.from('ips_qa_entries').update(payload).eq('id', entryId);
   if (error) { showToast('Could not resolve the dispute.', true); return; }
   showToast(resolution === 'approved' ? 'Dispute approved — QA% recalculated.' : 'Dispute rejected — entry still counts.');
   // Patch the in-memory row immediately — don't wait on loadIpsData()
@@ -12422,7 +12452,7 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin) 
   // keep showing under "QA disputes need your review" after being
   // resolved. This patch guarantees My Alerts sees the change instantly
   // regardless of month scoping.
-  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, dispute_status: resolution, dispute_reviewed_by: state.profile.display_name, dispute_reviewed_at: reviewedAt, dispute_reject_reason: resolution === 'rejected' ? (rejectReason || null) : null } : e);
+  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, ...payload } : e);
   await clearIpsNotificationForRequest(entryId);
   await loadIpsData();
   renderIpsTables();
@@ -12511,6 +12541,7 @@ function renderMyQaEntriesModalBody() {
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
         ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Your dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
         ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
+        ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
         ${statusLine}
         ${canAct ? `
           <div style="display:flex; gap:8px; margin-top:10px;">
