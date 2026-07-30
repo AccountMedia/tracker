@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-url-hash-routing';
+const APP_VERSION = '2026-07-29-fix-po-leave-aware-target';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11017,7 +11017,8 @@ async function loadIpsPrevRanks() {
         const e = byDate[d];
         if (!e || e.po_excluded || e.other_task) return null;
         const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
-        return t > 0 ? t / 800 : null;
+        const target = ipsDayTarget(emp.id, d);
+        return (t > 0 && target > 0) ? t / target : null;
       }).filter(r => r != null);
       const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
       const myQaEntries = qaEntriesPrev.filter(e => e.employee_id === emp.id && e.dispute_status !== 'approved');
@@ -11081,11 +11082,28 @@ async function openIpsYearModal(employeeId) {
     // Same formulas as the live tabs, scoped to this month's fetched rows
     const byDate = {};
     dEntries.forEach(e => { byDate[e.entry_date] = e; });
+    // Local equivalent of ipsDayTarget(), using THIS modal's own fetched
+    // daily rows for the other_task check (ipsDayTarget's version only
+    // sees ipsState.dailyEntries, i.e. whichever single month happens to
+    // already be loaded elsewhere in the app — wrong for 11 of the 12
+    // months this modal is computing). Leave-hours still comes from the
+    // shared ipsLeaveHoursOn(), since state.leaveEntries is loaded
+    // globally for the whole year regardless of which IPS month is open.
+    const dayTargetForYear = (dateIso) => {
+      const e = byDate[dateIso];
+      if (e && e.other_task) return 0;
+      if (dateIso < IPS_LEAVE_AWARE_TARGET_START) return 800;
+      const leaveHours = ipsLeaveHoursOn(employeeId, dateIso);
+      if (leaveHours <= 0) return 800;
+      const workedHours = Math.max(0, 8 - leaveHours);
+      return Math.round((workedHours / 8) * 800);
+    };
     const ratios = dates.map(d => {
       const e = byDate[d];
       if (!e || e.po_excluded || e.other_task) return null;
       const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
-      return t > 0 ? t / 800 : null;
+      const target = dayTargetForYear(d);
+      return (t > 0 && target > 0) ? t / target : null;
     }).filter(r => r != null);
     const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
     const effectiveEntries = monthQaEntries.filter(e => e.dispute_status !== 'approved');
@@ -11338,7 +11356,8 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
         const e = dailyFor(empId, d);
         if (!e || e.po_excluded || e.other_task) return null;
         const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
-        return t > 0 ? t / 800 : null;
+        const target = ipsDayTarget(empId, d);
+        return (t > 0 && target > 0) ? t / target : null;
       }).filter(r => r != null);
       return ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
     };
