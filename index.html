@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-qa-entry-menu';
+const APP_VERSION = '2026-07-29-reject-two-step';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12170,9 +12170,21 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         ${['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_review_evidence_urls?.length ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reviewer's images:</span>${renderDisputeEvidenceGallery(e.dispute_review_evidence_urls)}</div>` : ''}
         <div style="display:flex; gap:6px; margin-top:8px; align-items:center; position:relative;">
           ${admin && e.dispute_status === 'disputed' && canResolve ? `
-            <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
-            ${e.kind === 'major' ? `<button class="btn btn-sm ips-qa-reject-as-minor-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:#2D6A9F; color:#fff;">Reject, Count as Minor</button>` : ''}
-            <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
+            <div class="ips-qa-resolve-actions" data-id="${e.id}" data-kind="${e.kind}" style="display:flex; gap:6px;">
+              <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
+              ${e.kind === 'major' ? `
+                <button class="btn btn-ghost btn-sm ips-qa-reject-reveal-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
+              ` : `
+                <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
+              `}
+            </div>
+            ${e.kind === 'major' ? `
+              <div class="ips-qa-reject-suboptions" data-id="${e.id}" style="display:none; gap:6px;">
+                <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject</button>
+                <button class="btn btn-sm ips-qa-reject-as-minor-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:#2D6A9F; color:#fff;">Reject, Count as Minor</button>
+                <button type="button" class="ips-qa-reject-back-btn" data-id="${e.id}" title="Back" style="background:none; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer; color:var(--ink-soft); font-size:11px; line-height:1;">←</button>
+              </div>
+            ` : ''}
           ` : ''}
           ${admin && !isEditable ? `<span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>` : ''}
           ${admin && isEditable ? `
@@ -12289,6 +12301,20 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   });
   document.querySelectorAll('.ips-qa-reject-dispute-btn').forEach(btn => {
     btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'rejected', employeeId, emp, admin));
+  });
+  document.querySelectorAll('.ips-qa-reject-reveal-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.id;
+      document.querySelector(`.ips-qa-resolve-actions[data-id="${id}"]`).style.display = 'none';
+      document.querySelector(`.ips-qa-reject-suboptions[data-id="${id}"]`).style.display = 'flex';
+    });
+  });
+  document.querySelectorAll('.ips-qa-reject-back-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.id;
+      document.querySelector(`.ips-qa-reject-suboptions[data-id="${id}"]`).style.display = 'none';
+      document.querySelector(`.ips-qa-resolve-actions[data-id="${id}"]`).style.display = 'flex';
+    });
   });
 }
 
