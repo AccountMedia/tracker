@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-reject-dropdown';
+const APP_VERSION = '2026-07-29-better-constraint-error';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12580,7 +12580,12 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, 
   const { error } = await sb.from('ips_qa_entries').update(payload).eq('id', entryId);
   if (error) {
     console.error(error);
-    showToast(/dispute_review_evidence_urls.* does not exist/i.test(error.message || '') ? 'Image attachments need setup — run ips_qa_entries_review_evidence.sql in Supabase.' : 'Could not resolve the dispute.', true);
+    showToast(
+      /dispute_review_evidence_urls.* does not exist/i.test(error.message || '') ? 'Image attachments need setup — run ips_qa_entries_review_evidence.sql in Supabase.'
+      : /violates check constraint.*dispute_status/i.test(error.message || '') ? 'Needs setup — run ips_qa_entries_fix_dispute_status_constraint.sql in Supabase.'
+      : 'Could not resolve the dispute.',
+      true
+    );
     return;
   }
   showToast(
