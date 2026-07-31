@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-reject-two-step';
+const APP_VERSION = '2026-07-29-fix-menu-shift';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12188,11 +12188,11 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
           ` : ''}
           ${admin && !isEditable ? `<span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>` : ''}
           ${admin && isEditable ? `
-            <div style="margin-left:auto; position:relative;">
+            <div style="margin-left:auto; position:relative; width:26px; height:24px; flex-shrink:0;">
               <button type="button" class="ips-qa-entry-menu-toggle" data-id="${e.id}" title="More actions" style="
-                background:none; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer;
+                position:absolute; top:0; right:0; background:none; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer;
                 color:var(--ink-soft); font-size:13px; line-height:1;">⋮</button>
-              <div class="ips-qa-entry-menu" data-id="${e.id}" style="display:none; position:absolute; top:calc(100% + 4px); right:0; z-index:40; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:120px; overflow:hidden;">
+              <div class="ips-qa-entry-menu" data-id="${e.id}" style="display:none; position:absolute; bottom:calc(100% - 4px); right:0; z-index:40; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:120px; overflow:hidden;">
                 <button type="button" class="ips-qa-edit-entry-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:8px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:var(--ink);">Edit</button>
                 <button type="button" class="ips-qa-delete-entry-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:8px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:var(--coral);">Delete</button>
               </div>
