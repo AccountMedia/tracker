@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-better-constraint-error';
+const APP_VERSION = '2026-07-29-qa-report-red-score';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10686,7 +10686,10 @@ function renderIpsTables() {
       `;
     }).join('');
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${qaEditor ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
+        <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${qaEditor ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
+        ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>` : ''}
+      </div>
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Entries</th>
@@ -11437,6 +11440,69 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
   openIpsTabbedReport(rangeLabel, sections);
 }
 
+// QA Accuracy report: one row per employee, sorted by QA% descending
+// (highest first) rather than alphabetically. Major/Minor columns show
+// every entry that's STILL COUNTING against QA% — which is anything
+// EXCEPT 'conceded' or 'approved' (the only two outcomes that remove
+// an entry from the tally). Concretely this means:
+//   - 'rejected' / 'rejected_as_minor' — dispute was reviewed and rejected
+//   - 'disputed' — dispute is still pending review
+//   - 'none' — employee never disputed (or conceded) it at all
+// Each entry shows a short status tag so pending-review items aren't
+// mistaken for already-decided ones. Multiple qualifying entries for
+// one employee are combined into a single cell, prefixed with a count.
+// QA Accuracy report: one row per employee, sorted by QA% descending
+// (highest first) rather than alphabetically. Major/Minor columns show
+// every entry that's STILL COUNTING against QA% — which must match
+// ipsQaEntryCounts()'s own rule EXACTLY, or the displayed reasons and
+// the displayed score can silently disagree (a bug that shipped
+// earlier: this report excluded 'conceded' entries from the cell text,
+// but the real formula still counts them — an employee with a conceded
+// entry showed a QA% below 100% with nothing in Major/Minor explaining
+// why). The only status that removes an entry from the count is
+// 'approved' — everything else (never disputed, pending review,
+// rejected, rejected-as-minor, AND conceded) still counts and must
+// still show here.
+function downloadIpsQaAccuracyReport() {
+  const roster = ipsRoster();
+  const monthLabel = ipsMonthLabel(ipsState.month);
+
+  const rows = roster.map(emp => {
+    const qaFrac = ipsQaFraction(emp.id, ipsState.month);
+    const qa = qaFrac != null ? round2(qaFrac * 100) : 100; // no entries + no No-call-out still reports as 100% here, per the agreed rule for this specific report
+    const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
+    // Matches ipsQaEntryCounts()'s rule exactly: only 'approved' is excluded.
+    const stillCounting = (kind) => allEntries.filter(e => e.kind === kind && e.dispute_status !== 'approved');
+
+    const cellFor = (kind) => {
+      const entries = stillCounting(kind);
+      if (!entries.length) return '';
+      const reasons = entries.map(e => e.status_reason || '—').join(' | ');
+      return `(${entries.length}) ${reasons}`;
+    };
+
+    return { name: emp.display_name, qa, major: cellFor('major'), minor: cellFor('minor') };
+  });
+
+  // Highest QA% first — ties keep roster order (stable sort)
+  rows.sort((a, b) => b.qa - a.qa);
+
+  // Red font for the SCORE cell only (column index 1) when QA% is 95%
+  // or below — matches the same threshold already used on the live QA
+  // Accuracy tab. Keyed "rowIndex,colIndex" per openIpsTabbedReport's
+  // cellColors contract; only the percentage itself gets colored, not
+  // the Major/Minor reason text next to it.
+  const cellColors = new Map();
+  rows.forEach((r, i) => { if (r.qa <= 95) cellColors.set(`${i},1`, '#C0392B'); });
+
+  openIpsTabbedReport(monthLabel, [{
+    title: 'QA Accuracy',
+    header: ['Employee Name', `${monthLabel.toUpperCase()} SCORE`, 'MAJOR', 'MINOR'],
+    rows: rows.map(r => [r.name, r.qa + '%', r.major, r.minor]),
+    cellColors,
+  }]);
+}
+
 function downloadIpsReport() {
   if (!isAdmin()) { showToast('Only admins can download this report.', true); return; }
 
@@ -11529,7 +11595,7 @@ function openIpsTabbedReport(monthLabel, sections) {
   // header, rows, wide}, ...]}) — the latter is how "everything for one
   // month in one sheet" is built: several tables (LQ&MD, QA, Score)
   // stacked under one tab/sheet instead of split into separate ones.
-  const asBlocks = (sec) => sec.blocks || [{ label: null, header: sec.header, rows: sec.rows, wide: sec.wide, rowColorIndices: sec.rowColorIndices, mergePairs: sec.mergePairs }];
+  const asBlocks = (sec) => sec.blocks || [{ label: null, header: sec.header, rows: sec.rows, wide: sec.wide, rowColorIndices: sec.rowColorIndices, mergePairs: sec.mergePairs, cellColors: sec.cellColors }];
 
   // Each SECTION becomes its own SHEET in the downloaded workbook —
   // this is the actual fix: a real multi-sheet .xlsx (via SheetJS) has
@@ -11579,19 +11645,29 @@ function openIpsTabbedReport(monthLabel, sections) {
                   ? block.rows.map((r, ri) => {
                       const isColorRow = block.rowColorIndices && block.rowColorIndices.has(ri);
                       const rowStyle = isColorRow ? ' style="color:#5B7FA6;"' : ''; // soft, still-readable blue for MD rows
+                      // Optional per-CELL color (distinct from rowColorIndices,
+                      // which colors the whole row) — a Map keyed "ri,ci" to a
+                      // hex color, e.g. for coloring just a percentage value red
+                      // without touching the rest of that row. Purely additive:
+                      // a cell with no matching entry renders exactly as before.
+                      const cellHtml = (c, ci) => {
+                        const color = block.cellColors && block.cellColors.get(`${ri},${ci}`);
+                        const text = escapeHtml(String(c ?? ''));
+                        return color ? `<td style="color:${color}; font-weight:700;">${text}</td>` : `<td>${text}</td>`;
+                      };
                       // When mergePairs is set, every EVEN row (0, 2, 4…) owns a
                       // rowspan=2 first cell (the name), and the following ODD
                       // row (its MD pair) skips rendering that cell entirely —
                       // visually merging the name across both rows.
                       if (block.mergePairs) {
                         if (ri % 2 === 0) {
-                          const rest = r.slice(1).map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('');
+                          const rest = r.slice(1).map((c, i) => cellHtml(c, i + 1)).join('');
                           return `<tr${rowStyle}><td rowspan="2" style="vertical-align:middle;">${escapeHtml(String(r[0] ?? ''))}</td>${rest}</tr>`;
                         }
-                        const rest = r.slice(1).map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('');
+                        const rest = r.slice(1).map((c, i) => cellHtml(c, i + 1)).join('');
                         return `<tr${rowStyle}>${rest}</tr>`;
                       }
-                      return `<tr${rowStyle}>${r.map(c => `<td>${escapeHtml(String(c ?? ''))}</td>`).join('')}</tr>`;
+                      return `<tr${rowStyle}>${r.map((c, ci) => cellHtml(c, ci)).join('')}</tr>`;
                     }).join('')
                   : `<tr><td colspan="${block.header.length}" style="text-align:center; color:#9199AC; padding:30px;">No data yet.</td></tr>`}
               </tbody>
@@ -11663,6 +11739,7 @@ function openIpsTabbedReport(monthLabel, sections) {
 }
 
 function attachIpsHandlers() {
+  document.getElementById('ips-qa-download-report-btn')?.addEventListener('click', downloadIpsQaAccuracyReport);
   document.getElementById('ips-missed-outputs-toggle')?.addEventListener('click', () => {
     ipsState.missedOutputsExpanded = !ipsState.missedOutputsExpanded;
     renderIpsTables();
