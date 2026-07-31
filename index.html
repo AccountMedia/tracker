@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-qa-approve-note-lock-resolved';
+const APP_VERSION = '2026-07-29-reject-count-as-minor';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12118,10 +12118,11 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
       conceded:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green-wash); color:var(--green);">✓ conceded</span>`,
       disputed:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--coral); color:#fff;">⚠ disputed — pending review</span>`,
       approved:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green); color:#fff;">✓ dispute approved — removed from count</span>`,
+      rejected_as_minor: `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:#2D6A9F; color:#fff;">dispute rejected — downgraded to Minor</span>`,
       rejected:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--ink-faint); color:#fff;">dispute rejected — still counts</span>`,
     }[e.dispute_status] || '';
-    const excluded = e.dispute_status === 'approved';
-    const isEditable = !['conceded', 'approved', 'rejected'].includes(e.dispute_status);
+    const excluded = e.dispute_status === 'approved'; // ONLY a full approval excludes it — rejected_as_minor still counts, just as Minor
+    const isEditable = !['conceded', 'approved', 'rejected_as_minor', 'rejected'].includes(e.dispute_status);
     return `
       <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:8px; ${excluded ? 'opacity:0.55;' : ''}">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
@@ -12160,7 +12161,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
         ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Employee's dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
-        ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
+        ${(e.dispute_status === 'rejected' || e.dispute_status === 'rejected_as_minor') && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
         ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
         <div style="display:flex; gap:6px; margin-top:8px; align-items:center;">
           ${admin && isEditable ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
@@ -12168,6 +12169,7 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
           ${admin && !isEditable ? `<span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>` : ''}
           ${admin && e.dispute_status === 'disputed' && canResolve ? `
             <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
+            ${e.kind === 'major' ? `<button class="btn btn-sm ips-qa-reject-as-minor-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:#2D6A9F; color:#fff;">Reject, Count as Minor</button>` : ''}
             <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
           ` : ''}
         </div>
@@ -12236,6 +12238,9 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   });
   document.querySelectorAll('.ips-qa-approve-dispute-btn').forEach(btn => {
     btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'approved', employeeId, emp, admin));
+  });
+  document.querySelectorAll('.ips-qa-reject-as-minor-btn').forEach(btn => {
+    btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'rejected_as_minor', employeeId, emp, admin));
   });
   document.querySelectorAll('.ips-qa-reject-dispute-btn').forEach(btn => {
     btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'rejected', employeeId, emp, admin));
@@ -12408,18 +12413,24 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
 // the same optional, appropriately-sized note field.
 function openResolveDisputeModal(entryId, resolution, employeeId, emp, admin) {
   const isApprove = resolution === 'approved';
-  openModal(isApprove ? 'Approve dispute' : 'Reject dispute', `
-    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">${isApprove
-      ? 'This entry will no longer count against QA%.'
-      : 'This entry will continue counting against QA% as before.'}</p>
+  const isRejectAsMinor = resolution === 'rejected_as_minor';
+  const title = isApprove ? 'Approve dispute' : isRejectAsMinor ? 'Reject, Count as Minor' : 'Reject dispute';
+  const description = isApprove
+    ? 'This entry will no longer count against QA%.'
+    : isRejectAsMinor
+      ? 'The dispute is rejected — this entry still stands — but it will be downgraded from Major to Minor, moving to the Minor list and counting as −1 instead of −3 against QA%, permanently.'
+      : 'This entry will continue counting against QA% as before.';
+  const btnColor = isApprove ? 'var(--green)' : isRejectAsMinor ? '#2D6A9F' : 'var(--coral)';
+  openModal(title, `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">${description}</p>
     <form id="ips-qa-resolve-form" style="display:flex; flex-direction:column; gap:14px;">
       <div class="field">
         <label for="ips-qa-resolve-note">Note (optional, visible to the employee)</label>
         <textarea id="ips-qa-resolve-note" rows="6"
           style="width:100%; padding:10px 12px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:13.5px; resize:vertical; min-height:120px;"
-          placeholder="${isApprove ? 'Optional: explain why this dispute was approved...' : 'Optional: explain why this dispute was rejected...'}"></textarea>
+          placeholder="Optional: explain your decision..."></textarea>
       </div>
-      <button type="submit" class="btn btn-primary" style="justify-content:center; ${isApprove ? 'background:var(--green);' : 'background:var(--coral);'}">${isApprove ? 'Approve dispute' : 'Reject dispute'}</button>
+      <button type="submit" class="btn btn-primary" style="justify-content:center; background:${btnColor};">${title}</button>
     </form>
   `, { width: '600px' });
   document.getElementById('ips-qa-resolve-form').addEventListener('submit', async (e) => {
@@ -12431,18 +12442,32 @@ function openResolveDisputeModal(entryId, resolution, employeeId, emp, admin) {
 
 async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, note) {
   if (!canResolveIpsQaDisputes()) { showToast('Only Kristina and Jeinna can resolve disputes.', true); return; }
+  const isRejectAsMinor = resolution === 'rejected_as_minor';
   const reviewedAt = new Date().toISOString();
   const payload = {
     dispute_status: resolution,
     dispute_reviewed_by: state.profile.display_name,
     dispute_reviewed_at: reviewedAt,
-    dispute_reject_reason: resolution === 'rejected' ? (note || null) : null,
+    dispute_reject_reason: (resolution === 'rejected' || isRejectAsMinor) ? (note || null) : null,
     dispute_approve_note: resolution === 'approved' ? (note || null) : null,
     updated_at: reviewedAt,
   };
+  // "Reject, Count as Minor": the dispute itself is rejected (the entry
+  // isn't removed), but the admin agrees it's less severe than a full
+  // Major — so it's downgraded to a real Minor going forward: moves to
+  // the Minor tab, counts as -1 instead of -3, permanently. Unlike a
+  // full rejection (which leaves the entry counting exactly as
+  // originally filed), this changes its actual kind — which is why it
+  // needs its own dispute_status ('rejected_as_minor') rather than
+  // reusing 'rejected'.
+  if (isRejectAsMinor) payload.kind = 'minor';
   const { error } = await sb.from('ips_qa_entries').update(payload).eq('id', entryId);
   if (error) { showToast('Could not resolve the dispute.', true); return; }
-  showToast(resolution === 'approved' ? 'Dispute approved — QA% recalculated.' : 'Dispute rejected — entry still counts.');
+  showToast(
+    resolution === 'approved' ? 'Dispute approved — QA% recalculated.'
+    : isRejectAsMinor ? 'Dispute rejected, entry downgraded to Minor — QA% recalculated.'
+    : 'Dispute rejected — entry still counts.'
+  );
   // Patch the in-memory row immediately — don't wait on loadIpsData()
   // below, which only re-fetches whichever month the IPS tab currently
   // has selected. If this entry belongs to a DIFFERENT month than what's
@@ -12456,6 +12481,10 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, 
   await clearIpsNotificationForRequest(entryId);
   await loadIpsData();
   renderIpsTables();
+  // If it was just downgraded to Minor, switch the manage modal to the
+  // Minor tab so the admin actually sees where the entry went, rather
+  // than reopening on Major where it may now be the only thing missing.
+  if (isRejectAsMinor) ipsState.qaTab = 'minor';
   openIpsQaManageModal(employeeId);
 }
 
@@ -12503,6 +12532,7 @@ function renderMyQaEntriesModalBody() {
       conceded:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ You conceded this entry.</div>`,
       disputed:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--coral);">⚠ Dispute submitted — waiting on admin/IPS review.</div>`,
       approved:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ Your dispute was approved — this entry no longer counts against your QA%.</div>`,
+      rejected_as_minor: `<div style="margin-top:8px; font-size:11px; font-weight:600; color:#2D6A9F;">Your dispute was reviewed and rejected, but the entry was downgraded from Major to Minor — it now counts as −1 instead of −3.</div>`,
       rejected:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--ink-soft);">Your dispute was reviewed and rejected — this entry still counts.</div>`,
     }[e.dispute_status] || '';
     return `
@@ -12540,7 +12570,7 @@ function renderMyQaEntriesModalBody() {
         ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
         ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
         ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Your dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
-        ${e.dispute_status === 'rejected' && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
+        ${(e.dispute_status === 'rejected' || e.dispute_status === 'rejected_as_minor') && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
         ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
         ${statusLine}
         ${canAct ? `
