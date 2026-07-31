@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-image-wording-fix';
+const APP_VERSION = '2026-07-29-image-drag-paste';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9909,14 +9909,18 @@ function openTfAccountModal(existing) {
       <div class="field">
         <label>QR code image <span class="faint">(optional — upload to replace)</span></label>
         ${existing?.qr_code_data ? `<img src="${existing.qr_code_data}" alt="Current QR" style="width:100px; height:100px; object-fit:contain; border:1px solid var(--line-soft); border-radius:6px; margin-bottom:8px; display:block;">` : ''}
-        <input type="file" id="tf-acc-qr" accept="image/*"
-          style="width:100%; font-family:inherit; font-size:12.5px;">
+        <div id="tf-acc-qr-dropzone" style="border:2px dashed var(--line); border-radius:8px; padding:10px; transition:border-color 0.12s, background 0.12s;">
+          <input type="file" id="tf-acc-qr" accept="image/*"
+            style="width:100%; font-family:inherit; font-size:12.5px;">
+          <p class="faint" style="font-size:10.5px; margin:6px 0 0;">Or drag a QR image here, or paste (Ctrl+V) a screenshot/Snipping Tool capture</p>
+        </div>
         <p class="faint" style="font-size:11px; margin:4px 0 0;">Upload a PNG or JPG of the QR code. Max recommended: 500×500px.</p>
       </div>
       ${existing ? `<button type="button" id="tf-acc-delete-btn" class="btn btn-ghost btn-sm" style="color:var(--coral); align-self:flex-start;">Remove this account</button>` : ''}
       <button type="submit" class="btn btn-primary" style="justify-content:center;">${existing ? 'Save changes' : 'Add account'}</button>
     </form>
   `);
+  enableImageDropAndPaste('tf-acc-qr-dropzone', 'tf-acc-qr');
 
   if (existing) {
     document.getElementById('tf-acc-delete-btn').addEventListener('click', async () => {
@@ -12433,13 +12437,17 @@ function openResolveDisputeModal(entryId, resolution, employeeId, emp, admin) {
       </div>
       <div class="field">
         <label for="ips-qa-resolve-images">Attach images (optional, visible to the employee)</label>
-        <input type="file" id="ips-qa-resolve-images" accept="image/*" multiple
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        <div id="ips-qa-resolve-images-dropzone" style="border:2px dashed var(--line); border-radius:8px; padding:10px; transition:border-color 0.12s, background 0.12s;">
+          <input type="file" id="ips-qa-resolve-images" accept="image/*" multiple
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+          <p class="faint" style="font-size:10.5px; margin:6px 0 0;">Or drag images here, or paste (Ctrl+V) a screenshot/Snipping Tool capture</p>
+        </div>
         <div id="ips-qa-resolve-images-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
       </div>
       <button type="submit" class="btn btn-primary" id="ips-qa-resolve-submit-btn" style="justify-content:center; background:${btnColor};">${title}</button>
     </form>
   `, { width: '600px' });
+  enableImageDropAndPaste('ips-qa-resolve-images-dropzone', 'ips-qa-resolve-images');
   document.getElementById('ips-qa-resolve-images').addEventListener('change', (e) => {
     const preview = document.getElementById('ips-qa-resolve-images-preview');
     preview.innerHTML = '';
@@ -12702,13 +12710,17 @@ function openDisputeExplanationModal(entryId) {
       ` : ''}
       <div class="field">
         <label for="ips-qa-dispute-images">${isEdit ? 'Add more screenshots (optional)' : 'Supporting screenshots (optional)'}</label>
-        <input type="file" id="ips-qa-dispute-images" accept="image/*" multiple
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        <div id="ips-qa-dispute-images-dropzone" style="border:2px dashed var(--line); border-radius:8px; padding:10px; transition:border-color 0.12s, background 0.12s;">
+          <input type="file" id="ips-qa-dispute-images" accept="image/*" multiple
+            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+          <p class="faint" style="font-size:10.5px; margin:6px 0 0;">Or drag images here, or paste (Ctrl+V) a screenshot/Snipping Tool capture</p>
+        </div>
         <div id="ips-qa-dispute-images-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
       </div>
       <button type="submit" class="btn btn-primary" id="ips-qa-dispute-submit-btn" style="justify-content:center; background:var(--coral);">${isEdit ? 'Save changes' : 'Submit dispute'}</button>
     </form>
   `);
+  enableImageDropAndPaste('ips-qa-dispute-images-dropzone', 'ips-qa-dispute-images');
 
   // Track which of the ORIGINAL images the person has removed in this
   // editing session — kept separate from newly-selected files so the
@@ -14138,6 +14150,81 @@ function escapeHtml(str) {
 // the href, so the link actually navigates out to the real site
 // instead of resolving as a broken relative path on this app's own
 // domain. The visible text always stays exactly what was typed.
+// Wires drag-and-drop AND clipboard-paste image support onto an
+// existing <input type="file">, without needing to change any of the
+// upload/preview logic that already listens for that input's 'change'
+// event — this just becomes another way to populate the same input.
+//
+// Handles the exact case of a raw Snipping Tool / Win+Shift+S capture
+// that was never saved to disk: that capture lives only on the
+// clipboard as an image blob, and pasting (Ctrl+V) is the only way to
+// retrieve it — there's no file path to drag in that scenario, which
+// is why paste support matters just as much as drag-and-drop here.
+//
+// dropZoneId: an element to visually highlight and accept drops on
+// (usually a wrapper around the file input, or the input itself).
+// inputId: the actual <input type="file"> whose file list gets updated.
+function enableImageDropAndPaste(dropZoneId, inputId) {
+  const dropZone = document.getElementById(dropZoneId);
+  const input = document.getElementById(inputId);
+  if (!dropZone || !input) return;
+
+  const isMultiple = input.hasAttribute('multiple');
+
+  // Merges new files into the input's existing FileList (or replaces
+  // it, for single-file inputs), then fires 'change' so whatever
+  // preview/upload code already listens to this input just works,
+  // completely unaware the files arrived via drop/paste instead of the
+  // native file picker.
+  function addFiles(newFiles) {
+    const imageFiles = Array.from(newFiles).filter(f => f.type.startsWith('image/'));
+    if (!imageFiles.length) return;
+    const dt = new DataTransfer();
+    if (isMultiple) {
+      Array.from(input.files).forEach(f => dt.items.add(f));
+    }
+    imageFiles.forEach(f => dt.items.add(f));
+    // Single-file inputs only ever keep the most recent image
+    input.files = isMultiple ? dt.files : (() => { const single = new DataTransfer(); single.items.add(imageFiles[imageFiles.length - 1]); return single.files; })();
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  ['dragenter', 'dragover'].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.style.borderColor = 'var(--teal)';
+      dropZone.style.background = 'var(--teal-wash)';
+    });
+  });
+  ['dragleave', 'drop'].forEach(evt => {
+    dropZone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.style.borderColor = '';
+      dropZone.style.background = '';
+    });
+  });
+  dropZone.addEventListener('drop', (e) => {
+    if (e.dataTransfer?.files?.length) addFiles(e.dataTransfer.files);
+  });
+
+  // Paste anywhere while this drop zone is present in the DOM (i.e.
+  // while its modal is open) — covers the Snipping Tool / screenshot
+  // case where there's no file on disk to drag, only clipboard data.
+  const pasteHandler = (e) => {
+    if (!document.body.contains(dropZone)) {
+      document.removeEventListener('paste', pasteHandler);
+      return;
+    }
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const files = Array.from(items).filter(i => i.kind === 'file' && i.type.startsWith('image/')).map(i => i.getAsFile()).filter(Boolean);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  };
+  document.addEventListener('paste', pasteHandler);
+}
+
 function renderUrlLink(value, colorVar) {
   if (!value || !value.trim()) return '—';
   const trimmed = value.trim();
