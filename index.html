@@ -1616,7 +1616,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-image-drag-paste';
+const APP_VERSION = '2026-07-29-qa-entry-menu';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12168,14 +12168,23 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         ${(e.dispute_status === 'rejected' || e.dispute_status === 'rejected_as_minor') && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
         ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
         ${['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_review_evidence_urls?.length ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reviewer's images:</span>${renderDisputeEvidenceGallery(e.dispute_review_evidence_urls)}</div>` : ''}
-        <div style="display:flex; gap:6px; margin-top:8px; align-items:center;">
-          ${admin && isEditable ? `<button class="btn btn-ghost btn-sm ips-qa-edit-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Edit</button>` : ''}
-          ${admin && isEditable ? `<button class="btn btn-ghost btn-sm ips-qa-delete-entry-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; color:var(--coral);">Delete</button>` : ''}
-          ${admin && !isEditable ? `<span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>` : ''}
+        <div style="display:flex; gap:6px; margin-top:8px; align-items:center; position:relative;">
           ${admin && e.dispute_status === 'disputed' && canResolve ? `
             <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
             ${e.kind === 'major' ? `<button class="btn btn-sm ips-qa-reject-as-minor-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:#2D6A9F; color:#fff;">Reject, Count as Minor</button>` : ''}
             <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
+          ` : ''}
+          ${admin && !isEditable ? `<span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>` : ''}
+          ${admin && isEditable ? `
+            <div style="margin-left:auto; position:relative;">
+              <button type="button" class="ips-qa-entry-menu-toggle" data-id="${e.id}" title="More actions" style="
+                background:none; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer;
+                color:var(--ink-soft); font-size:13px; line-height:1;">⋮</button>
+              <div class="ips-qa-entry-menu" data-id="${e.id}" style="display:none; position:absolute; top:calc(100% + 4px); right:0; z-index:40; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:120px; overflow:hidden;">
+                <button type="button" class="ips-qa-edit-entry-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:8px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:var(--ink);">Edit</button>
+                <button type="button" class="ips-qa-delete-entry-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:8px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:var(--coral);">Delete</button>
+              </div>
+            </div>
           ` : ''}
         </div>
       </div>
@@ -12221,6 +12230,14 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
   attachIpsQaManageModalHandlers(employeeId, emp, admin);
 }
 
+// Closes every open "more actions" (⋮) menu on QA entry cards — kept
+// as a standalone named function (not an inline arrow) specifically so
+// attachIpsQaManageModalHandlers can remove-then-re-add it safely on
+// every render without leaking duplicate document-level listeners.
+function closeAllIpsQaEntryMenus() {
+  document.querySelectorAll('.ips-qa-entry-menu').forEach(m => { m.style.display = 'none'; });
+}
+
 function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   document.getElementById('ips-qa-add-major-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'major', null));
   document.getElementById('ips-qa-add-minor-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'minor', null));
@@ -12241,6 +12258,29 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   document.querySelectorAll('.ips-qa-delete-entry-btn').forEach(btn => {
     btn.addEventListener('click', () => deleteIpsQaEntry(btn.dataset.id, employeeId, emp, admin));
   });
+  // Three-dot "more actions" menu (Edit/Delete) — one toggle per entry.
+  // Opening one closes any other that's already open; clicking anywhere
+  // outside closes whichever is open.
+  document.querySelectorAll('.ips-qa-entry-menu-toggle').forEach(toggle => {
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = document.querySelector(`.ips-qa-entry-menu[data-id="${toggle.dataset.id}"]`);
+      const isOpen = menu.style.display === 'block';
+      document.querySelectorAll('.ips-qa-entry-menu').forEach(m => { m.style.display = 'none'; });
+      menu.style.display = isOpen ? 'none' : 'block';
+    });
+  });
+  document.querySelectorAll('.ips-qa-entry-menu').forEach(menu => {
+    // Clicking an item inside the menu should close it too (Edit/Delete
+    // handlers above already do the actual work — this just tidies up)
+    menu.addEventListener('click', (e) => e.stopPropagation());
+  });
+  // Named + removed-before-re-added so this doesn't accumulate a new
+  // document-level listener every time the modal re-renders (which
+  // happens after every add/edit/delete/resolve action) — without
+  // this, each render would leak one more permanent listener.
+  document.removeEventListener('click', closeAllIpsQaEntryMenus);
+  document.addEventListener('click', closeAllIpsQaEntryMenus);
   document.querySelectorAll('.ips-qa-approve-dispute-btn').forEach(btn => {
     btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'approved', employeeId, emp, admin));
   });
