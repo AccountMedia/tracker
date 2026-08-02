@@ -118,6 +118,9 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
   .nav-item{
     display: flex;
@@ -1070,8 +1073,8 @@ function enterApp() {
   hideMaintenanceScreen();
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
+  document.getElementById('team-chat-wrap')?.classList.remove('hidden');
   document.getElementById('current-user-label').textContent = state.profile.display_name || state.profile.username;
-  syncTeamChatVisibility();
   initNav();
   initSidebarChat();
   loadAllData();
@@ -1109,13 +1112,9 @@ function logout() {
   stopTeamFundsPolling();
   stopDashboardPolling();
   stopIpsRealtime();
-  const pnWrap = document.getElementById('pn-wrap');
-  if (pnWrap) { pnWrap.style.display = 'none'; pnWrap.classList.remove('bubble-eligible'); }
   const paPanelLogout = document.getElementById('pa-panel');
   if (paPanelLogout) paPanelLogout.style.display = 'none';
   paInit = false;
-  const tfCalcWrapLogout = document.getElementById('tf-calc-wrap');
-  if (tfCalcWrapLogout) tfCalcWrapLogout.classList.remove('bubble-eligible');
   const ltBadge = document.getElementById('nav-lt-badge');
   if (ltBadge) ltBadge.style.display = 'none';
   const tfNavBadge = document.getElementById('nav-tf-badge');
@@ -1131,7 +1130,7 @@ function logout() {
   stopNavBadgePolling();
   stopMaintenanceWindowWatcher();
   document.getElementById('app').classList.add('hidden');
-  document.getElementById('team-chat-wrap')?.classList.remove('bubble-eligible');
+  document.getElementById('team-chat-wrap')?.classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
 
@@ -1311,16 +1310,7 @@ function switchView(viewName) {
   else stopOtFilingPolling();
   if (viewName === 'team-funds') startTeamFundsPolling();
   else { stopTeamFundsPolling(); } // cache kept — re-entry renders instantly, then silently refreshes
-  // Floating calculator bubble — Team Funds only
-  const calcWrap = document.getElementById('tf-calc-wrap');
-  if (calcWrap) {
-    calcWrap.classList.toggle('bubble-eligible', viewName === 'team-funds');
-    if (viewName === 'team-funds') initTfCalculator();
-  }
-  syncPersonalNotesVisibility();
   syncPersonalAlertsVisibility();
-  syncTeamChatVisibility();
-  refreshBubbleStack();
 
   if (viewName === 'dashboard') startDashboardPolling();
   else stopDashboardPolling();
@@ -1659,7 +1649,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-fix-chat-timeout-sidebar-calendar';
+const APP_VERSION = '2026-07-30-hide-chat-on-login-screen';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8200,11 +8190,6 @@ async function renderTeamFunds() {
   const el = document.getElementById('team-funds-content');
   const canEdit = canEditTeamFunds();
 
-  // Ensure the floating calculator is visible (covers page-refresh, where
-  // switchView can run before the calculator markup is parsed)
-  const calcWrap = document.getElementById('tf-calc-wrap');
-  if (calcWrap) { calcWrap.classList.add('bubble-eligible'); initTfCalculator(); refreshBubbleStack(); }
-
   actionsEl.innerHTML = canEdit ? `
     <div style="display:flex; gap:8px;">
       <button class="btn btn-ghost" id="tf-add-credit-btn">+ Add funds</button>
@@ -8532,19 +8517,6 @@ function wireChatMentionAutocomplete() {
   });
 }
 
-// Marks Team Chat eligible in the shared bubble stack — unlike Notes
-// (Jeinna-only) or the Calculator (Team Funds-only), this is eligible
-// for EVERY logged-in employee, always, since it's the app-wide chat
-// channel. Being BUBBLE_STACK_ITEMS[0] is what makes it the default-
-// visible "primary" bubble that Notes/Calculator reveal alongside on
-// hover, rather than needing its own separate always-on logic.
-function syncTeamChatVisibility() {
-  const wrap = document.getElementById('team-chat-wrap');
-  if (!wrap) return;
-  wrap.classList.toggle('bubble-eligible', !!state.profile);
-  refreshBubbleStack();
-}
-
 async function initSidebarChat() {
   if (!state.profile) return;
   const panel = document.getElementById('team-chat-panel');
@@ -8560,7 +8532,6 @@ async function initSidebarChat() {
 
   toggle.addEventListener('click', () => {
     panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
-    refreshBubbleStack();
   });
 
   const messages = await loadTeamChatMessages();
@@ -9484,88 +9455,6 @@ function openTfTbTransactionModal(type) {
   });
 }
 
-// ── Floating calculator (Team Funds) ─────────────────────────────
-function initTfCalculator() {
-  if (window._tfCalcInit) return;
-  window._tfCalcInit = true;
-
-  const panel   = document.getElementById('tf-calc-panel');
-  const display = document.getElementById('tf-calc-display');
-  const keysEl  = document.getElementById('tf-calc-keys');
-  const toggle  = document.getElementById('tf-calc-toggle');
-
-  let expr = '';
-
-  const keys = [
-    ['C','⌫','%','÷'],
-    ['7','8','9','×'],
-    ['4','5','6','−'],
-    ['1','2','3','+'],
-    ['00','0','.','='],
-  ].flat();
-
-  keysEl.innerHTML = keys.map(k => {
-    const isOp = ['÷','×','−','+','%'].includes(k);
-    const isEq = k === '=';
-    const isCl = k === 'C' || k === '⌫';
-    return `<button class="tf-calc-key" data-key="${k}" style="
-      padding:11px 0; border-radius:8px; font-family:inherit; font-size:15px; font-weight:600; cursor:pointer;
-      border:1px solid ${isEq ? 'var(--teal)' : 'var(--line-soft)'};
-      background:${isEq ? 'var(--teal)' : isOp || isCl ? 'var(--line-soft)' : 'var(--paper)'};
-      color:${isEq ? '#FFFFFF' : isCl ? 'var(--coral)' : 'var(--ink)'};">${k}</button>`;
-  }).join('');
-
-  function updateDisplay() { display.textContent = expr || '0'; display.scrollLeft = display.scrollWidth; }
-
-  function press(k) {
-    if (k === 'C') { expr = ''; }
-    else if (k === '⌫') { expr = expr.slice(0, -1); }
-    else if (k === '=') {
-      try {
-        const js = expr.replace(/÷/g,'/').replace(/×/g,'*').replace(/−/g,'-').replace(/%/g,'/100');
-        if (!/^[0-9+\-*/(). ]*$/.test(js)) throw 0;
-        const result = Function('"use strict";return (' + js + ')')();
-        expr = (result === undefined || result === null || !isFinite(result)) ? '' : String(Math.round(result * 100) / 100);
-      } catch { expr = ''; display.textContent = 'Error'; return; }
-    }
-    else { expr += k; }
-    updateDisplay();
-  }
-
-  keysEl.querySelectorAll('.tf-calc-key').forEach(btn => {
-    btn.addEventListener('click', () => press(btn.dataset.key));
-  });
-
-  toggle.addEventListener('click', () => {
-    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-    refreshBubbleStack();
-  });
-
-  // Keyboard support — active whenever the panel is open and the user
-  // isn't typing in an input/textarea elsewhere on the page
-  document.addEventListener('keydown', (e) => {
-    if (panel.style.display === 'none') return;
-    const tag = (document.activeElement?.tagName || '').toLowerCase();
-    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-
-    const keyMap = {
-      '/': '÷', '*': '×', '-': '−', '+': '+', '%': '%', '.': '.',
-      'Enter': '=', '=': '=', 'Backspace': '⌫', 'Delete': 'C', 'Escape': 'C',
-    };
-    let k = null;
-    if (/^[0-9]$/.test(e.key)) k = e.key;
-    else if (keyMap[e.key]) k = keyMap[e.key];
-    if (k === null) return;
-    e.preventDefault();
-    press(k);
-    // Brief visual feedback on the matching on-screen key
-    const btn = keysEl.querySelector(`.tf-calc-key[data-key="${k}"]`);
-    if (btn) {
-      btn.style.filter = 'brightness(0.85)';
-      setTimeout(() => { btn.style.filter = ''; }, 120);
-    }
-  });
-}
 
 function tfRegisterOutsideClick() {
   if (window._tfOutsideClickBound) return;
@@ -13343,21 +13232,6 @@ async function updateQaDispute(entryId, explanation, newFiles, keptUrls) {
 }
 
 // =====================================================================
-// PERSONAL NOTES BUBBLE — Jeinna only, all tabs except Team Funds
-// =====================================================================
-
-const PERSONAL_NOTES_OWNER = 'Jeinna Louise Perez';
-function canUsePersonalNotes() {
-  return !!state.profile && state.profile.display_name === PERSONAL_NOTES_OWNER;
-}
-
-let pnNotes = [];
-let pnLoaded = false;
-
-// Shows/hides the bubble based on who's logged in and which tab is
-// active. Called from switchView and on load, same pattern as the
-// Team Funds calculator (which owns that corner on the TF tab).
-// =====================================================================
 // PERSONAL ALERTS BUBBLE — one per employee, shows only items relevant
 // to THEM: leave/cancellation approval decisions, missing IPS Lead
 // Qualification days, and days marked Leave Without Pay. Visible to
@@ -13647,199 +13521,6 @@ function renderPersonalAlertsFromCache() {
   });
 }
 
-// ── Shared bubble stack controller ──────────────────────────────────
-// Decides which bubble is the default-visible "primary" (the first
-// eligible one, in a fixed priority order) and wires the hover-to-
-// expand behavior for when more than one bubble is eligible at once.
-// Runs after ANY bubble's eligibility might have changed.
-const BUBBLE_STACK_ITEMS = [
-  { wrapId: 'team-chat-wrap', panelId: 'team-chat-panel' },
-  { wrapId: 'pn-wrap', panelId: 'pn-panel' },
-  { wrapId: 'tf-calc-wrap', panelId: 'tf-calc-panel' },
-];
-let bubbleStackHoverBound = false;
-function refreshBubbleStack() {
-  const stack = document.getElementById('bubble-stack');
-  if (!stack) return;
-  const eligible = BUBBLE_STACK_ITEMS.filter(item => {
-    const el = document.getElementById(item.wrapId);
-    return el && el.classList.contains('bubble-eligible');
-  });
-  const primaryId = eligible.length ? eligible[0].wrapId : null;
-  BUBBLE_STACK_ITEMS.forEach(item => {
-    const el = document.getElementById(item.wrapId);
-    if (!el) return;
-    const isEligible = eligible.some(e => e.wrapId === item.wrapId);
-    const isPrimary = item.wrapId === primaryId;
-    const panelEl = document.getElementById(item.panelId);
-    // An explicit 'none' means genuinely closed; anything else (including
-    // an untouched empty string before the panel's ever been opened)
-    // means NOT currently open — only 'block'/'flex' actually counts.
-    const panelOpen = !!panelEl && (panelEl.style.display === 'block' || panelEl.style.display === 'flex');
-    el.style.display = (isEligible && (isPrimary || stack.classList.contains('stack-expanded') || panelOpen)) ? 'flex' : 'none';
-  });
-  if (!bubbleStackHoverBound) {
-    bubbleStackHoverBound = true;
-    stack.addEventListener('mouseenter', () => { stack.classList.add('stack-expanded'); refreshBubbleStack(); });
-    stack.addEventListener('mouseleave', () => { stack.classList.remove('stack-expanded'); refreshBubbleStack(); });
-  }
-}
-
-function syncPersonalNotesVisibility() {
-  const wrap = document.getElementById('pn-wrap');
-  if (!wrap) return;
-  const show = canUsePersonalNotes() && state.currentView !== 'team-funds' && state.profile;
-  wrap.classList.toggle('bubble-eligible', !!show);
-  if (show) {
-    initPersonalNotes();
-    if (!pnLoaded) loadPersonalNotes();
-  }
-  refreshBubbleStack();
-}
-
-async function loadPersonalNotes() {
-  const { data, error } = await sb
-    .from('personal_notes')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (error) { console.error('Could not load personal notes:', error); return; }
-  pnNotes = data || [];
-  pnLoaded = true;
-  renderPersonalNotesList();
-}
-
-// The id of the note currently being edited inline (null = none)
-let pnEditingId = null;
-
-function renderPersonalNotesList() {
-  const list = document.getElementById('pn-list');
-  if (!list) return;
-  if (!pnNotes.length) {
-    list.innerHTML = `<div style="padding:22px 14px; text-align:center; color:var(--ink-faint); font-size:12.5px;">No notes yet.</div>`;
-    return;
-  }
-  list.innerHTML = pnNotes.map(n => {
-    if (pnEditingId === n.id) {
-      // Inline edit mode for this note
-      return `
-        <div style="padding:10px 14px; border-bottom:1px solid var(--line-soft); background:var(--teal-wash);">
-          <textarea class="pn-edit-input" data-id="${n.id}" rows="3" style="width:100%; padding:8px 9px; border-radius:8px; border:1px solid var(--gold-line); font-family:inherit; font-size:12.5px; resize:vertical; box-sizing:border-box;">${escapeHtml(n.note)}</textarea>
-          <div style="display:flex; gap:6px; margin-top:6px;">
-            <button class="btn btn-primary btn-sm pn-save-edit-btn" data-id="${n.id}" style="flex:1; justify-content:center; font-size:11.5px; padding:5px 10px;">Save</button>
-            <button class="btn btn-ghost btn-sm pn-cancel-edit-btn" style="flex:1; justify-content:center; font-size:11.5px; padding:5px 10px;">Cancel</button>
-          </div>
-        </div>
-      `;
-    }
-    return `
-      <div style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:8px; align-items:flex-start;">
-        <div style="flex:1; min-width:0;">
-          <div style="font-size:12.5px; line-height:1.5; color:var(--ink); white-space:pre-wrap; word-break:break-word;">${escapeHtml(n.note)}</div>
-          <div class="faint" style="font-size:10.5px; margin-top:3px;">${new Date(n.created_at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}${n.updated_at ? ' · edited' : ''}</div>
-        </div>
-        <button class="pn-edit-btn" data-id="${n.id}" title="Edit note" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0 2px; flex-shrink:0; line-height:1; margin-top:1px;">✎</button>
-        <button class="pn-delete-btn" data-id="${n.id}" title="Delete note" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>
-      </div>
-    `;
-  }).join('');
-
-  list.querySelectorAll('.pn-edit-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      pnEditingId = btn.dataset.id;
-      renderPersonalNotesList();
-      const ta = list.querySelector('.pn-edit-input');
-      if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
-    });
-  });
-  list.querySelectorAll('.pn-cancel-edit-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      pnEditingId = null;
-      renderPersonalNotesList();
-    });
-  });
-  list.querySelectorAll('.pn-save-edit-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const id = btn.dataset.id;
-      const ta = list.querySelector(`.pn-edit-input[data-id="${id}"]`);
-      const newText = ta ? ta.value.trim() : '';
-      if (!newText) { showToast('A note cannot be empty — use ✕ to delete it instead.', true); return; }
-      btn.disabled = true;
-      const { error } = await sb.from('personal_notes').update({ note: newText, updated_at: new Date().toISOString() }).eq('id', id);
-      btn.disabled = false;
-      if (error) { console.error('Could not save the edit:', error); showToast('Could not save the edit.', true); return; }
-      const n = pnNotes.find(x => x.id === id);
-      if (n) { n.note = newText; n.updated_at = new Date().toISOString(); }
-      pnEditingId = null;
-      renderPersonalNotesList();
-      showToast('Note updated.');
-    });
-  });
-  // Ctrl+Enter saves while editing
-  list.querySelectorAll('.pn-edit-input').forEach(ta => {
-    ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        list.querySelector(`.pn-save-edit-btn[data-id="${ta.dataset.id}"]`)?.click();
-      }
-      if (e.key === 'Escape') { pnEditingId = null; renderPersonalNotesList(); }
-    });
-  });
-  list.querySelectorAll('.pn-delete-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      if (!confirm('Delete this note? This cannot be undone.')) return;
-      const id = btn.dataset.id;
-      pnNotes = pnNotes.filter(n => n.id !== id);
-      if (pnEditingId === id) pnEditingId = null;
-      renderPersonalNotesList();
-      const { error } = await sb.from('personal_notes').delete().eq('id', id);
-      if (error) { showToast('Could not delete the note.', true); loadPersonalNotes(); }
-    });
-  });
-}
-
-function initPersonalNotes() {
-  if (window._pnInit) return;
-  window._pnInit = true;
-
-  document.getElementById('pn-toggle').addEventListener('click', () => {
-    const panel = document.getElementById('pn-panel');
-    const opening = panel.style.display === 'none';
-    panel.style.display = opening ? 'block' : 'none';
-    if (opening) {
-      loadPersonalNotes(); // refresh in case notes were added on another device
-      setTimeout(() => document.getElementById('pn-input')?.focus(), 50);
-    }
-    refreshBubbleStack();
-  });
-
-  document.getElementById('pn-add-btn').addEventListener('click', async () => {
-    const input = document.getElementById('pn-input');
-    const note = input.value.trim();
-    if (!note) return;
-    const btn = document.getElementById('pn-add-btn');
-    btn.disabled = true;
-    const { data, error } = await sb.from('personal_notes').insert({ note }).select().single();
-    btn.disabled = false;
-    if (error) {
-      console.error('Could not save note:', error);
-      showToast('Could not save the note — run personal_notes_schema.sql in Supabase.', true);
-      return;
-    }
-    input.value = '';
-    pnNotes.unshift(data);
-    renderPersonalNotesList();
-  });
-
-  // Ctrl+Enter / Cmd+Enter inside the textarea also adds the note
-  document.getElementById('pn-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-      e.preventDefault();
-      document.getElementById('pn-add-btn').click();
-    }
-  });
-}
-
-// =====================================================================
 // TASK MANAGER — restricted to Kristina Mutia and Jeinna Louise Perez
 // =====================================================================
 
@@ -14801,28 +14482,12 @@ window.addEventListener('hashchange', () => {
 
 checkExistingSession();
 
-// Sync the floating calculator's visibility once the FULL page is parsed —
-// on refresh, session restore can switch to Team Funds before the parser
-// reaches the calculator markup at the end of <body>, so earlier show
-// attempts find nothing. This runs after parsing is guaranteed complete.
-function syncTfCalcVisibility() {
-  const wrap = document.getElementById('tf-calc-wrap');
-  if (!wrap) return;
-  const onTeamFunds = state.currentView === 'team-funds';
-  wrap.classList.toggle('bubble-eligible', onTeamFunds);
-  if (onTeamFunds) initTfCalculator();
-  syncPersonalNotesVisibility();
-  syncPersonalAlertsVisibility();
-  refreshBubbleStack();
-}
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', syncTfCalcVisibility);
-} else {
-  syncTfCalcVisibility();
-}
-// Also re-sync shortly after load in case session restore resolves late
-setTimeout(syncTfCalcVisibility, 1500);
-setTimeout(syncTfCalcVisibility, 4000);
+// Re-sync My Alerts visibility shortly after load in case session
+// restore resolves late (after the initial synchronous pass, but the
+// alerts bell markup is already present in the header, unlike the old
+// end-of-body bubbles this used to also cover).
+setTimeout(syncPersonalAlertsVisibility, 1500);
+setTimeout(syncPersonalAlertsVisibility, 4000);
 
 </script>
 
@@ -14842,70 +14507,26 @@ setTimeout(syncTfCalcVisibility, 4000);
      another. Each bubble's own panel (Alerts list / Notes list /
      Calculator) still opens independently via its own button click,
      exactly as before this change. -->
-<div id="bubble-stack" style="position:fixed; right:24px; bottom:24px; z-index:1002; display:flex; flex-direction:column-reverse; align-items:flex-end; gap:0;">
-
-  <!-- Personal Alerts — every employee, every tab -->
-  <!-- Floating personal notes — Jeinna only, every tab EXCEPT Team Funds -->
-  <div id="pn-wrap" class="bubble-stack-item" style="display:none; flex-direction:column; align-items:flex-end; gap:10px; margin-top:10px;">
-    <div id="pn-panel" style="display:none; width:300px; background:var(--paper-raised); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-md); font-family:inherit; overflow:hidden;">
-      <div style="padding:12px 14px 10px; border-bottom:1px solid var(--line-soft); font-weight:700; font-size:13.5px; color:var(--teal);">My Notes</div>
-      <div style="padding:10px 12px; border-bottom:1px solid var(--line-soft);">
-        <textarea id="pn-input" rows="2" placeholder="Write a note…" style="width:100%; padding:8px 9px; border-radius:8px; border:1px solid var(--line); font-family:inherit; font-size:12.5px; resize:vertical; box-sizing:border-box;"></textarea>
-        <button id="pn-add-btn" class="btn btn-primary btn-sm" style="width:100%; justify-content:center; margin-top:6px;">Add note</button>
-      </div>
-      <div id="pn-list" style="max-height:280px; overflow-y:auto;"></div>
+<div id="team-chat-wrap" class="hidden" style="position:fixed; right:24px; bottom:24px; z-index:1002; display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
+  <div id="team-chat-panel" style="display:flex; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
+    <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+      <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">Team Chat</span>
     </div>
-    <button id="pn-toggle" title="My Notes" style="width:52px; height:52px; border-radius:50%; border:1px solid var(--line); background:var(--teal); color:#FFFFFF; cursor:pointer; box-shadow:var(--shadow-md); display:flex; align-items:center; justify-content:center;">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-    </button>
-  </div>
-
-  <!-- Floating calculator — visible only on Team Funds -->
-  <div id="tf-calc-wrap" class="bubble-stack-item" style="display:none; flex-direction:column; align-items:flex-end; gap:10px; margin-top:10px;">
-    <div id="tf-calc-panel" style="display:none; width:230px; background:var(--paper-raised); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-md); padding:14px; font-family:inherit;">
-      <div id="tf-calc-display" style="background:var(--paper); border:1px solid var(--line-soft); border-radius:8px; padding:10px 12px; font-size:20px; font-weight:700; text-align:right; margin-bottom:10px; min-height:28px; overflow-x:auto; white-space:nowrap; color:var(--ink);">0</div>
-      <div id="tf-calc-keys" style="display:grid; grid-template-columns:repeat(4,1fr); gap:6px;"></div>
+    <div id="sidebar-chat-messages" style="flex:1; min-height:0; overflow-y:auto; padding:10px 12px;">
+      <div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">Loading...</div>
     </div>
-    <button id="tf-calc-toggle" title="Calculator" style="width:52px; height:52px; border-radius:50%; border:1px solid var(--line); background:var(--teal); color:#FFFFFF; cursor:pointer; box-shadow:var(--shadow-md); display:flex; align-items:center; justify-content:center; font-size:20px;">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="11" x2="8" y2="11.01"/><line x1="12" y1="11" x2="12" y2="11.01"/><line x1="16" y1="11" x2="16" y2="11.01"/><line x1="8" y1="15" x2="8" y2="15.01"/><line x1="12" y1="15" x2="12" y2="15.01"/><line x1="16" y1="15" x2="16" y2="15.01"/><line x1="8" y1="19" x2="12" y2="19"/><line x1="16" y1="19" x2="16" y2="19.01"/></svg>
-    </button>
+    <form id="sidebar-chat-form" style="display:flex; gap:5px; flex-shrink:0; position:relative; padding:8px 10px; border-top:1px solid rgba(255,255,255,0.12);">
+      <div id="sidebar-chat-mention-suggestions" style="display:none; position:absolute; bottom:calc(100% + 4px); left:10px; right:10px; z-index:71; background:#232B4D; border:1px solid rgba(255,255,255,0.15); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.35); max-height:160px; overflow-y:auto;"></div>
+      <input type="text" id="sidebar-chat-input" placeholder="@Name or message..."
+        autocomplete="off"
+        style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:11px;">
+      <button type="submit" style="flex-shrink:0; padding:6px 9px; border-radius:6px; border:none; background:#5DA6C1; color:#0F2A33; font-weight:700; font-size:11px; cursor:pointer;">Send</button>
+    </form>
   </div>
-
-  <!-- Team Chat — now part of the shared bubble-stack, positioned LAST
-       so column-reverse renders it as the frontmost/primary bubble at
-       the true corner. Registered as BUBBLE_STACK_ITEMS[0] in the
-       script below, which is what actually makes it "always visible,
-       others reveal on hover" rather than DOM order alone. -->
-  <div id="team-chat-wrap" class="bubble-stack-item" style="display:flex; flex-direction:column; align-items:flex-end; gap:10px; margin-top:10px;">
-    <div id="team-chat-panel" style="display:flex; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
-      <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-        <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">Team Chat</span>
-      </div>
-      <div id="sidebar-chat-messages" style="flex:1; min-height:0; overflow-y:auto; padding:10px 12px;">
-        <div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">Loading...</div>
-      </div>
-      <form id="sidebar-chat-form" style="display:flex; gap:5px; flex-shrink:0; position:relative; padding:8px 10px; border-top:1px solid rgba(255,255,255,0.12);">
-        <div id="sidebar-chat-mention-suggestions" style="display:none; position:absolute; bottom:calc(100% + 4px); left:10px; right:10px; z-index:71; background:#232B4D; border:1px solid rgba(255,255,255,0.15); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.35); max-height:160px; overflow-y:auto;"></div>
-        <input type="text" id="sidebar-chat-input" placeholder="@Name or message..."
-          autocomplete="off"
-          style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:11px;">
-        <button type="submit" style="flex-shrink:0; padding:6px 9px; border-radius:6px; border:none; background:#5DA6C1; color:#0F2A33; font-weight:700; font-size:11px; cursor:pointer;">Send</button>
-      </form>
-    </div>
-    <button id="team-chat-bubble-toggle" title="Team Chat" style="width:52px; height:52px; border-radius:50%; border:1px solid rgba(255,255,255,0.15); background:#1A2340; color:#5DA6C1; cursor:pointer; box-shadow:var(--shadow-lg); display:flex; align-items:center; justify-content:center;">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-    </button>
-  </div>
-
+  <button id="team-chat-bubble-toggle" title="Team Chat" style="width:52px; height:52px; border-radius:50%; border:1px solid rgba(255,255,255,0.15); background:#1A2340; color:#5DA6C1; cursor:pointer; box-shadow:var(--shadow-lg); display:flex; align-items:center; justify-content:center;">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+  </button>
 </div>
-
-<style>
-  /* JS toggles each bubble's own display (via bubbleStackRefresh in the
-     script) rather than relying on CSS to pick "the first eligible
-     one" — CSS selectors like :first-of-type can't correctly express
-     that when eligibility is class-based rather than DOM position, so
-     this is intentionally handled in JS instead of pure CSS. */
-</style>
 
 </body>
 </html>
