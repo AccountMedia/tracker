@@ -1666,7 +1666,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-mark-all-alerts-read';
+const APP_VERSION = '2026-07-30-fix-priolist-egress';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2099,7 +2099,8 @@ async function loadLiRestrictionEntries() {
   state.liRestrictionEntries = data || [];
 }
 
-async function loadPriolistEntries() {
+async function loadPriolistEntries(fullReload = true) {
+  if (!fullReload) return; // see rerenderPriolist below — most realtime updates skip this entirely now
   const { data, error } = await sb.from('priolist_entries').select('*');
   if (error) { showToast('Could not load PrioList.', true); return; }
   state.priolistEntries = data || [];
@@ -5122,23 +5123,44 @@ const PRIOLIST_STATUS_COLORS = {
 // instant they're saved, so the list re-sorts live for everyone.
 function startPriolistPolling() {
   stopPriolistPolling();
-  // PrioList entries keeps a light re-fetch rather than a raw patch —
-  // loadPriolistEntries() also self-heals missing rows for any newly
-  // added employee, which a payload-only patch would silently skip.
-  // The table itself is small (one row per employee, ~32 total), so
-  // this is a reasonable trade-off unlike the larger tables elsewhere.
-  const rerenderPriolist = debounceRealtime(async () => {
+  // Patches from the realtime payload directly (free — no extra
+  // fetch) for INSERT/UPDATE, matching every other table in this app.
+  // Only a DELETE falls back to the full loadPriolistEntries() reload,
+  // since applyRealtimePatch's filter-out is already correct for that
+  // case on its own — the fallback here is specifically to also run
+  // the self-heal backfill and daily-reset check, in case the delete
+  // was part of a bulk employee-management change that also needs
+  // those secondary passes. This was previously doing a genuine
+  // full-table SELECT * on every single change from any employee —
+  // the actual largest contributor to this app's Realtime Messages/
+  // Egress usage, since it fired for every keystroke-triggered save,
+  // multiplied across everyone currently on the PrioList tab.
+  const rerenderPriolistNow = debounceRealtime(() => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('priolist-input')) return; // don't yank the list mid-keystroke
-    await loadPriolistEntries();
     renderPrioList();
   });
+  const onPriolistEntriesChange = async (payload) => {
+    // Applying the patch itself is NOT debounced — it's a cheap,
+    // synchronous, in-memory operation, and debouncing it would mean
+    // rapid edits to DIFFERENT rows within the debounce window could
+    // silently drop all but the last one from the live in-memory
+    // array. Only the actual re-render (the expensive/disruptive part)
+    // is debounced below, so several quick updates still all get
+    // applied correctly, just repainted once as a batch.
+    if (payload.eventType === 'DELETE') {
+      await loadPriolistEntries(true); // the one case a simple filter-out can't also run the self-heal/reset passes
+    } else {
+      applyRealtimePatch(payload, () => state.priolistEntries, (v) => { state.priolistEntries = v; });
+    }
+    rerenderPriolistNow();
+  };
   const rerenderRedFiles = debounceRealtime(() => {
     const active = document.activeElement;
     if (active && active.classList && active.classList.contains('red-file-entry-cell') && active.value) return; // mid-typing a CampID
     renderRedFilesView();
   });
-  subscribeRealtime('priolist_entries', 'priolist_entries', rerenderPriolist);
+  subscribeRealtime('priolist_entries', 'priolist_entries', onPriolistEntriesChange);
   subscribeRealtime('priolist_red_files', 'priolist_red_files', (payload) => {
     applyRealtimePatch(payload, () => state.redFiles, (v) => { state.redFiles = v; });
     rerenderRedFiles();
