@@ -1069,7 +1069,7 @@ function enterApp() {
   hideMaintenanceScreen();
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
-  document.getElementById('team-chat-bubble-wrap').classList.remove('hidden');
+  document.getElementById('team-chat-bubble-wrap')?.classList.remove('hidden');
   document.getElementById('current-user-label').textContent = state.profile.display_name || state.profile.username;
   initNav();
   initSidebarChat();
@@ -1130,7 +1130,7 @@ function logout() {
   stopNavBadgePolling();
   stopMaintenanceWindowWatcher();
   document.getElementById('app').classList.add('hidden');
-  document.getElementById('team-chat-bubble-wrap').classList.add('hidden');
+  document.getElementById('team-chat-bubble-wrap')?.classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
 
@@ -1657,7 +1657,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-hide-chat-before-login';
+const APP_VERSION = '2026-07-30-fix-blank-app-crash';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13527,14 +13527,14 @@ let paInit = false;
 function initPersonalAlerts() {
   if (paInit) return; // already set up AND already checked once — the repeated setTimeout re-syncs (for a DIFFERENT bubble's late-session-restore concern) shouldn't re-trigger a fresh check here every time
   paInit = true;
-  document.getElementById('pa-toggle').addEventListener('click', (e) => {
+  document.getElementById('pa-toggle')?.addEventListener('click', (e) => {
     e.stopPropagation();
     const panel = document.getElementById('pa-panel');
     const opening = panel.style.display === 'none';
     panel.style.display = opening ? 'block' : 'none';
     if (opening) renderPersonalAlerts();
   });
-  document.getElementById('pa-panel').addEventListener('click', (e) => e.stopPropagation());
+  document.getElementById('pa-panel')?.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => {
     const panel = document.getElementById('pa-panel');
     if (panel) panel.style.display = 'none';
