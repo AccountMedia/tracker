@@ -1650,7 +1650,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-fix-sidebar-footer-chat-refresh';
+const APP_VERSION = '2026-07-30-notify-employee-dispute-resolved';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12867,6 +12867,7 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, 
     dispute_reviewed_at: reviewedAt,
     dispute_reject_reason: (resolution === 'rejected' || isRejectAsMinor) ? (note || null) : null,
     dispute_approve_note: resolution === 'approved' ? (note || null) : null,
+    dispute_seen_by_employee: false,
     updated_at: reviewedAt,
   };
   if (evidenceUrls.length) payload.dispute_review_evidence_urls = evidenceUrls;
@@ -12885,6 +12886,7 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, 
     showToast(
       /dispute_review_evidence_urls.* does not exist/i.test(error.message || '') ? 'Image attachments need setup — run ips_qa_entries_review_evidence.sql in Supabase.'
       : /violates check constraint.*dispute_status/i.test(error.message || '') ? 'Needs setup — run ips_qa_entries_fix_dispute_status_constraint.sql in Supabase.'
+      : /dispute_seen_by_employee.* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_qa_entries_dispute_seen.sql in Supabase.'
       : 'Could not resolve the dispute.',
       true
     );
@@ -12927,7 +12929,30 @@ async function openMyQaEntriesModal() {
   if (!state.profile || !state.profile.employee_id) return;
   openModal('My QA Notes', '<div class="loading-row">Loading...</div>', { width: '900px' });
   await loadMyQaEntries();
+  await markMyResolvedDisputesAsSeen();
   renderMyQaEntriesModalBody();
+}
+
+// Clears the "Your dispute was reviewed" My Alerts item the moment the
+// employee actually opens My QA Notes and can see the outcome —
+// updates the database (so it stays cleared across sessions/devices)
+// and patches the in-memory array immediately (so the alert badge
+// updates without waiting on a fresh fetch).
+async function markMyResolvedDisputesAsSeen() {
+  const myId = state.profile.employee_id;
+  const unseenIds = (ipsState.qaEntries || [])
+    .filter(e => e.employee_id === myId && ['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_seen_by_employee === false)
+    .map(e => e.id);
+  if (!unseenIds.length) return;
+  const { error } = await sb.from('ips_qa_entries').update({ dispute_seen_by_employee: true }).in('id', unseenIds);
+  if (error) {
+    // Non-fatal — if this column doesn't exist yet (migration not run),
+    // just skip silently rather than blocking the modal from opening.
+    if (!/dispute_seen_by_employee.* does not exist/i.test(error.message || '')) console.error(error);
+    return;
+  }
+  ipsState.qaEntries = ipsState.qaEntries.map(e => unseenIds.includes(e.id) ? { ...e, dispute_seen_by_employee: true } : e);
+  renderPersonalAlertsFromCache();
 }
 
 function renderMyQaEntriesModalBody() {
@@ -13334,6 +13359,24 @@ function myPersonalAlertItems() {
     }
   }
 
+  // 5. My disputes that were just resolved (approved/rejected/rejected-
+  // as-minor) that I haven't seen yet — clears the moment I open My QA
+  // Notes, same "acted on it, it clears" pattern as item #3 above.
+  const myResolvedDisputes = (ipsState.qaEntries || []).filter(e =>
+    e.employee_id === myId &&
+    ['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) &&
+    e.dispute_seen_by_employee === false
+  );
+  if (myResolvedDisputes.length) {
+    const outcomeLabel = (status) => status === 'approved' ? 'approved' : status === 'rejected_as_minor' ? 'downgraded to Minor' : 'rejected';
+    const summaries = myResolvedDisputes.map(e => outcomeLabel(e.dispute_status));
+    items.push({
+      icon: '✅', label: 'Your dispute was reviewed',
+      detail: `${myResolvedDisputes.length} ${myResolvedDisputes.length === 1 ? 'dispute was' : 'disputes were'} resolved (${summaries.join(', ')})`,
+      sortKey: myResolvedDisputes.reduce((m, e) => (e.dispute_reviewed_at || '') > m ? e.dispute_reviewed_at : m, ''),
+    });
+  }
+
   return items.sort((a, b) => (b.sortKey || '').localeCompare(a.sortKey || ''));
 }
 
@@ -13472,6 +13515,7 @@ function renderPersonalAlertsFromCache() {
   const alertActions = {
     'QA entries need your response': 'open-qa-notes',
     'QA disputes need your review': 'open-qa-accuracy-tab',
+    'Your dispute was reviewed': 'open-qa-notes',
   };
   list.innerHTML = items.length ? items.map(item => {
     const action = alertActions[item.label] || '';
