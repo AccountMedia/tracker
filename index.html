@@ -89,10 +89,10 @@
     display: flex;
     flex-direction: column;
     padding: 28px 18px;
-    position: sticky;
+    position: fixed;
     top: 0;
-    min-height: 100vh;
-    align-self: stretch;
+    left: 0;
+    height: 100vh;
   }
   .brand{
     font-family: var(--font-display);
@@ -186,6 +186,7 @@
     min-width: 0;
     padding: 32px 40px 60px;
     max-width: 1320px;
+    margin-left: 240px;
   }
   .page-head{
     display: flex;
@@ -368,7 +369,7 @@
 
   @media (max-width: 900px){
     .sidebar{ display:none; }
-    .main{ padding: 20px 18px 60px; }
+    .main{ padding: 20px 18px 60px; margin-left: 0; }
   }
 </style>
 </head>
@@ -1649,7 +1650,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-hide-chat-on-login-screen';
+const APP_VERSION = '2026-07-30-fix-sidebar-footer-chat-refresh';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -14480,7 +14481,20 @@ window.addEventListener('hashchange', () => {
   switchView(HASH_TO_VIEW[hashSlug]);
 });
 
-checkExistingSession();
+// Deferred rather than called immediately: this script is one long
+// inline block, so calling checkExistingSession() synchronously here
+// runs BEFORE the browser has parsed HTML further down the page (like
+// the chat bubble, close to the very end of <body>) — enterApp() would
+// then silently fail to reveal elements that don't exist yet. Waiting
+// for the document to be fully parsed guarantees everything referenced
+// inside enterApp() is genuinely present first.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', checkExistingSession);
+} else {
+  // Script somehow ran after the document was already ready (shouldn't
+  // normally happen for an inline, non-deferred script, but safe either way)
+  checkExistingSession();
+}
 
 // Re-sync My Alerts visibility shortly after load in case session
 // restore resolves late (after the initial synchronous pass, but the
@@ -14488,6 +14502,19 @@ checkExistingSession();
 // end-of-body bubbles this used to also cover).
 setTimeout(syncPersonalAlertsVisibility, 1500);
 setTimeout(syncPersonalAlertsVisibility, 4000);
+
+// Self-heal for the chat bubble specifically: if someone is genuinely
+// logged in but the bubble is still hidden a moment later, force it
+// visible. Cheap insurance against this exact class of "element wasn't
+// parsed yet when we tried to reveal it" bug recurring.
+function ensureChatBubbleVisibleIfLoggedIn() {
+  const wrap = document.getElementById('team-chat-wrap');
+  if (wrap && state.profile && wrap.classList.contains('hidden')) {
+    wrap.classList.remove('hidden');
+  }
+}
+setTimeout(ensureChatBubbleVisibleIfLoggedIn, 1500);
+setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
 
 </script>
 
