@@ -1641,7 +1641,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-sidebar-live-chat';
+const APP_VERSION = '2026-07-30-chat-mention-everyone';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8331,6 +8331,15 @@ function playChatMentionSound() {
 // unless that's literally someone's name), keeping mentions reliable
 // rather than guessing at partial names.
 function parseMentionsFromMessage(text) {
+  // "@everyone" expands to EVERY employee's name — reusing the exact
+  // same downstream mechanism as an individual @mention (the sound
+  // trigger and highlight both just check "is my name in
+  // mentioned_names"), so nothing else needs special-casing to support
+  // this. Checked first since it's cheap and, if present, makes the
+  // per-employee name scan below redundant (though harmless to still run).
+  if (/@everyone\b/i.test(text)) {
+    return state.employees.map(emp => emp.display_name);
+  }
   const mentioned = [];
   state.employees.forEach(emp => {
     const nameParts = emp.display_name.split(' ');
@@ -8349,6 +8358,12 @@ function parseMentionsFromMessage(text) {
 // mentioned employee's name (or first name) case-insensitively.
 function renderChatMessageHtml(msg) {
   let html = escapeHtml(msg.message);
+  // "@everyone" is highlighted directly, since it's the literal text
+  // typed in the message — mentioned_names holds the EXPANDED list of
+  // every employee's name (for the notification-matching logic), not
+  // the literal string "everyone", so it wouldn't match via the
+  // per-name loop below.
+  html = html.replace(/@everyone\b/gi, (match) => `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 3px; border-radius:3px;">${match}</span>`);
   (msg.mentioned_names || []).forEach(name => {
     const firstName = name.split(' ')[0];
     [name, firstName].forEach(part => {
