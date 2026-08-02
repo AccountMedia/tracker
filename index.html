@@ -411,8 +411,8 @@
       <a class="nav-item" data-view="ot-filing" id="nav-ot-filing"><span class="dot"></span>OT Hours Filing<span id="nav-ot-filing-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="ips" id="nav-ips"><span class="dot"></span>IPS (Individual Performance Score)<span id="nav-ips-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
-      <a class="nav-item" data-view="team-chat" id="nav-team-chat"><span class="dot"></span>Team Chat<span id="nav-chat-badge" class="nav-badge" style="display:none;"></span></a>
     </nav>
+    <div id="sidebar-chat-wrap" style="flex:1; min-height:0; display:flex; flex-direction:column; margin:14px 0; overflow:hidden;"></div>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
       <div style="margin-top:10px; display:flex; gap:10px;">
@@ -554,17 +554,6 @@
       <div id="team-funds-content"></div>
     </section>
 
-    <section class="view" id="view-team-chat">
-      <div class="page-head">
-        <div>
-          <span class="eyebrow">PH Team</span>
-          <h1>Team Chat</h1>
-          <p class="lede">A live, shared channel for the whole team — type <strong>@Name</strong> to mention someone. Messages clear automatically at the start of each day.</p>
-        </div>
-      </div>
-      <div id="team-chat-content"></div>
-    </section>
-
     <section class="view" id="view-ips">
       <div class="page-head">
         <div>
@@ -646,7 +635,6 @@ const state = {
   priolistEntries: [],    // PrioList rows
   priolistVisible: true,  // live app-wide toggle (app_settings.priolist_visible) — controlled by Jeinna; defaults true until loaded so nothing flips unexpectedly during the brief pre-load window
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
-  chatUnread: 0, // unread Team Chat messages since the badge was last cleared (opening the tab clears it)
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
   priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
   redFiles: [],             // priolist_red_files rows
@@ -1072,6 +1060,7 @@ function enterApp() {
   document.getElementById('app').classList.remove('hidden');
   document.getElementById('current-user-label').textContent = state.profile.display_name || state.profile.username;
   initNav();
+  initSidebarChat();
   loadAllData();
   startMaintenanceWindowWatcher();
 }
@@ -1117,9 +1106,8 @@ function logout() {
   if (ltBadge) ltBadge.style.display = 'none';
   const tfNavBadge = document.getElementById('nav-tf-badge');
   if (tfNavBadge) tfNavBadge.style.display = 'none';
-  const chatNavBadge = document.getElementById('nav-chat-badge');
-  if (chatNavBadge) chatNavBadge.style.display = 'none';
-  state.chatUnread = 0;
+  const chatWrapLogout = document.getElementById('sidebar-chat-wrap');
+  if (chatWrapLogout) chatWrapLogout.innerHTML = '';
   const otNavBadge = document.getElementById('nav-ot-filing-badge');
   if (otNavBadge) otNavBadge.style.display = 'none';
   const ipsNavBadge = document.getElementById('nav-ips-badge');
@@ -1187,7 +1175,7 @@ function initNav() {
 
   const hashSlug = (window.location.hash || '').replace(/^#/, '');
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'team-chat', 'ips'];
+  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips'];
   // Redirect any saved view that has moved into Account Hub
   const hubViews = ['leave-tracker', 'employee-management'];
   // A URL hash (someone opened/pasted a direct link) takes priority
@@ -1219,7 +1207,6 @@ const VIEW_TO_HASH = {
   'li-restriction': 'li-restriction-report',
   'ot-filing': 'ot-hours-filing',
   'team-funds': 'team-funds',
-  'team-chat': 'team-chat',
   'ips': 'ips',
 };
 // account-hub's own sub-tabs get their own distinct hash slugs
@@ -1227,7 +1214,7 @@ const ACCOUNT_HUB_TAB_TO_HASH = {
   'leave-tracker': 'leave-tracker',
   'employee-management': 'employee-management',
 };
-const HASH_TO_VIEW = { 'dashboard': 'dashboard', 'payroll-confirmation': 'payroll-confirmation', 'priolist': 'priolist', 'li-restriction-report': 'li-restriction', 'ot-hours-filing': 'ot-filing', 'team-funds': 'team-funds', 'team-chat': 'team-chat', 'ips': 'ips', 'leave-tracker': 'account-hub', 'employee-management': 'account-hub' };
+const HASH_TO_VIEW = { 'dashboard': 'dashboard', 'payroll-confirmation': 'payroll-confirmation', 'priolist': 'priolist', 'li-restriction-report': 'li-restriction', 'ot-hours-filing': 'ot-filing', 'team-funds': 'team-funds', 'ips': 'ips', 'leave-tracker': 'account-hub', 'employee-management': 'account-hub' };
 const HASH_TO_ACCOUNT_HUB_TAB = { 'leave-tracker': 'leave-tracker', 'employee-management': 'employee-management' };
 
 // Writes the current view (and, for Account Hub, its active sub-tab)
@@ -1288,7 +1275,6 @@ function switchView(viewName) {
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
   if (viewName === 'team-funds') renderTeamFunds();
-  if (viewName === 'team-chat') renderTeamChat();
   if (viewName === 'ips') renderIps();
 
   if (viewName === 'priolist') startPriolistPolling();
@@ -1505,17 +1491,11 @@ function startNavBadgePolling() {
     if (payload.eventType !== 'INSERT') return; // only new messages matter here — edits/deletes don't apply (chat has neither)
     const msg = payload.new;
     if (!msg) return;
+    appendLiveChatMessage(msg); // the sidebar panel is always on screen, so every new message (including my own, echoed back) appends immediately
     const isMyOwnMessage = msg.sender_employee_id === state.profile.employee_id;
-    if (state.currentView === 'team-chat') appendLiveChatMessage(msg); // always render if I'm looking at the tab — including my own sent message
-    if (isMyOwnMessage) return; // badge/sound never fire for my own messages
-    state.chatUnread = (state.chatUnread || 0) + 1;
+    if (isMyOwnMessage) return; // the mention sound never fires for my own messages
     const iAmMentioned = Array.isArray(msg.mentioned_names) && msg.mentioned_names.includes(state.profile.display_name);
-    if (state.currentView !== 'team-chat') {
-      updateTeamChatBadge();
-      if (iAmMentioned) playChatMentionSound();
-    } else if (iAmMentioned) {
-      playChatMentionSound(); // still on the tab, but freshly mentioned — worth a sound even without a badge
-    }
+    if (iAmMentioned) playChatMentionSound();
   });
 
   // Every logged-in employee gets this — the PrioList visibility toggle
@@ -1661,7 +1641,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-team-chat';
+const APP_VERSION = '2026-07-30-sidebar-live-chat';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8313,19 +8293,11 @@ function renderIpsBell() {
 }
 
 // =====================================================================
-// TEAM CHAT — single shared channel, live, auto-clears daily
+// TEAM CHAT — persistent sidebar panel, live, auto-clears daily
 // =====================================================================
-
-function updateTeamChatBadge() {
-  const badge = document.getElementById('nav-chat-badge');
-  if (!badge) return;
-  if (state.chatUnread > 0) {
-    badge.textContent = state.chatUnread > 99 ? '99+' : String(state.chatUnread);
-    badge.style.display = 'inline-flex';
-  } else {
-    badge.style.display = 'none';
-  }
-}
+// Lives directly in the sidebar (between the nav links and the
+// "Signed in as" footer) rather than as its own page — visible on
+// every screen, all the time, like a live-stream comment feed.
 
 // Generates a short two-tone notification sound with the Web Audio
 // API rather than shipping an audio file — keeps this a genuinely
@@ -8361,9 +8333,6 @@ function playChatMentionSound() {
 function parseMentionsFromMessage(text) {
   const mentioned = [];
   state.employees.forEach(emp => {
-    // Matches "@Firstname" or "@Firstname Lastname" etc. — checks if the
-    // message contains "@" followed by the employee's name (allowing the
-    // sender to type just a first name or the full name).
     const nameParts = emp.display_name.split(' ');
     const firstName = nameParts[0];
     const fullPattern = new RegExp(`@${emp.display_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
@@ -8384,42 +8353,48 @@ function renderChatMessageHtml(msg) {
     const firstName = name.split(' ')[0];
     [name, firstName].forEach(part => {
       const pattern = new RegExp(`@${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-      html = html.replace(pattern, (match) => `<span style="background:var(--amber-wash); color:var(--amber); font-weight:700; padding:1px 4px; border-radius:4px;">${match}</span>`);
+      html = html.replace(pattern, (match) => `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 3px; border-radius:3px;">${match}</span>`);
     });
   });
   return html;
 }
 
+// Compact card styled for the dark, narrow (240px) sidebar — small
+// text, subtle separators instead of full chat "bubbles", since a
+// TikTok/Facebook-Live-style feed reads more like a running comment
+// list than a messenger UI.
 function chatMessageCard(msg) {
-  const isMe = msg.sender_employee_id === state.profile.employee_id;
   const iAmMentioned = Array.isArray(msg.mentioned_names) && msg.mentioned_names.includes(state.profile.display_name);
   const time = new Date(msg.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   return `
     <div class="team-chat-msg" data-id="${msg.id}" style="
-      padding:9px 13px; border-radius:10px; margin-bottom:8px; max-width:78%;
-      ${isMe ? 'margin-left:auto; background:var(--teal); color:#fff;' : 'background:var(--paper-raised); border:1px solid var(--line-soft);'}
-      ${iAmMentioned && !isMe ? 'border:1.5px solid var(--amber); background:var(--amber-wash);' : ''}">
-      ${!isMe ? `<div style="font-size:10.5px; font-weight:700; color:var(--teal); margin-bottom:2px;">${escapeHtml(msg.sender_name)}</div>` : ''}
-      <div style="font-size:13px; line-height:1.4; white-space:pre-wrap; word-break:break-word;">${renderChatMessageHtml(msg)}</div>
-      <div style="font-size:9.5px; margin-top:3px; opacity:0.65;">${time}</div>
+      padding:5px 7px; border-radius:6px; margin-bottom:4px; font-size:11.5px; line-height:1.35;
+      ${iAmMentioned ? 'background:rgba(93,166,193,0.18); border-left:2px solid #5DA6C1;' : ''}">
+      <span style="font-weight:700; color:#B8A9E0;">${escapeHtml(msg.sender_name.split(' ')[0])}</span>
+      <span style="color:#7C87AE; font-size:9.5px; margin-left:4px;">${time}</span>
+      <div style="color:#E4E8F5; word-break:break-word; margin-top:1px;">${renderChatMessageHtml(msg)}</div>
     </div>
   `;
 }
 
-// Appends exactly one new message to the live view — used by the
+// Appends exactly one new message to the live feed — used by the
 // always-on realtime subscription so a new message doesn't require a
-// full re-render/re-fetch while someone's actively watching the chat.
+// full re-render/re-fetch. The panel is on screen at all times, so
+// this fires for every message, from anywhere in the app.
 function appendLiveChatMessage(msg) {
-  const list = document.getElementById('team-chat-messages');
+  const list = document.getElementById('sidebar-chat-messages');
   if (!list) return;
-  const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+  // Placeholder-only state ("No messages yet") gets cleared out the
+  // moment a real message arrives.
+  const placeholder = list.querySelector('.team-chat-empty-placeholder');
+  if (placeholder) placeholder.remove();
+  const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   list.insertAdjacentHTML('beforeend', chatMessageCard(msg));
-  if (wasAtBottom) list.scrollTop = list.scrollHeight; // only auto-scroll if they were already near the bottom — don't yank someone away from reading older messages
+  if (wasAtBottom) list.scrollTop = list.scrollHeight;
 }
 
-let _teamChatLoaded = false;
 async function loadTeamChatMessages() {
-  const { data, error } = await sb.from('team_chat_messages').select('*').order('created_at', { ascending: true }).limit(500);
+  const { data, error } = await sb.from('team_chat_messages').select('*').order('created_at', { ascending: true }).limit(300);
   if (error) {
     if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load team chat:', error);
     return [];
@@ -8427,39 +8402,39 @@ async function loadTeamChatMessages() {
   return data || [];
 }
 
-async function renderTeamChat() {
-  const el = document.getElementById('team-chat-content');
-  if (!el) return;
-  state.chatUnread = 0;
-  updateTeamChatBadge();
+// Builds the persistent sidebar chat panel once, at login — not tied
+// to switchView/tab navigation at all, since it needs to stay visible
+// regardless of which page is active. Safe to call more than once
+// (e.g. if initNav ever re-runs); it just re-renders into the same slot.
+async function initSidebarChat() {
+  const wrap = document.getElementById('sidebar-chat-wrap');
+  if (!wrap || !state.profile) return;
 
-  el.innerHTML = `
-    <div class="card" style="padding:0; display:flex; flex-direction:column; height:calc(100vh - 220px); min-height:420px; overflow:hidden;">
-      <div id="team-chat-messages" style="flex:1; overflow-y:auto; padding:16px;">
-        <div class="loading-row">Loading chat...</div>
-      </div>
-      <form id="team-chat-form" style="display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line-soft); flex-shrink:0;">
-        <input type="text" id="team-chat-input" placeholder="Type a message... use @Name to mention someone"
-          autocomplete="off"
-          style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--line); font-family:inherit; font-size:13.5px;">
-        <button type="submit" class="btn btn-primary" style="flex-shrink:0;">Send</button>
-      </form>
+  wrap.innerHTML = `
+    <div style="font-size:9.5px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#8672BC; margin-bottom:6px; flex-shrink:0;">Team Chat</div>
+    <div id="sidebar-chat-messages" style="flex:1; min-height:0; overflow-y:auto; margin-bottom:8px;">
+      <div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">Loading...</div>
     </div>
+    <form id="sidebar-chat-form" style="display:flex; gap:5px; flex-shrink:0;">
+      <input type="text" id="sidebar-chat-input" placeholder="@Name or message..."
+        autocomplete="off"
+        style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:11px;">
+      <button type="submit" style="flex-shrink:0; padding:6px 9px; border-radius:6px; border:none; background:#5DA6C1; color:#0F2A33; font-weight:700; font-size:11px; cursor:pointer;">Send</button>
+    </form>
   `;
 
   const messages = await loadTeamChatMessages();
-  _teamChatLoaded = true;
-  const list = document.getElementById('team-chat-messages');
+  const list = document.getElementById('sidebar-chat-messages');
   if (list) {
     list.innerHTML = messages.length
       ? messages.map(chatMessageCard).join('')
-      : `<p class="muted" style="text-align:center; margin-top:40px; font-size:13px;">No messages yet today — say hello!</p>`;
+      : `<div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">No messages yet today — say hello!</div>`;
     list.scrollTop = list.scrollHeight;
   }
 
-  document.getElementById('team-chat-form').addEventListener('submit', async (e) => {
+  document.getElementById('sidebar-chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = document.getElementById('team-chat-input');
+    const input = document.getElementById('sidebar-chat-input');
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
