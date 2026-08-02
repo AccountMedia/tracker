@@ -91,7 +91,8 @@
     padding: 28px 18px;
     position: sticky;
     top: 0;
-    height: 100vh;
+    min-height: 100vh;
+    align-self: stretch;
   }
   .brand{
     font-family: var(--font-display);
@@ -1658,7 +1659,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-primary-bubble-header-align';
+const APP_VERSION = '2026-07-30-fix-chat-timeout-sidebar-calendar';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3164,7 +3165,7 @@ function renderCalendarCard() {
       .calendar-card{ height:100%; }
       .cal-weekdays{ display:grid; grid-template-columns: repeat(7,1fr); margin-bottom:8px; }
       .cal-weekday{ text-align:center; font-size:12px; font-weight:600; color:var(--ink-faint); letter-spacing:0.06em; text-transform:uppercase; padding-bottom:8px; }
-      .cal-grid{ display:grid; grid-template-columns: repeat(7,1fr); grid-auto-rows: 1fr; gap:8px; flex:1; }
+      .cal-grid{ display:grid; grid-template-columns: repeat(7,1fr); grid-auto-rows: auto; gap:8px; flex:1; }
       .cal-cell{ min-height:96px; max-height:96px; overflow:hidden; border-radius:10px; padding:10px; background:var(--paper); border:1px solid var(--line-soft); cursor:pointer; transition: background 0.12s ease, border-color 0.12s ease; display:flex; flex-direction:column; position:relative; }
       .cal-cell:hover{ background: var(--teal-wash); }
       .cal-cell-empty{ background:transparent; border:none; cursor:default; }
@@ -8426,7 +8427,17 @@ function appendLiveChatMessage(msg) {
 }
 
 async function loadTeamChatMessages() {
-  const { data, error } = await sb.from('team_chat_messages').select('*').order('created_at', { ascending: true }).limit(300);
+  // A hard timeout, not just error-handling: if the request never
+  // resolves at all (a stalled network request — common right after a
+  // hard refresh, when many other requests are competing at once), the
+  // panel would otherwise be stuck showing "Loading..." forever, since
+  // nothing after this await would ever run. Racing against a timeout
+  // guarantees this function always settles one way or another.
+  const timeout = new Promise((resolve) => setTimeout(() => resolve({ data: null, error: new Error('Team chat load timed out') }), 8000));
+  const { data, error } = await Promise.race([
+    sb.from('team_chat_messages').select('*').order('created_at', { ascending: true }).limit(300),
+    timeout,
+  ]);
   if (error) {
     if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load team chat:', error);
     return [];
