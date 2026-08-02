@@ -1641,7 +1641,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-say-hello-text';
+const APP_VERSION = '2026-07-30-chat-mention-autocomplete';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8421,6 +8421,89 @@ async function loadTeamChatMessages() {
 // to switchView/tab navigation at all, since it needs to stay visible
 // regardless of which page is active. Safe to call more than once
 // (e.g. if initNav ever re-runs); it just re-renders into the same slot.
+// Wires up "@Name" autocomplete on the chat input: as the person
+// types, this looks for an unfinished "@word" token right at the
+// cursor, filters the employee roster (plus a synthetic "Everyone"
+// entry) against it, and shows a clickable dropdown of matches. The
+// dropdown always displays each person's FULL name (so it's
+// unambiguous which "John" is being suggested), but clicking a
+// suggestion inserts only their FIRST name into the message — matching
+// how mentions are already parsed elsewhere (parseMentionsFromMessage
+// already recognizes a bare first name as a valid mention), so what
+// gets typed and what gets detected stay consistent.
+function wireChatMentionAutocomplete() {
+  const input = document.getElementById('sidebar-chat-input');
+  const menu = document.getElementById('sidebar-chat-mention-suggestions');
+  if (!input || !menu) return;
+
+  // Finds the "@partial" token immediately before the cursor, if any —
+  // e.g. typing "hey @jei" with the cursor at the end returns "jei".
+  // Returns null if the cursor isn't currently inside an @-token (so
+  // the dropdown correctly disappears once the person keeps typing a
+  // space or moves on).
+  function currentMentionToken() {
+    const pos = input.selectionStart;
+    const before = input.value.slice(0, pos);
+    const match = before.match(/@([a-zA-Z]*)$/);
+    return match ? match[1] : null;
+  }
+
+  function closeMenu() { menu.style.display = 'none'; menu.innerHTML = ''; }
+
+  function openMenuWith(partial) {
+    const lower = partial.toLowerCase();
+    const candidates = [
+      { full: 'Everyone', insert: 'everyone', isEveryone: true },
+      ...state.employees
+        .filter(emp => emp.display_name.toLowerCase().startsWith(lower) || emp.display_name.split(' ')[0].toLowerCase().startsWith(lower))
+        .map(emp => ({ full: emp.display_name, insert: emp.display_name.split(' ')[0] })),
+    ].filter(c => c.full.toLowerCase().includes(lower) || c.insert.toLowerCase().startsWith(lower));
+
+    if (!candidates.length) { closeMenu(); return; }
+
+    menu.innerHTML = candidates.map(c => `
+      <div class="chat-mention-option" data-insert="${escapeHtml(c.insert)}" style="
+        padding:6px 10px; font-size:11.5px; color:#E4E8F5; cursor:pointer;
+        ${c.isEveryone ? 'font-weight:700; color:#5DA6C1; border-bottom:1px solid rgba(255,255,255,0.1);' : ''}">
+        ${escapeHtml(c.full)}
+      </div>
+    `).join('');
+    menu.style.display = 'block';
+
+    menu.querySelectorAll('.chat-mention-option').forEach(opt => {
+      opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(93,166,193,0.15)'; });
+      opt.addEventListener('mouseleave', () => { opt.style.background = 'none'; });
+      opt.addEventListener('mousedown', (e) => {
+        // mousedown (not click) — fires before the input loses focus,
+        // so selectionStart below still reflects where the cursor was
+        e.preventDefault();
+        const pos = input.selectionStart;
+        const before = input.value.slice(0, pos).replace(/@([a-zA-Z]*)$/, `@${opt.dataset.insert} `);
+        const after = input.value.slice(pos);
+        input.value = before + after;
+        const newPos = before.length;
+        input.focus();
+        input.setSelectionRange(newPos, newPos);
+        closeMenu();
+      });
+    });
+  }
+
+  input.addEventListener('input', () => {
+    const token = currentMentionToken();
+    if (token === null) { closeMenu(); return; }
+    openMenuWith(token);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeMenu();
+  });
+  input.addEventListener('blur', () => {
+    // Small delay so a mousedown on a suggestion (which also blurs the
+    // input) still gets to run its own handler before the menu closes.
+    setTimeout(closeMenu, 150);
+  });
+}
+
 async function initSidebarChat() {
   const wrap = document.getElementById('sidebar-chat-wrap');
   if (!wrap || !state.profile) return;
@@ -8430,7 +8513,8 @@ async function initSidebarChat() {
     <div id="sidebar-chat-messages" style="flex:1; min-height:0; overflow-y:auto; margin-bottom:8px;">
       <div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">Loading...</div>
     </div>
-    <form id="sidebar-chat-form" style="display:flex; gap:5px; flex-shrink:0;">
+    <form id="sidebar-chat-form" style="display:flex; gap:5px; flex-shrink:0; position:relative;">
+      <div id="sidebar-chat-mention-suggestions" style="display:none; position:absolute; bottom:calc(100% + 4px); left:0; right:0; z-index:50; background:#232B4D; border:1px solid rgba(255,255,255,0.15); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.35); max-height:160px; overflow-y:auto;"></div>
       <input type="text" id="sidebar-chat-input" placeholder="@Name or message..."
         autocomplete="off"
         style="flex:1; min-width:0; padding:6px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:11px;">
@@ -8446,6 +8530,8 @@ async function initSidebarChat() {
       : `<div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">Say Hello!</div>`;
     list.scrollTop = list.scrollHeight;
   }
+
+  wireChatMentionAutocomplete();
 
   document.getElementById('sidebar-chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
