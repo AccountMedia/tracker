@@ -1641,7 +1641,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-mention-everyone';
+const APP_VERSION = '2026-07-30-chat-say-hello-text';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8443,7 +8443,7 @@ async function initSidebarChat() {
   if (list) {
     list.innerHTML = messages.length
       ? messages.map(chatMessageCard).join('')
-      : `<div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">No messages yet today — say hello!</div>`;
+      : `<div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:11px; text-align:center; padding:12px 4px;">Say Hello!</div>`;
     list.scrollTop = list.scrollHeight;
   }
 
