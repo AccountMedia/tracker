@@ -411,6 +411,7 @@
       <a class="nav-item" data-view="ot-filing" id="nav-ot-filing"><span class="dot"></span>OT Hours Filing<span id="nav-ot-filing-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="ips" id="nav-ips"><span class="dot"></span>IPS (Individual Performance Score)<span id="nav-ips-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
+      <a class="nav-item" data-view="team-chat" id="nav-team-chat"><span class="dot"></span>Team Chat<span id="nav-chat-badge" class="nav-badge" style="display:none;"></span></a>
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
@@ -553,6 +554,17 @@
       <div id="team-funds-content"></div>
     </section>
 
+    <section class="view" id="view-team-chat">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>Team Chat</h1>
+          <p class="lede">A live, shared channel for the whole team — type <strong>@Name</strong> to mention someone. Messages clear automatically at the start of each day.</p>
+        </div>
+      </div>
+      <div id="team-chat-content"></div>
+    </section>
+
     <section class="view" id="view-ips">
       <div class="page-head">
         <div>
@@ -634,6 +646,7 @@ const state = {
   priolistEntries: [],    // PrioList rows
   priolistVisible: true,  // live app-wide toggle (app_settings.priolist_visible) — controlled by Jeinna; defaults true until loaded so nothing flips unexpectedly during the brief pre-load window
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
+  chatUnread: 0, // unread Team Chat messages since the badge was last cleared (opening the tab clears it)
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
   priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
   redFiles: [],             // priolist_red_files rows
@@ -1104,6 +1117,9 @@ function logout() {
   if (ltBadge) ltBadge.style.display = 'none';
   const tfNavBadge = document.getElementById('nav-tf-badge');
   if (tfNavBadge) tfNavBadge.style.display = 'none';
+  const chatNavBadge = document.getElementById('nav-chat-badge');
+  if (chatNavBadge) chatNavBadge.style.display = 'none';
+  state.chatUnread = 0;
   const otNavBadge = document.getElementById('nav-ot-filing-badge');
   if (otNavBadge) otNavBadge.style.display = 'none';
   const ipsNavBadge = document.getElementById('nav-ips-badge');
@@ -1171,7 +1187,7 @@ function initNav() {
 
   const hashSlug = (window.location.hash || '').replace(/^#/, '');
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips'];
+  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'team-chat', 'ips'];
   // Redirect any saved view that has moved into Account Hub
   const hubViews = ['leave-tracker', 'employee-management'];
   // A URL hash (someone opened/pasted a direct link) takes priority
@@ -1203,6 +1219,7 @@ const VIEW_TO_HASH = {
   'li-restriction': 'li-restriction-report',
   'ot-filing': 'ot-hours-filing',
   'team-funds': 'team-funds',
+  'team-chat': 'team-chat',
   'ips': 'ips',
 };
 // account-hub's own sub-tabs get their own distinct hash slugs
@@ -1210,7 +1227,7 @@ const ACCOUNT_HUB_TAB_TO_HASH = {
   'leave-tracker': 'leave-tracker',
   'employee-management': 'employee-management',
 };
-const HASH_TO_VIEW = { 'dashboard': 'dashboard', 'payroll-confirmation': 'payroll-confirmation', 'priolist': 'priolist', 'li-restriction-report': 'li-restriction', 'ot-hours-filing': 'ot-filing', 'team-funds': 'team-funds', 'ips': 'ips', 'leave-tracker': 'account-hub', 'employee-management': 'account-hub' };
+const HASH_TO_VIEW = { 'dashboard': 'dashboard', 'payroll-confirmation': 'payroll-confirmation', 'priolist': 'priolist', 'li-restriction-report': 'li-restriction', 'ot-hours-filing': 'ot-filing', 'team-funds': 'team-funds', 'team-chat': 'team-chat', 'ips': 'ips', 'leave-tracker': 'account-hub', 'employee-management': 'account-hub' };
 const HASH_TO_ACCOUNT_HUB_TAB = { 'leave-tracker': 'leave-tracker', 'employee-management': 'employee-management' };
 
 // Writes the current view (and, for Account Hub, its active sub-tab)
@@ -1271,6 +1288,7 @@ function switchView(viewName) {
   if (viewName === 'li-restriction') renderLiRestriction();
   if (viewName === 'ot-filing') renderOtFiling();
   if (viewName === 'team-funds') renderTeamFunds();
+  if (viewName === 'team-chat') renderTeamChat();
   if (viewName === 'ips') renderIps();
 
   if (viewName === 'priolist') startPriolistPolling();
@@ -1474,6 +1492,32 @@ function startNavBadgePolling() {
   if (!state.profile) return;
   const isAdminOrIps = isAdmin() || state.profile.role === 'ips';
 
+  // Team Chat — always-on regardless of which tab is open, since the
+  // badge and notification sound need to fire even while someone's
+  // working in, say, Leave Tracker. Only counts toward the badge (and
+  // only plays a sound) when: (a) the chat tab isn't currently the
+  // active view — no need to alert someone already looking at it — and
+  // (b) either the message mentions them by name, or it's just a new
+  // message in general (the badge tracks "unread since I last opened
+  // chat"; the sound is reserved for direct @mentions specifically, so
+  // it doesn't go off constantly during a busy conversation).
+  subscribeRealtime('team_chat_messages', 'team_chat_messages', (payload) => {
+    if (payload.eventType !== 'INSERT') return; // only new messages matter here — edits/deletes don't apply (chat has neither)
+    const msg = payload.new;
+    if (!msg) return;
+    const isMyOwnMessage = msg.sender_employee_id === state.profile.employee_id;
+    if (state.currentView === 'team-chat') appendLiveChatMessage(msg); // always render if I'm looking at the tab — including my own sent message
+    if (isMyOwnMessage) return; // badge/sound never fire for my own messages
+    state.chatUnread = (state.chatUnread || 0) + 1;
+    const iAmMentioned = Array.isArray(msg.mentioned_names) && msg.mentioned_names.includes(state.profile.display_name);
+    if (state.currentView !== 'team-chat') {
+      updateTeamChatBadge();
+      if (iAmMentioned) playChatMentionSound();
+    } else if (iAmMentioned) {
+      playChatMentionSound(); // still on the tab, but freshly mentioned — worth a sound even without a badge
+    }
+  });
+
   // Every logged-in employee gets this — the PrioList visibility toggle
   // needs to be current BEFORE they click the nav item (switchView's
   // redirect check reads state.priolistVisible synchronously), not just
@@ -1589,6 +1633,7 @@ function stopNavBadgePolling() {
   unsubscribeRealtime('badge_leave_notifications');
   unsubscribeRealtime('my_qa_entries');
   unsubscribeRealtime('app_settings_priolist');
+  unsubscribeRealtime('team_chat_messages');
 }
 
 // Re-renders whichever view is currently on screen, so staged data
@@ -1616,7 +1661,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-29-qa-report-red-score';
+const APP_VERSION = '2026-07-30-team-chat';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8264,6 +8309,179 @@ function renderIpsBell() {
   `;
   document.getElementById('btn-ips-notif')?.addEventListener('click', (e) => {
     e.stopPropagation(); toggleNotifPanel('ips');
+  });
+}
+
+// =====================================================================
+// TEAM CHAT — single shared channel, live, auto-clears daily
+// =====================================================================
+
+function updateTeamChatBadge() {
+  const badge = document.getElementById('nav-chat-badge');
+  if (!badge) return;
+  if (state.chatUnread > 0) {
+    badge.textContent = state.chatUnread > 99 ? '99+' : String(state.chatUnread);
+    badge.style.display = 'inline-flex';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+// Generates a short two-tone notification sound with the Web Audio
+// API rather than shipping an audio file — keeps this a genuinely
+// self-contained single HTML file with no external assets to host.
+function playChatMentionSound() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const playTone = (freq, startTime, duration) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.2, startTime + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    };
+    const now = ctx.currentTime;
+    playTone(880, now, 0.12);        // first tone
+    playTone(1175, now + 0.11, 0.16); // second, higher tone — classic two-note "ping"
+  } catch (err) {
+    console.error('Could not play chat notification sound:', err);
+  }
+}
+
+// Parses "@Name" mentions out of a message by matching against the
+// actual employee roster — only a genuine, exact display_name match
+// counts as a mention (so "@John" doesn't accidentally match "Johnny"
+// unless that's literally someone's name), keeping mentions reliable
+// rather than guessing at partial names.
+function parseMentionsFromMessage(text) {
+  const mentioned = [];
+  state.employees.forEach(emp => {
+    // Matches "@Firstname" or "@Firstname Lastname" etc. — checks if the
+    // message contains "@" followed by the employee's name (allowing the
+    // sender to type just a first name or the full name).
+    const nameParts = emp.display_name.split(' ');
+    const firstName = nameParts[0];
+    const fullPattern = new RegExp(`@${emp.display_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    const firstNamePattern = new RegExp(`@${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+    if (fullPattern.test(text) || firstNamePattern.test(text)) {
+      mentioned.push(emp.display_name);
+    }
+  });
+  return mentioned;
+}
+
+// Renders the message text with any @mention highlighted — done via a
+// simple text-replace on the already-escaped HTML, matching each
+// mentioned employee's name (or first name) case-insensitively.
+function renderChatMessageHtml(msg) {
+  let html = escapeHtml(msg.message);
+  (msg.mentioned_names || []).forEach(name => {
+    const firstName = name.split(' ')[0];
+    [name, firstName].forEach(part => {
+      const pattern = new RegExp(`@${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+      html = html.replace(pattern, (match) => `<span style="background:var(--amber-wash); color:var(--amber); font-weight:700; padding:1px 4px; border-radius:4px;">${match}</span>`);
+    });
+  });
+  return html;
+}
+
+function chatMessageCard(msg) {
+  const isMe = msg.sender_employee_id === state.profile.employee_id;
+  const iAmMentioned = Array.isArray(msg.mentioned_names) && msg.mentioned_names.includes(state.profile.display_name);
+  const time = new Date(msg.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return `
+    <div class="team-chat-msg" data-id="${msg.id}" style="
+      padding:9px 13px; border-radius:10px; margin-bottom:8px; max-width:78%;
+      ${isMe ? 'margin-left:auto; background:var(--teal); color:#fff;' : 'background:var(--paper-raised); border:1px solid var(--line-soft);'}
+      ${iAmMentioned && !isMe ? 'border:1.5px solid var(--amber); background:var(--amber-wash);' : ''}">
+      ${!isMe ? `<div style="font-size:10.5px; font-weight:700; color:var(--teal); margin-bottom:2px;">${escapeHtml(msg.sender_name)}</div>` : ''}
+      <div style="font-size:13px; line-height:1.4; white-space:pre-wrap; word-break:break-word;">${renderChatMessageHtml(msg)}</div>
+      <div style="font-size:9.5px; margin-top:3px; opacity:0.65;">${time}</div>
+    </div>
+  `;
+}
+
+// Appends exactly one new message to the live view — used by the
+// always-on realtime subscription so a new message doesn't require a
+// full re-render/re-fetch while someone's actively watching the chat.
+function appendLiveChatMessage(msg) {
+  const list = document.getElementById('team-chat-messages');
+  if (!list) return;
+  const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+  list.insertAdjacentHTML('beforeend', chatMessageCard(msg));
+  if (wasAtBottom) list.scrollTop = list.scrollHeight; // only auto-scroll if they were already near the bottom — don't yank someone away from reading older messages
+}
+
+let _teamChatLoaded = false;
+async function loadTeamChatMessages() {
+  const { data, error } = await sb.from('team_chat_messages').select('*').order('created_at', { ascending: true }).limit(500);
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load team chat:', error);
+    return [];
+  }
+  return data || [];
+}
+
+async function renderTeamChat() {
+  const el = document.getElementById('team-chat-content');
+  if (!el) return;
+  state.chatUnread = 0;
+  updateTeamChatBadge();
+
+  el.innerHTML = `
+    <div class="card" style="padding:0; display:flex; flex-direction:column; height:calc(100vh - 220px); min-height:420px; overflow:hidden;">
+      <div id="team-chat-messages" style="flex:1; overflow-y:auto; padding:16px;">
+        <div class="loading-row">Loading chat...</div>
+      </div>
+      <form id="team-chat-form" style="display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--line-soft); flex-shrink:0;">
+        <input type="text" id="team-chat-input" placeholder="Type a message... use @Name to mention someone"
+          autocomplete="off"
+          style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--line); font-family:inherit; font-size:13.5px;">
+        <button type="submit" class="btn btn-primary" style="flex-shrink:0;">Send</button>
+      </form>
+    </div>
+  `;
+
+  const messages = await loadTeamChatMessages();
+  _teamChatLoaded = true;
+  const list = document.getElementById('team-chat-messages');
+  if (list) {
+    list.innerHTML = messages.length
+      ? messages.map(chatMessageCard).join('')
+      : `<p class="muted" style="text-align:center; margin-top:40px; font-size:13px;">No messages yet today — say hello!</p>`;
+    list.scrollTop = list.scrollHeight;
+  }
+
+  document.getElementById('team-chat-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = document.getElementById('team-chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    input.disabled = true;
+    const mentionedNames = parseMentionsFromMessage(text);
+    const { error } = await sb.from('team_chat_messages').insert({
+      sender_name: state.profile.display_name,
+      sender_employee_id: state.profile.employee_id,
+      message: text,
+      mentioned_names: mentionedNames.length ? mentionedNames : null,
+    });
+    input.disabled = false;
+    input.focus();
+    if (error) {
+      console.error(error);
+      showToast(/relation .* does not exist/i.test(error.message || '') ? 'Team Chat needs setup — run team_chat_schema.sql in Supabase.' : 'Could not send your message.', true);
+      return;
+    }
+    // No local append here — the realtime subscription (which fires for
+    // everyone, including the sender) handles adding it to the view, so
+    // there's exactly one code path responsible for rendering a new
+    // message rather than two that could ever drift apart.
   });
 }
 
