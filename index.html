@@ -415,7 +415,10 @@
       </span>
       <!-- My Alerts panel — anchored under the bell above, opens downward over the nav -->
       <div id="pa-panel" style="display:none; position:absolute; top:calc(100% + 10px); left:0; width:280px; background:var(--paper-raised); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-lg); font-family:inherit; overflow:hidden; z-index:60;">
-        <div style="padding:12px 14px 10px; border-bottom:1px solid var(--line-soft); font-weight:700; font-size:13.5px; color:var(--teal);">My Alerts</div>
+        <div style="padding:12px 14px 10px; border-bottom:1px solid var(--line-soft); display:flex; align-items:center; justify-content:space-between; gap:8px;">
+          <span style="font-weight:700; font-size:13.5px; color:var(--teal);">My Alerts</span>
+          <button id="pa-mark-all-read-btn" style="background:none; border:none; padding:0; cursor:pointer; color:var(--ink-faint); font-size:11px; font-weight:600; text-decoration:underline;">Mark all as read</button>
+        </div>
         <div id="pa-list" style="max-height:340px; overflow-y:auto;"></div>
       </div>
     </div>
@@ -1663,7 +1666,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-bubble-badge';
+const APP_VERSION = '2026-07-30-mark-all-alerts-read';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13298,6 +13301,24 @@ async function updateQaDispute(entryId, explanation, newFiles, keptUrls) {
 // bells (Leave/Team Funds/OT Filing), which show admin-relevant events
 // across the whole team rather than one person's own status.
 // =====================================================================
+// Same localStorage last-seen pattern as notifLastSeenKey/
+// markNotifsSeenLocally above, applied to My Alerts specifically —
+// "Mark all as read" stores the newest sortKey currently visible, and
+// any item at or before that gets filtered out on future renders.
+// Genuinely new activity (a fresh missing day, a newly-disputed entry,
+// etc.) has a sortKey AFTER the stored value, so it still surfaces
+// normally rather than being permanently silenced.
+function personalAlertsLastSeenKey() {
+  return 'registry_pa_seen_' + (state.profile ? state.profile.username : '');
+}
+function markPersonalAlertsSeen() {
+  const items = myPersonalAlertItems();
+  const newest = items.reduce((m, it) => (it.sortKey || '') > m ? it.sortKey : m, '');
+  if (!newest) return;
+  try { localStorage.setItem(personalAlertsLastSeenKey(), newest); } catch {}
+  renderPersonalAlertsFromCache();
+}
+
 function myPersonalAlertItems() {
   if (!state.profile || !state.profile.employee_id) return [];
   const myId = state.profile.employee_id;
@@ -13410,7 +13431,11 @@ function myPersonalAlertItems() {
     });
   }
 
-  return items.sort((a, b) => (b.sortKey || '').localeCompare(a.sortKey || ''));
+  let seen = '';
+  try { seen = localStorage.getItem(personalAlertsLastSeenKey()) || ''; } catch {}
+  const visibleItems = seen ? items.filter(it => (it.sortKey || '') > seen) : items;
+
+  return visibleItems.sort((a, b) => (b.sortKey || '').localeCompare(a.sortKey || ''));
 }
 
 // Personal Alerts is eligible for EVERYONE, on EVERY tab, unlike the
@@ -13513,6 +13538,10 @@ function initPersonalAlerts() {
     if (opening) renderPersonalAlerts();
   });
   document.getElementById('pa-panel')?.addEventListener('click', (e) => e.stopPropagation());
+  document.getElementById('pa-mark-all-read-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    markPersonalAlertsSeen();
+  });
   document.addEventListener('click', () => {
     const panel = document.getElementById('pa-panel');
     if (panel) panel.style.display = 'none';
