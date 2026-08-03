@@ -1697,7 +1697,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-notify-all-messages';
+const APP_VERSION = '2026-07-30-chat-outside-click-closes';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8843,13 +8843,27 @@ async function initSidebarChat() {
   panel.style.display = 'flex';
 
 
-  toggle.addEventListener('click', () => {
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation(); // prevent this same click from also being seen by the outside-click listener below, which would otherwise immediately re-close a panel this click just opened
     const opening = panel.style.display === 'none';
     panel.style.display = opening ? 'flex' : 'none';
     if (opening) {
       // Reopening clears whatever accumulated while it was closed
       state.chatUnread = 0;
       updateTeamChatBadge();
+    }
+  });
+
+  // Closes the panel on any click outside the chat box (panel +
+  // toggle button together) — a click on the toggle itself is already
+  // handled above (and stops propagation so it doesn't double-fire
+  // here), and a click genuinely inside the panel (typing a message,
+  // picking a reaction, etc.) should obviously not close it either.
+  document.addEventListener('click', (e) => {
+    const wrap = document.getElementById('team-chat-wrap');
+    if (!wrap || panel.style.display === 'none') return;
+    if (!wrap.contains(e.target)) {
+      panel.style.display = 'none';
     }
   });
 
