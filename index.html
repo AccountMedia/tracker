@@ -1697,7 +1697,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-closed-by-default';
+const APP_VERSION = '2026-07-30-fix-chat-shows-recent';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8534,15 +8534,21 @@ async function loadTeamChatMessages() {
   // nothing after this await would ever run. Racing against a timeout
   // guarantees this function always settles one way or another.
   const timeout = new Promise((resolve) => setTimeout(() => resolve({ data: null, error: new Error('Team chat load timed out') }), 8000));
+  // Fetches the MOST RECENT 300 messages (descending order + limit),
+  // not the oldest — ordering ascending-with-a-limit would instead
+  // return the earliest 300 messages on any day busy enough to exceed
+  // that cap, silently never even retrieving the actual recent
+  // conversation. The result is reversed back into chronological order
+  // right after, since that's what the message list needs for display.
   const { data, error } = await Promise.race([
-    sb.from('team_chat_messages').select('*').order('created_at', { ascending: true }).limit(300),
+    sb.from('team_chat_messages').select('*').order('created_at', { ascending: false }).limit(300),
     timeout,
   ]);
   if (error) {
     if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load team chat:', error);
     return [];
   }
-  return data || [];
+  return (data || []).reverse();
 }
 
 // Loads every reaction row and groups them by message_id, so
@@ -8850,6 +8856,14 @@ async function initSidebarChat() {
       // Reopening clears whatever accumulated while it was closed
       state.chatUnread = 0;
       updateTeamChatBadge();
+      // The panel was display:none until this exact line ran, so any
+      // earlier "scroll to bottom" attempt (at initial load, or from a
+      // message arriving while closed) was silently a no-op — a hidden
+      // ancestor makes scrollHeight report 0, so scrollTop = scrollHeight
+      // was really just scrollTop = 0. Now that the panel's layout is
+      // genuinely real again, actually scroll to the latest message.
+      const list = document.getElementById('sidebar-chat-messages');
+      if (list) list.scrollTop = list.scrollHeight;
     }
   });
 
