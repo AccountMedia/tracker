@@ -1510,9 +1510,12 @@ function startNavBadgePolling() {
     if (!msg) return;
     appendLiveChatMessage(msg); // the sidebar panel is always on screen, so every new message (including my own, echoed back) appends immediately
     const isMyOwnMessage = msg.sender_employee_id === state.profile.employee_id;
-    if (isMyOwnMessage) return; // the mention sound never fires for my own messages, and my own messages never count toward my own unread badge
-    const iAmMentioned = Array.isArray(msg.mentioned_names) && msg.mentioned_names.includes(state.profile.display_name);
-    if (iAmMentioned) playChatMentionSound();
+    if (isMyOwnMessage) return; // no sound or badge for my own messages
+    // Sound plays for EVERY message from someone else now, not just
+    // ones that mention me — the mention flag itself still exists here
+    // in case a distinct mention-specific sound/treatment is wanted
+    // later, but it no longer gates whether a sound plays at all.
+    playChatNotificationSound();
     // Badge only accumulates while the panel is genuinely closed — if
     // it's open, the person is already looking at the message as it
     // arrives, so a badge would be redundant/confusing.
@@ -1694,7 +1697,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-space-inserts-mention';
+const APP_VERSION = '2026-07-30-chat-notify-all-messages';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8372,7 +8375,7 @@ function renderIpsBell() {
 // Generates a short two-tone notification sound with the Web Audio
 // API rather than shipping an audio file — keeps this a genuinely
 // self-contained single HTML file with no external assets to host.
-function playChatMentionSound() {
+function playChatNotificationSound() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const playTone = (freq, startTime, duration) => {
