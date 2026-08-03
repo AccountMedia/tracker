@@ -1697,7 +1697,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-outside-click-closes';
+const APP_VERSION = '2026-07-30-chat-closed-by-default';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8836,11 +8836,10 @@ async function initSidebarChat() {
   const toggle = document.getElementById('team-chat-bubble-toggle');
   if (!panel || !toggle) return;
 
-  // Open by default — this bubble starts expanded, unlike the other
-  // floating bubbles in this app, per the explicit requirement that
-  // Team Chat should be visible right away rather than needing a click
-  // to reveal it.
-  panel.style.display = 'flex';
+  // Closed by default — the person clicks the bubble to open it, same
+  // as every other floating bubble in this app (Notes, Calculator,
+  // etc.), rather than starting expanded.
+  panel.style.display = 'none';
 
 
   toggle.addEventListener('click', (e) => {
@@ -14944,7 +14943,7 @@ setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
     .chat-reaction-pick-btn:hover { background: rgba(255,255,255,0.12) !important; }
     #sidebar-chat-input:empty::before { content: attr(data-placeholder); color: #7C87AE; pointer-events: none; }
   </style>
-  <div id="team-chat-panel" style="display:flex; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
+  <div id="team-chat-panel" style="display:none; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
     <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
       <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">Team Chat</span>
     </div>
