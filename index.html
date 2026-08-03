@@ -1694,7 +1694,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-enter-key-mention';
+const APP_VERSION = '2026-07-30-chat-space-inserts-mention';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8575,10 +8575,61 @@ async function loadTeamChatReactions() {
 // how mentions are already parsed elsewhere (parseMentionsFromMessage
 // already recognizes a bare first name as a valid mention), so what
 // gets typed and what gets detected stay consistent.
+// Computes the current caret position as a plain-text character
+// offset within a contenteditable element — the DOM equivalent of
+// <input>.selectionStart, which contenteditable has no direct
+// equivalent for. Walks the element's text nodes in order, summing
+// characters until the actual caret-containing node/offset is reached.
+function getCaretCharOffset(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return 0;
+  const range = sel.getRangeAt(0);
+  const preRange = range.cloneRange();
+  preRange.selectNodeContents(el);
+  preRange.setEnd(range.endContainer, range.endOffset);
+  return preRange.toString().length;
+}
+
+// The inverse of getCaretCharOffset — walks the element's text nodes,
+// counting characters until the target offset falls within the
+// current node, then places the caret there. Used to restore cursor
+// position after re-rendering the contenteditable's innerHTML (which
+// would otherwise reset the caret to the very start of the element).
+function setCaretCharOffset(el, targetOffset) {
+  const sel = window.getSelection();
+  const range = document.createRange();
+  let remaining = targetOffset;
+  let placed = false;
+  function walk(node) {
+    if (placed) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const len = node.textContent.length;
+      if (remaining <= len) {
+        range.setStart(node, remaining);
+        range.collapse(true);
+        placed = true;
+      } else {
+        remaining -= len;
+      }
+    } else {
+      for (const child of node.childNodes) { walk(child); if (placed) return; }
+    }
+  }
+  walk(el);
+  if (!placed) { range.selectNodeContents(el); range.collapse(false); } // fell off the end — put caret at the very end
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
 function wireChatMentionAutocomplete() {
   const input = document.getElementById('sidebar-chat-input');
   const menu = document.getElementById('sidebar-chat-mention-suggestions');
   if (!input || !menu) return;
+
+  // Plain-text accessor — contenteditable's "value" is its innerHTML,
+  // which isn't what mention-parsing or message-sending should operate
+  // on; textContent strips the highlight <span> tags back to plain text.
+  function getText() { return input.textContent; }
 
   // Finds the "@partial" token immediately before the cursor, if any —
   // e.g. typing "hey @jei" with the cursor at the end returns "jei".
@@ -8586,25 +8637,44 @@ function wireChatMentionAutocomplete() {
   // the dropdown correctly disappears once the person keeps typing a
   // space or moves on).
   function currentMentionToken() {
-    const pos = input.selectionStart;
-    const before = input.value.slice(0, pos);
+    const pos = getCaretCharOffset(input);
+    const before = getText().slice(0, pos);
     const match = before.match(/@([a-zA-Z]*)$/);
     return match ? match[1] : null;
   }
 
   function closeMenu() { menu.style.display = 'none'; menu.innerHTML = ''; }
 
+  // Re-renders the editable content with live @mention highlighting —
+  // reuses the exact same highlight styling as sent messages
+  // (renderChatMessageHtml), so what you see while typing matches
+  // what everyone sees after you send it. Saves and restores the
+  // caret position around the re-render, since replacing innerHTML
+  // would otherwise reset the cursor to the start every keystroke.
+  function refreshHighlighting() {
+    const caretOffset = getCaretCharOffset(input);
+    const text = getText();
+    input.innerHTML = escapeHtml(text)
+      .replace(/@everyone\b/gi, (m) => `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 2px; border-radius:3px;">${m}</span>`)
+      .replace(/@([A-Za-z]+)\b/g, (m, name) => {
+        const isRealPerson = state.employees.some(emp => emp.display_name.split(' ')[0].toLowerCase() === name.toLowerCase() || emp.display_name.toLowerCase() === name.toLowerCase());
+        return isRealPerson ? `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 2px; border-radius:3px;">${m}</span>` : m;
+      });
+    setCaretCharOffset(input, caretOffset);
+  }
+
   // Shared insertion logic — used by both a mouse click on a
   // suggestion AND pressing Enter when exactly one candidate remains,
   // so the two input methods stay perfectly consistent with each other.
   function insertMention(insertText) {
-    const pos = input.selectionStart;
-    const before = input.value.slice(0, pos).replace(/@([a-zA-Z]*)$/, `@${insertText} `);
-    const after = input.value.slice(pos);
-    input.value = before + after;
-    const newPos = before.length;
+    const pos = getCaretCharOffset(input);
+    const text = getText();
+    const before = text.slice(0, pos).replace(/@([a-zA-Z]*)$/, `@${insertText} `);
+    const after = text.slice(pos);
+    input.textContent = before + after;
+    refreshHighlighting();
+    setCaretCharOffset(input, before.length);
     input.focus();
-    input.setSelectionRange(newPos, newPos);
     closeMenu();
   }
 
@@ -8634,8 +8704,8 @@ function wireChatMentionAutocomplete() {
       opt.addEventListener('mouseleave', () => { opt.style.background = 'none'; });
       opt.addEventListener('mousedown', (e) => {
         // mousedown (not click) — fires before the input loses focus,
-        // so selectionStart in insertMention still reflects where the
-        // cursor was
+        // so the caret offset in insertMention still reflects where
+        // the cursor was
         e.preventDefault();
         insertMention(opt.dataset.insert);
       });
@@ -8643,21 +8713,36 @@ function wireChatMentionAutocomplete() {
   }
 
   input.addEventListener('input', () => {
+    refreshHighlighting();
     const token = currentMentionToken();
     if (token === null) { closeMenu(); return; }
     openMenuWith(token);
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { closeMenu(); return; }
-    // Enter inserts the mention ONLY when the suggestion menu is open
-    // with exactly ONE candidate remaining — mirrors clicking that
-    // single suggestion. If the menu is closed, or still has multiple
-    // candidates (ambiguous which one Enter should mean), this does
-    // nothing here and the keypress falls through to the form's normal
-    // submit handler instead.
-    if (e.key === 'Enter' && menu.style.display === 'block' && menu.dataset.singleInsert) {
+    // Enter OR Space inserts the mention ONLY when the suggestion menu
+    // is open with exactly ONE candidate remaining — mirrors clicking
+    // that single suggestion. Space is included here specifically
+    // because typing a name and hitting the space bar (the natural way
+    // to move on to the rest of the sentence) is the more common
+    // real-world gesture than reaching for Enter mid-message. If the
+    // menu is closed, or still has multiple candidates (ambiguous
+    // which one either key should mean), this does nothing and the
+    // keypress falls through to its normal behavior instead — Space
+    // types a literal space, Enter goes to the submit handling below.
+    if ((e.key === 'Enter' || e.key === ' ') && menu.style.display === 'block' && menu.dataset.singleInsert) {
       e.preventDefault();
-      insertMention(menu.dataset.singleInsert);
+      insertMention(menu.dataset.singleInsert); // already appends its own trailing space, so this fully replaces what the space bar would have typed
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      // contenteditable's default Enter behavior inserts a line break
+      // and does NOT submit the enclosing form the way a real <input>
+      // does — so this explicitly triggers the same submit path a
+      // click on the Send button already uses, keeping "press Enter to
+      // send" working exactly as it did with the old <input>.
+      e.preventDefault();
+      document.getElementById('sidebar-chat-form')?.requestSubmit();
     }
   });
   input.addEventListener('blur', () => {
@@ -8781,10 +8866,10 @@ async function initSidebarChat() {
   document.getElementById('sidebar-chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const input = document.getElementById('sidebar-chat-input');
-    const text = input.value.trim();
+    const text = input.textContent.trim();
     if (!text) return;
-    input.value = '';
-    input.disabled = true;
+    input.innerHTML = '';
+    input.contentEditable = 'false';
     const mentionedNames = parseMentionsFromMessage(text);
     const { error } = await sb.from('team_chat_messages').insert({
       sender_name: state.profile.display_name,
@@ -8792,7 +8877,7 @@ async function initSidebarChat() {
       message: text,
       mentioned_names: mentionedNames.length ? mentionedNames : null,
     });
-    input.disabled = false;
+    input.contentEditable = 'true';
     input.focus();
     if (error) {
       console.error(error);
@@ -14840,6 +14925,7 @@ setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
   <style>
     .team-chat-bubble:hover .chat-reaction-picker { display: flex !important; }
     .chat-reaction-pick-btn:hover { background: rgba(255,255,255,0.12) !important; }
+    #sidebar-chat-input:empty::before { content: attr(data-placeholder); color: #7C87AE; pointer-events: none; }
   </style>
   <div id="team-chat-panel" style="display:flex; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
     <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
@@ -14850,9 +14936,8 @@ setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
     </div>
     <form id="sidebar-chat-form" style="display:flex; gap:5px; flex-shrink:0; position:relative; padding:8px 10px; border-top:1px solid rgba(255,255,255,0.12);">
       <div id="sidebar-chat-mention-suggestions" style="display:none; position:absolute; bottom:calc(100% + 4px); left:10px; right:10px; z-index:71; background:#232B4D; border:1px solid rgba(255,255,255,0.15); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.35); max-height:160px; overflow-y:auto;"></div>
-      <input type="text" id="sidebar-chat-input" placeholder="@Name or message..."
-        autocomplete="off"
-        style="flex:1; min-width:0; padding:7px 9px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:13px;">
+      <div id="sidebar-chat-input" contenteditable="true" data-placeholder="@Name or message..." role="textbox"
+        style="flex:1; min-width:0; padding:7px 9px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:13px; outline:none; white-space:pre-wrap; word-break:break-word; max-height:80px; overflow-y:auto;"></div>
       <button type="submit" style="flex-shrink:0; padding:7px 11px; border-radius:6px; border:none; background:#5DA6C1; color:#0F2A33; font-weight:700; font-size:13px; cursor:pointer;">Send</button>
     </form>
   </div>
