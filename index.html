@@ -655,6 +655,7 @@ const state = {
   priolistVisible: true,  // live app-wide toggle (app_settings.priolist_visible) — controlled by Jeinna; defaults true until loaded so nothing flips unexpectedly during the brief pre-load window
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   chatUnread: 0, // unread Team Chat messages since the panel was last opened — only accumulates while the panel is closed
+  chatReactions: {}, // message_id -> array of reaction rows, kept in sync via realtime
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
   priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
   redFiles: [],             // priolist_red_files rows
@@ -1523,6 +1524,32 @@ function startNavBadgePolling() {
     }
   });
 
+  subscribeRealtime('team_chat_reactions', 'team_chat_reactions', (payload) => {
+    const row = payload.new || payload.old;
+    if (!row) return;
+    const messageId = row.message_id;
+    const current = state.chatReactions[messageId] || [];
+    if (payload.eventType === 'INSERT') {
+      if (current.some(r => r.id === row.id)) return; // already have it
+      state.chatReactions[messageId] = [...current, row];
+    } else if (payload.eventType === 'DELETE') {
+      state.chatReactions[messageId] = current.filter(r => r.id !== row.id);
+    }
+    // Only re-render the ONE affected message card's pills, not the
+    // whole list — cheap, and avoids scrolling/focus disruption for
+    // anyone reading other messages while a reaction comes in elsewhere.
+    const el = document.querySelector(`.team-chat-msg[data-id="${messageId}"]`);
+    if (!el) return;
+    const bubble = el.firstElementChild; // the actual colored message bubble, distinct from the outer flex wrapper used for left/right alignment
+    const pillsWrap = el.querySelector('.chat-reaction-pills');
+    const newPillsHtml = renderChatReactionPills(messageId);
+    if (pillsWrap) {
+      pillsWrap.outerHTML = newPillsHtml || '<div class="chat-reaction-pills" style="display:none;"></div>';
+    } else if (newPillsHtml && bubble) {
+      bubble.insertAdjacentHTML('beforeend', newPillsHtml);
+    }
+  });
+
   // Every logged-in employee gets this — the PrioList visibility toggle
   // needs to be current BEFORE they click the nav item (switchView's
   // redirect check reads state.priolistVisible synchronously), not just
@@ -1639,6 +1666,7 @@ function stopNavBadgePolling() {
   unsubscribeRealtime('my_qa_entries');
   unsubscribeRealtime('app_settings_priolist');
   unsubscribeRealtime('team_chat_messages');
+  unsubscribeRealtime('team_chat_reactions');
 }
 
 // Re-renders whichever view is currently on screen, so staged data
@@ -1666,7 +1694,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-smaller-calendar-cells';
+const APP_VERSION = '2026-07-30-fix-reaction-picker-narrow-bubble';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8420,16 +8448,61 @@ function renderChatMessageHtml(msg) {
 // text, subtle separators instead of full chat "bubbles", since a
 // TikTok/Facebook-Live-style feed reads more like a running comment
 // list than a messenger UI.
+const CHAT_QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+// Renders the small reaction pills below a message — one pill per
+// distinct emoji used on it, with a count and highlighted if the
+// current person is among the reactors (so it's visually obvious
+// which ones are "mine" and clickable-to-remove vs. just informational).
+function renderChatReactionPills(messageId) {
+  const reactions = state.chatReactions[messageId] || [];
+  if (!reactions.length) return '';
+  const byEmoji = {};
+  reactions.forEach(r => { (byEmoji[r.emoji] = byEmoji[r.emoji] || []).push(r); });
+  return `
+    <div class="chat-reaction-pills" style="display:flex; flex-wrap:wrap; gap:3px; margin-top:3px;">
+      ${Object.entries(byEmoji).map(([emoji, list]) => {
+        const iReacted = list.some(r => r.employee_id === state.profile.employee_id);
+        const names = list.map(r => r.employee_name.split(' ')[0]).join(', ');
+        return `<button type="button" class="chat-reaction-pill" data-message-id="${messageId}" data-emoji="${emoji}" title="${escapeHtml(names)}" style="
+          display:inline-flex; align-items:center; gap:3px; padding:1px 6px; border-radius:999px; cursor:pointer; font-size:11px;
+          border:1px solid ${iReacted ? '#5DA6C1' : 'rgba(255,255,255,0.18)'}; background:${iReacted ? 'rgba(93,166,193,0.22)' : 'rgba(255,255,255,0.06)'}; color:#E4E8F5;">
+          <span>${emoji}</span><span style="font-size:9.5px; color:#B8A9E0;">${list.length}</span>
+        </button>`;
+      }).join('')}
+    </div>
+  `;
+}
+
+// The hover-revealed quick-pick row — hidden by default (CSS below
+// shows it on .team-chat-msg:hover), so it doesn't clutter every
+// message all the time.
+function renderChatReactionPicker(messageId, isMine = false) {
+  return `
+    <div class="chat-reaction-picker" data-message-id="${messageId}" style="
+      display:none; gap:2px; position:absolute; top:calc(100% + 2px); ${isMine ? 'right:0;' : 'left:0;'} min-width:150px; background:#232B4D; border:1px solid rgba(255,255,255,0.15);
+      border-radius:8px; padding:3px; box-shadow:0 4px 12px rgba(0,0,0,0.3); z-index:5;">
+      ${CHAT_QUICK_REACTIONS.map(e => `<button type="button" class="chat-reaction-pick-btn" data-message-id="${messageId}" data-emoji="${e}" style="background:none; border:none; cursor:pointer; font-size:14px; padding:2px 3px; border-radius:5px;">${e}</button>`).join('')}
+    </div>
+  `;
+}
+
 function chatMessageCard(msg) {
+  const isMine = msg.sender_employee_id === state.profile.employee_id;
   const iAmMentioned = Array.isArray(msg.mentioned_names) && msg.mentioned_names.includes(state.profile.display_name);
   const time = new Date(msg.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   return `
-    <div class="team-chat-msg" data-id="${msg.id}" style="
-      padding:5px 7px; border-radius:6px; margin-bottom:4px; font-size:11.5px; line-height:1.35;
-      ${iAmMentioned ? 'background:rgba(93,166,193,0.18); border-left:2px solid #5DA6C1;' : ''}">
-      <span style="font-weight:700; color:#B8A9E0;">${escapeHtml(msg.sender_name.split(' ')[0])}</span>
-      <span style="color:#7C87AE; font-size:9.5px; margin-left:4px;">${time}</span>
-      <div style="color:#E4E8F5; word-break:break-word; margin-top:1px;">${renderChatMessageHtml(msg)}</div>
+    <div class="team-chat-msg" data-id="${msg.id}" style="display:flex; justify-content:${isMine ? 'flex-end' : 'flex-start'}; margin-bottom:4px;">
+      <div style="
+        position:relative; max-width:78%; padding:5px 7px; border-radius:8px; font-size:11.5px; line-height:1.35;
+        ${isMine ? 'background:#2C3968;' : 'background:rgba(255,255,255,0.05);'}
+        ${iAmMentioned ? 'background:rgba(93,166,193,0.22); border:1px solid #5DA6C1;' : ''}">
+        ${renderChatReactionPicker(msg.id, isMine)}
+        ${!isMine ? `<span style="font-weight:700; color:#B8A9E0;">${escapeHtml(msg.sender_name.split(' ')[0])}</span>` : ''}
+        <span style="color:#7C87AE; font-size:9.5px; margin-left:${isMine ? '0' : '4px'};">${time}</span>
+        <div style="color:#E4E8F5; word-break:break-word; margin-top:1px;">${renderChatMessageHtml(msg)}</div>
+        ${renderChatReactionPills(msg.id)}
+      </div>
     </div>
   `;
 }
@@ -8468,6 +8541,25 @@ async function loadTeamChatMessages() {
   }
   return data || [];
 }
+
+// Loads every reaction row and groups them by message_id, so
+// chatMessageCard can look up "what reactions does THIS message have"
+// with a plain object lookup rather than filtering the full list
+// per-message on every render.
+async function loadTeamChatReactions() {
+  const { data, error } = await sb.from('team_chat_reactions').select('*');
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load chat reactions:', error);
+    return {};
+  }
+  const grouped = {};
+  (data || []).forEach(r => {
+    if (!grouped[r.message_id]) grouped[r.message_id] = [];
+    grouped[r.message_id].push(r);
+  });
+  return grouped;
+}
+
 
 // Builds the persistent sidebar chat panel once, at login — not tied
 // to switchView/tab navigation at all, since it needs to stay visible
@@ -8556,6 +8648,57 @@ function wireChatMentionAutocomplete() {
   });
 }
 
+let chatReactionHandlersWired = false;
+function wireChatReactionHandlers() {
+  if (chatReactionHandlersWired) return; // delegation only needs wiring once — new messages/pills work automatically
+  chatReactionHandlersWired = true;
+  const list = document.getElementById('sidebar-chat-messages');
+  if (!list) return;
+  list.addEventListener('click', (e) => {
+    const pickBtn = e.target.closest('.chat-reaction-pick-btn');
+    const pillBtn = e.target.closest('.chat-reaction-pill');
+    const target = pickBtn || pillBtn;
+    if (!target) return;
+    toggleChatReaction(target.dataset.messageId, target.dataset.emoji);
+  });
+}
+
+// Adds the (message, employee, emoji) row if it doesn't exist yet, or
+// removes it if it does — the unique constraint on the table is what
+// makes "does it exist" unambiguous, so this is a genuine toggle
+// rather than needing separate add/remove code paths to stay in sync.
+async function toggleChatReaction(messageId, emoji) {
+  if (!state.profile) return;
+  const existing = (state.chatReactions[messageId] || []).find(r => r.employee_id === state.profile.employee_id && r.emoji === emoji);
+  if (existing) {
+    const { error } = await sb.from('team_chat_reactions').delete().eq('id', existing.id);
+    if (error) { console.error(error); return; }
+  } else {
+    const { error } = await sb.from('team_chat_reactions').insert({
+      message_id: messageId,
+      employee_id: state.profile.employee_id,
+      employee_name: state.profile.display_name,
+      emoji,
+    });
+    if (error) {
+      if (/relation .* does not exist/i.test(error.message || '')) {
+        showToast('Reactions need setup — run team_chat_reactions_schema.sql in Supabase.', true);
+      } else if (!/duplicate key/i.test(error.message || '')) {
+        // A duplicate-key race (rapid double-click) is harmless and
+        // expected — the realtime echo will reconcile state correctly
+        // either way, so only genuinely unexpected errors get logged.
+        console.error(error);
+      }
+    }
+  }
+  // No local state mutation here — the realtime subscription (on
+  // team_chat_reactions, wired in startNavBadgePolling) is what
+  // actually updates state.chatReactions and re-renders the affected
+  // message, keeping exactly one source of truth for "what does this
+  // array currently look like" rather than two code paths that could
+  // drift out of sync with each other.
+}
+
 // Updates the chat bubble's badge to reflect state.chatUnread —
 // hidden entirely at zero, capped visually at "99+" like other
 // notification badges in the app.
@@ -8593,7 +8736,8 @@ async function initSidebarChat() {
     }
   });
 
-  const messages = await loadTeamChatMessages();
+  const [messages, reactions] = await Promise.all([loadTeamChatMessages(), loadTeamChatReactions()]);
+  state.chatReactions = reactions;
   const list = document.getElementById('sidebar-chat-messages');
   if (list) {
     list.innerHTML = messages.length
@@ -8603,6 +8747,7 @@ async function initSidebarChat() {
   }
 
   wireChatMentionAutocomplete();
+  wireChatReactionHandlers();
 
   document.getElementById('sidebar-chat-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -14663,6 +14808,10 @@ setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
      Calculator) still opens independently via its own button click,
      exactly as before this change. -->
 <div id="team-chat-wrap" class="hidden" style="position:fixed; right:24px; bottom:24px; z-index:1002; display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
+  <style>
+    .team-chat-msg:hover .chat-reaction-picker { display: flex !important; }
+    .chat-reaction-pick-btn:hover { background: rgba(255,255,255,0.12) !important; }
+  </style>
   <div id="team-chat-panel" style="display:flex; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
     <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
       <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">Team Chat</span>
