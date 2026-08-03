@@ -1694,7 +1694,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-chat-standard-font-size';
+const APP_VERSION = '2026-07-30-chat-enter-key-mention';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8594,6 +8594,20 @@ function wireChatMentionAutocomplete() {
 
   function closeMenu() { menu.style.display = 'none'; menu.innerHTML = ''; }
 
+  // Shared insertion logic — used by both a mouse click on a
+  // suggestion AND pressing Enter when exactly one candidate remains,
+  // so the two input methods stay perfectly consistent with each other.
+  function insertMention(insertText) {
+    const pos = input.selectionStart;
+    const before = input.value.slice(0, pos).replace(/@([a-zA-Z]*)$/, `@${insertText} `);
+    const after = input.value.slice(pos);
+    input.value = before + after;
+    const newPos = before.length;
+    input.focus();
+    input.setSelectionRange(newPos, newPos);
+    closeMenu();
+  }
+
   function openMenuWith(partial) {
     const lower = partial.toLowerCase();
     const candidates = [
@@ -8604,6 +8618,7 @@ function wireChatMentionAutocomplete() {
     ].filter(c => c.full.toLowerCase().includes(lower) || c.insert.toLowerCase().startsWith(lower));
 
     if (!candidates.length) { closeMenu(); return; }
+    menu.dataset.singleInsert = candidates.length === 1 ? candidates[0].insert : ''; // read by the Enter-key handler below
 
     menu.innerHTML = candidates.map(c => `
       <div class="chat-mention-option" data-insert="${escapeHtml(c.insert)}" style="
@@ -8619,16 +8634,10 @@ function wireChatMentionAutocomplete() {
       opt.addEventListener('mouseleave', () => { opt.style.background = 'none'; });
       opt.addEventListener('mousedown', (e) => {
         // mousedown (not click) — fires before the input loses focus,
-        // so selectionStart below still reflects where the cursor was
+        // so selectionStart in insertMention still reflects where the
+        // cursor was
         e.preventDefault();
-        const pos = input.selectionStart;
-        const before = input.value.slice(0, pos).replace(/@([a-zA-Z]*)$/, `@${opt.dataset.insert} `);
-        const after = input.value.slice(pos);
-        input.value = before + after;
-        const newPos = before.length;
-        input.focus();
-        input.setSelectionRange(newPos, newPos);
-        closeMenu();
+        insertMention(opt.dataset.insert);
       });
     });
   }
@@ -8639,7 +8648,17 @@ function wireChatMentionAutocomplete() {
     openMenuWith(token);
   });
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeMenu();
+    if (e.key === 'Escape') { closeMenu(); return; }
+    // Enter inserts the mention ONLY when the suggestion menu is open
+    // with exactly ONE candidate remaining — mirrors clicking that
+    // single suggestion. If the menu is closed, or still has multiple
+    // candidates (ambiguous which one Enter should mean), this does
+    // nothing here and the keypress falls through to the form's normal
+    // submit handler instead.
+    if (e.key === 'Enter' && menu.style.display === 'block' && menu.dataset.singleInsert) {
+      e.preventDefault();
+      insertMention(menu.dataset.singleInsert);
+    }
   });
   input.addEventListener('blur', () => {
     // Small delay so a mousedown on a suggestion (which also blurs the
