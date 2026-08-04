@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-qa-import-nocallout-backfill';
+const APP_VERSION = '2026-08-04-fix-qa-import-tab-dedup';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12200,12 +12200,20 @@ async function importQaAccuracyFromReview(reviewDateIso) {
         const leadName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
         const statusReason = row.review_notes || null;
 
-        // Per-ENTRY duplicate check — same employee, same lead, same
-        // status reason, same kind, already this month. This is what
-        // lets re-clicking the same date safely add only what's
-        // genuinely new, instead of the old all-or-nothing per-date lock.
+        // Per-ENTRY duplicate check — same employee, same lead. Names
+        // are compared with whitespace NORMALIZED on both sides (any
+        // run of tabs/multiple spaces collapsed to one space, then
+        // trimmed), since some existing rows have literal tab
+        // characters embedded in lead_name from an earlier bulk
+        // data-entry method (e.g. "Erik\tFitchett") — those look
+        // identical to a plain-space "Erik Fitchett" to a human, but
+        // are different strings to an exact match, which was silently
+        // causing this check to miss real matches and create
+        // duplicates instead of recognizing the existing row.
+        const normalizeName = (s) => (s || '').replace(/\s+/g, ' ').trim();
+        const normalizedLeadName = normalizeName(leadName);
         const existingMatch = (existingEntries || []).find(e =>
-          e.employee_id === emp.id && e.lead_name === leadName
+          e.employee_id === emp.id && normalizeName(e.lead_name) === normalizedLeadName
         );
 
         if (existingMatch) {
