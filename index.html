@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-fix-qa-import-blank-name-dedup';
+const APP_VERSION = '2026-08-04-fix-qa-import-bidirectional-dedup';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12211,31 +12211,35 @@ async function importQaAccuracyFromReview(reviewDateIso) {
         // causing this check to miss real matches and create
         // duplicates instead of recognizing the existing row.
         //
-        // When lead_name is genuinely blank (the source data had no
-        // first/last name at all — confirmed to happen in practice),
-        // matching on name alone is meaningless: two entirely
-        // different unnamed leads would incorrectly look identical.
-        // Falls back to normalized company + job_title as the
-        // identifying pair in that specific case instead.
+        // A lead's name can also be genuinely blank at import time and
+        // filled in LATER by an edit on the source side (confirmed to
+        // happen in practice) — so matching has to work in BOTH
+        // directions: an existing blank-name row can match a NOW-named
+        // incoming row, and vice versa, as long as company+job_title
+        // agree and NEITHER side's name actively contradicts the
+        // other's (two different real names is never treated as a
+        // match, even with everything else identical).
         const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
         const normalizedLeadName = normalizeText(leadName);
-        const usingFallbackId = !normalizedLeadName;
         const normalizedCompany = normalizeText(row.company);
         const normalizedJobTitle = normalizeText(row.job_title);
 
         const existingMatch = (existingEntries || []).find(e => {
           if (e.employee_id !== emp.id) return false;
           const eNormalizedName = normalizeText(e.lead_name);
-          if (usingFallbackId) {
-            // Only fall back to company+job_title matching against
-            // OTHER blank-name rows — a blank-name incoming row should
-            // never accidentally match a row that genuinely does have
-            // a name, since that would be comparing two different
-            // identification schemes against each other.
-            if (eNormalizedName) return false;
-            return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
+
+          // Both sides have a real name — must match exactly, full stop.
+          if (normalizedLeadName && eNormalizedName) {
+            return eNormalizedName === normalizedLeadName;
           }
-          return eNormalizedName === normalizedLeadName;
+
+          // At least one side is blank-named — fall back to
+          // company+job_title as the identifying pair, since a blank
+          // name on either side means the name alone can't settle it.
+          // (If BOTH sides are blank-named, this still correctly
+          // requires company+job_title to agree too — two different
+          // unnamed leads at different companies are never merged.)
+          return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
         });
 
         if (existingMatch) {
@@ -12246,6 +12250,7 @@ async function importQaAccuracyFromReview(reviewDateIso) {
           // fields — never touch dispute_status, kind, or anything
           // else about a row that may already have an approved dispute.
           const patch = {};
+          if (!existingMatch.lead_name && leadName) patch.lead_name = leadName;
           if (!existingMatch.linkedin_url && row.profile_url) patch.linkedin_url = row.profile_url;
           if (!existingMatch.recent_activity && activity) patch.recent_activity = activity;
           if (Object.keys(patch).length) toBackfill.push({ id: existingMatch.id, patch });
