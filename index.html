@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-fix-qa-import-tab-dedup';
+const APP_VERSION = '2026-08-04-fix-qa-import-blank-name-dedup';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12155,7 +12155,7 @@ async function importQaAccuracyFromReview(reviewDateIso) {
     // already has a real Major/Minor (so they shouldn't ALSO get
     // marked no-callout).
     const [{ data: existingEntries, error: existingErr }, { data: existingNoCallouts, error: noCalloutErr }] = await Promise.all([
-      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity').eq('month', monthIso),
+      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity, company, job_title').eq('month', monthIso),
       sb.from('ips_qa_no_callouts').select('employee_id').eq('month', monthIso),
     ]);
     if (existingErr) { console.error(existingErr); showToast('Could not check existing entries.', true); return; }
@@ -12210,11 +12210,33 @@ async function importQaAccuracyFromReview(reviewDateIso) {
         // are different strings to an exact match, which was silently
         // causing this check to miss real matches and create
         // duplicates instead of recognizing the existing row.
-        const normalizeName = (s) => (s || '').replace(/\s+/g, ' ').trim();
-        const normalizedLeadName = normalizeName(leadName);
-        const existingMatch = (existingEntries || []).find(e =>
-          e.employee_id === emp.id && normalizeName(e.lead_name) === normalizedLeadName
-        );
+        //
+        // When lead_name is genuinely blank (the source data had no
+        // first/last name at all — confirmed to happen in practice),
+        // matching on name alone is meaningless: two entirely
+        // different unnamed leads would incorrectly look identical.
+        // Falls back to normalized company + job_title as the
+        // identifying pair in that specific case instead.
+        const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const normalizedLeadName = normalizeText(leadName);
+        const usingFallbackId = !normalizedLeadName;
+        const normalizedCompany = normalizeText(row.company);
+        const normalizedJobTitle = normalizeText(row.job_title);
+
+        const existingMatch = (existingEntries || []).find(e => {
+          if (e.employee_id !== emp.id) return false;
+          const eNormalizedName = normalizeText(e.lead_name);
+          if (usingFallbackId) {
+            // Only fall back to company+job_title matching against
+            // OTHER blank-name rows — a blank-name incoming row should
+            // never accidentally match a row that genuinely does have
+            // a name, since that would be comparing two different
+            // identification schemes against each other.
+            if (eNormalizedName) return false;
+            return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
+          }
+          return eNormalizedName === normalizedLeadName;
+        });
 
         if (existingMatch) {
           skippedDuplicateCount++;
