@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-fix-qa-import-bidirectional-dedup';
+const APP_VERSION = '2026-08-04-fix-negative-sl-display';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2347,7 +2347,15 @@ function fiscalPoolBalance(employee, pool, fiscalYearStart) {
     .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === pool)
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
 
-  return round2(startingAllotment - used);
+  // Floored at zero: a real leave-credit balance can never meaningfully
+  // go negative — any genuine overflow beyond what's available is
+  // already converted to Leave Without Pay by the auto-split logic
+  // before it gets this far. Without this floor, a tiny floating-point
+  // rounding difference (e.g. a partial-hour entry landing right at
+  // the edge of the remaining allotment) could display something like
+  // -0.01 instead of a clean 0, even though nothing is actually wrong
+  // with the underlying accounting.
+  return Math.max(0, round2(startingAllotment - used));
 }
 
 function getVLBalance(employee, fiscalYearStart) {
