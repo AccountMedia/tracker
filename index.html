@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-qa-import-from-review';
+const APP_VERSION = '2026-08-04-qa-import-nocallout-backfill';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12068,14 +12068,14 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 // it is via the surrounding UI context.
 // Opens a small modal to pick which "reviewed on" date to pull in —
 // since different employees can be reviewed on different days, imports
-// are scoped to one specific date at a time rather than "everything
-// ever," and the button stays reusable for whichever date has fresh
-// results, while ips_qa_import_log blocks accidentally re-pulling a
-// date that's already been imported.
+// are scoped to one specific date at a time. Re-selecting the same
+// date is safe and expected (e.g. more reviews came in later that
+// day) — duplicate protection happens per-entry inside the import
+// itself, not by locking out the whole date.
 function openQaImportDateModal() {
   const todayIso = isoDate(new Date());
   openModal('Import from QA Review', `
-    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Pick the date the reviews were done on. Each date can only be imported once — re-selecting an already-imported date will be blocked.</p>
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Pick the date the reviews were done on. Already-imported entries are skipped automatically — only new results are added.</p>
     <form id="qa-import-date-form" style="display:flex; flex-direction:column; gap:14px;">
       <div class="field">
         <label for="qa-import-date-input">Reviewed on</label>
@@ -12117,17 +12117,6 @@ function openQaImportDateModal() {
 async function importQaAccuracyFromReview(reviewDateIso) {
   if (!sbQaReview) { showToast('QA Review connection is not configured.', true); return; }
 
-  // Duplicate protection: refuse if this exact date has already been
-  // successfully imported before, rather than silently doubling every
-  // entry from that day.
-  const { data: existingLog, error: logCheckErr } = await sb.from('ips_qa_import_log').select('id, imported_count').eq('review_date', reviewDateIso).maybeSingle();
-  if (logCheckErr && !/relation .* does not exist/i.test(logCheckErr.message || '')) { console.error(logCheckErr); }
-  if (existingLog) {
-    showToast(`${reviewDateIso} was already imported (${existingLog.imported_count} entries). Pick a different date.`, true);
-    closeModal();
-    return;
-  }
-
   try {
     // created_at is a timestamp, not a plain date — bounding it to
     // [start of day, start of next day) captures the whole selected
@@ -12136,10 +12125,13 @@ async function importQaAccuracyFromReview(reviewDateIso) {
     const nextDay = isoDate(new Date(new Date(reviewDateIso + 'T00:00:00Z').getTime() + 24 * 60 * 60 * 1000));
     const endOfDay = `${nextDay}T00:00:00Z`;
 
+    // Pulls EVERY review from that date, not just the flagged ones —
+    // needed to correctly identify reviewers whose entire day was
+    // clean (for the automatic no-callout tagging below), not just to
+    // find the Major/Minor rows.
     const { data, error } = await sbQaReview
       .from('review_records')
-      .select('status_reason, job_title, company, domain, country, recent_activity, major_error, minor_error, review_notes, created_at')
-      .or('major_error.eq.true,minor_error.eq.true')
+      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, major_error, minor_error, review_notes, created_at')
       .gte('created_at', startOfDay)
       .lt('created_at', endOfDay);
 
@@ -12149,76 +12141,139 @@ async function importQaAccuracyFromReview(reviewDateIso) {
       return;
     }
     if (!data || !data.length) {
-      showToast(`No Major/Minor call-outs found for ${reviewDateIso}.`, true);
+      showToast(`No reviews found for ${reviewDateIso}.`, true);
       return;
     }
 
     const VALID_ACTIVITY = ['Recently Active', 'Active', 'Passive', 'Silent'];
     const now = new Date();
     const monthIso = isoDate(new Date(now.getFullYear(), now.getMonth(), 1)); // genuinely TODAY's month, not whatever month the admin happens to be viewing
-    const toInsert = [];
     const unmatchedNames = new Set();
 
+    // Pull the CURRENT state of this month's entries once, up front —
+    // used both for per-entry duplicate detection and for deciding who
+    // already has a real Major/Minor (so they shouldn't ALSO get
+    // marked no-callout).
+    const [{ data: existingEntries, error: existingErr }, { data: existingNoCallouts, error: noCalloutErr }] = await Promise.all([
+      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity').eq('month', monthIso),
+      sb.from('ips_qa_no_callouts').select('employee_id').eq('month', monthIso),
+    ]);
+    if (existingErr) { console.error(existingErr); showToast('Could not check existing entries.', true); return; }
+    const employeeIdsWithRealEntries = new Set((existingEntries || []).map(e => e.employee_id));
+    const employeeIdsAlreadyNoCallout = new Set((existingNoCallouts || []).map(r => r.employee_id));
+
+    // Groups every row by the reviewer name extracted from status_reason,
+    // so we can tell per-reviewer whether EVERY one of their reviews
+    // that day was clean (no-callout candidate) or whether at least one
+    // had an issue (goes through the normal Major/Minor path instead).
+    const byReviewer = new Map();
     data.forEach(row => {
-      // Extract the reviewer's name from the front of status_reason —
-      // everything before the literal word "Marked".
       const m = (row.status_reason || '').match(/^(.*?)\s+Marked\s+/i);
       const reviewerName = m ? m[1].trim() : null;
-      if (!reviewerName) return; // can't attribute this row to anyone — skip rather than guess
+      if (!reviewerName) return;
+      if (!byReviewer.has(reviewerName)) byReviewer.set(reviewerName, []);
+      byReviewer.get(reviewerName).push(row);
+    });
 
-      // Match against THIS app's own roster by exact display_name —
-      // deliberately strict (no fuzzy matching) so an entry never
-      // silently attaches to the wrong person.
+    const toInsert = [];
+    const toBackfill = []; // [{ id, patch }] for existing rows missing lead_name/linkedin_url/recent_activity
+    const toMarkNoCallout = []; // employee_ids reviewed clean today with no existing real entry or no-callout this month
+    let skippedDuplicateCount = 0;
+
+    byReviewer.forEach((rows, reviewerName) => {
       const emp = state.employees.find(e => e.display_name === reviewerName);
       if (!emp) { unmatchedNames.add(reviewerName); return; }
 
-      const kind = row.major_error ? 'major' : 'minor'; // a row could theoretically have both flagged; major takes priority since that's the more severe classification
-      const activity = VALID_ACTIVITY.includes(row.recent_activity) ? row.recent_activity : null;
+      const flaggedRows = rows.filter(r => r.major_error || r.minor_error);
 
-      toInsert.push({
-        employee_id: emp.id,
-        month: monthIso,
-        kind,
-        status_reason: row.review_notes || null, // the actual explanation, WITHOUT the reviewer's name prefix
-        job_title: row.job_title || null,
-        company: row.company || null,
-        domain: row.domain || null,
-        country: row.country || null,
-        recent_activity: activity,
+      if (!flaggedRows.length) {
+        // Every review from this reviewer today was clean.
+        if (!employeeIdsWithRealEntries.has(emp.id) && !employeeIdsAlreadyNoCallout.has(emp.id)) {
+          toMarkNoCallout.push(emp.id);
+        }
+        return;
+      }
+
+      flaggedRows.forEach(row => {
+        const kind = row.major_error ? 'major' : 'minor';
+        const activity = VALID_ACTIVITY.includes(row.recent_activity) ? row.recent_activity : null;
+        const leadName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
+        const statusReason = row.review_notes || null;
+
+        // Per-ENTRY duplicate check — same employee, same lead, same
+        // status reason, same kind, already this month. This is what
+        // lets re-clicking the same date safely add only what's
+        // genuinely new, instead of the old all-or-nothing per-date lock.
+        const existingMatch = (existingEntries || []).find(e =>
+          e.employee_id === emp.id && e.lead_name === leadName
+        );
+
+        if (existingMatch) {
+          skippedDuplicateCount++;
+          // Backfill: if this existing row is missing lead_name/
+          // linkedin_url/recent_activity (e.g. imported before the
+          // linkedin_url column existed), fill in ONLY the missing
+          // fields — never touch dispute_status, kind, or anything
+          // else about a row that may already have an approved dispute.
+          const patch = {};
+          if (!existingMatch.linkedin_url && row.profile_url) patch.linkedin_url = row.profile_url;
+          if (!existingMatch.recent_activity && activity) patch.recent_activity = activity;
+          if (Object.keys(patch).length) toBackfill.push({ id: existingMatch.id, patch });
+          return;
+        }
+
+        toInsert.push({
+          employee_id: emp.id,
+          month: monthIso,
+          kind,
+          status_reason: statusReason,
+          lead_name: leadName,
+          job_title: row.job_title || null,
+          company: row.company || null,
+          domain: row.domain || null,
+          country: row.country || null,
+          recent_activity: activity,
+          linkedin_url: row.profile_url || null,
+        });
       });
     });
 
-    if (!toInsert.length) {
-      showToast(unmatchedNames.size
-        ? `Found entries for ${reviewDateIso}, but couldn't match any reviewer name to your roster: ${[...unmatchedNames].join(', ')}`
-        : `No importable Major/Minor call-outs found for ${reviewDateIso}.`, true);
-      return;
+    // Apply backfills first — these touch EXISTING rows, so doing them
+    // before any new inserts keeps the two operations cleanly separate
+    // in case one fails partway.
+    for (const { id, patch } of toBackfill) {
+      const { error: patchErr } = await sb.from('ips_qa_entries').update(patch).eq('id', id);
+      if (patchErr) console.error('Backfill failed for entry', id, patchErr);
     }
 
-    const { error: insertErr } = await sb.from('ips_qa_entries').insert(toInsert);
-    if (insertErr) {
-      console.error(insertErr);
-      showToast('Could not save the imported entries.', true);
-      return;
-    }
-
-    // Log this date as done — this is what makes the button safely
-    // re-clickable for OTHER dates while blocking a repeat of this one.
-    const { error: logErr } = await sb.from('ips_qa_import_log').insert({
-      review_date: reviewDateIso,
-      imported_count: toInsert.length,
-      imported_by: state.profile.display_name,
-    });
-    if (logErr) {
-      if (/relation .* does not exist/i.test(logErr.message || '')) {
-        showToast('Entries imported, but duplicate-protection needs setup — run ips_qa_import_log_schema.sql in Supabase.', true);
-      } else {
-        console.error(logErr); // entries are already saved successfully at this point — log failure alone shouldn't look like the whole import failed
+    if (toInsert.length) {
+      const { error: insertErr } = await sb.from('ips_qa_entries').insert(toInsert);
+      if (insertErr) {
+        console.error(insertErr);
+        showToast('Could not save the imported entries.', true);
+        return;
       }
     }
 
-    const skippedNote = unmatchedNames.size ? ` (${unmatchedNames.size} unmatched name${unmatchedNames.size > 1 ? 's' : ''}: ${[...unmatchedNames].join(', ')})` : '';
-    showToast(`Imported ${toInsert.length} QA entr${toInsert.length === 1 ? 'y' : 'ies'} for ${reviewDateIso}.${skippedNote}`);
+    if (toMarkNoCallout.length) {
+      const { error: noCalloutInsertErr } = await sb.from('ips_qa_no_callouts').insert(
+        toMarkNoCallout.map(employeeId => ({ employee_id: employeeId, month: monthIso, reviewed_by: state.profile.display_name }))
+      );
+      if (noCalloutInsertErr) console.error('No-callout tagging failed:', noCalloutInsertErr);
+    }
+
+    const parts = [];
+    if (toInsert.length) parts.push(`${toInsert.length} new QA entr${toInsert.length === 1 ? 'y' : 'ies'}`);
+    if (toMarkNoCallout.length) parts.push(`${toMarkNoCallout.length} employee${toMarkNoCallout.length === 1 ? '' : 's'} marked no-callout (100%)`);
+    if (toBackfill.length) parts.push(`${toBackfill.length} existing entr${toBackfill.length === 1 ? 'y' : 'ies'} filled in with missing details`);
+    if (skippedDuplicateCount && !toBackfill.length) parts.push(`${skippedDuplicateCount} already present, skipped`);
+    const unmatchedNote = unmatchedNames.size ? ` (${unmatchedNames.size} unmatched reviewer name${unmatchedNames.size > 1 ? 's' : ''}: ${[...unmatchedNames].join(', ')})` : '';
+
+    if (!parts.length) {
+      showToast(`Nothing new to import for ${reviewDateIso} — already up to date.${unmatchedNote}`, true);
+    } else {
+      showToast(`${reviewDateIso}: ${parts.join(', ')}.${unmatchedNote}`);
+    }
     closeModal();
     await loadIpsData();
     renderIpsTables();
