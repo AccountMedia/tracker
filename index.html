@@ -616,6 +616,21 @@ try {
   console.error('Supabase failed to initialize:', err);
 }
 
+// ---- SECOND Supabase project: the external QA-review tool ------------
+// Genuinely separate project, separate credentials, separate client
+// variable (sbQaReview, not sb) — used ONLY for reading the
+// review_records table when the QA Accuracy "Import from QA Review"
+// button is clicked. Never used for anything else in this app, and
+// this app never writes to it (read-only .select() calls only).
+const QA_REVIEW_SUPABASE_URL = 'https://aqgustkitzwjdzazrybc.supabase.co';
+const QA_REVIEW_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFxZ3VzdGtpdHp3amR6YXpyeWJjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MjMzMTYsImV4cCI6MjA5OTA5OTMxNn0.I0JRM_dgJo9vNXVH7IXsrtF7RppDL-Zc8kWMz47_kF0';
+let sbQaReview = null;
+try {
+  sbQaReview = window.supabase.createClient(QA_REVIEW_SUPABASE_URL, QA_REVIEW_SUPABASE_ANON_KEY);
+} catch (err) {
+  console.error('QA-review Supabase client failed to initialize:', err);
+}
+
 function showSetupNotice() {
   const box = document.getElementById('login-error');
   if (box) {
@@ -1697,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-07-30-fix-chat-shows-recent';
+const APP_VERSION = '2026-08-04-qa-import-from-review';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11260,7 +11275,7 @@ function renderIpsTables() {
     return `
       <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
         <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${qaEditor ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
-        ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>` : ''}
+        ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="ips-qa-import-review-btn" style="flex-shrink:0; font-size:11.5px;">Import from QA Review</button><button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>` : ''}
       </div>
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
@@ -12035,6 +12050,184 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 // 'approved' — everything else (never disputed, pending review,
 // rejected, rejected-as-minor, AND conceded) still counts and must
 // still show here.
+// Imports Major/Minor QA entries from the SEPARATE external QA-review
+// Supabase project (review_records table) into this app's own
+// ips_qa_entries table. Read-only against that other project — this
+// app never writes back to it.
+//
+// Row shape there: one row per candidate reviewed. major_error/
+// minor_error are booleans; only rows where one of those is TRUE
+// represent an actual call-out worth importing (most rows are clean
+// passes with both false). status_reason is misleadingly named — it's
+// actually "{Reviewer Name} Marked {Good/Unsure/Bad...}", so the
+// reviewer's name has to be extracted from the FRONT of that string to
+// know which employee this entry belongs to. review_notes holds the
+// real call-out explanation and becomes this app's status_reason —
+// the reviewer's name is deliberately stripped out of what actually
+// gets stored/displayed here, since the app already shows whose row
+// it is via the surrounding UI context.
+// Opens a small modal to pick which "reviewed on" date to pull in —
+// since different employees can be reviewed on different days, imports
+// are scoped to one specific date at a time rather than "everything
+// ever," and the button stays reusable for whichever date has fresh
+// results, while ips_qa_import_log blocks accidentally re-pulling a
+// date that's already been imported.
+function openQaImportDateModal() {
+  const todayIso = isoDate(new Date());
+  openModal('Import from QA Review', `
+    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Pick the date the reviews were done on. Each date can only be imported once — re-selecting an already-imported date will be blocked.</p>
+    <form id="qa-import-date-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="qa-import-date-input">Reviewed on</label>
+        <input type="date" id="qa-import-date-input" value="${todayIso}" max="${todayIso}"
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" id="qa-import-date-submit-btn" style="justify-content:center;">Import</button>
+    </form>
+  `);
+  document.getElementById('qa-import-date-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const dateVal = document.getElementById('qa-import-date-input').value;
+    if (!dateVal) return;
+    const submitBtn = document.getElementById('qa-import-date-submit-btn');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Checking...';
+    await importQaAccuracyFromReview(dateVal);
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Import';
+  });
+}
+
+// Imports Major/Minor QA entries, for ONE specific "reviewed on" date,
+// from the SEPARATE external QA-review Supabase project (review_records
+// table) into this app's own ips_qa_entries table. Read-only against
+// that other project — this app never writes back to it.
+//
+// Row shape there: one row per candidate reviewed. major_error/
+// minor_error are booleans; only rows where one of those is TRUE
+// represent an actual call-out worth importing (most rows are clean
+// passes with both false). status_reason is misleadingly named — it's
+// actually "{Reviewer Name} Marked {Good/Unsure/Bad...}", so the
+// reviewer's name has to be extracted from the FRONT of that string to
+// know which employee this entry belongs to. review_notes holds the
+// real call-out explanation and becomes this app's status_reason —
+// the reviewer's name is deliberately stripped out of what actually
+// gets stored/displayed here, since the app already shows whose row
+// it is via the surrounding UI context.
+async function importQaAccuracyFromReview(reviewDateIso) {
+  if (!sbQaReview) { showToast('QA Review connection is not configured.', true); return; }
+
+  // Duplicate protection: refuse if this exact date has already been
+  // successfully imported before, rather than silently doubling every
+  // entry from that day.
+  const { data: existingLog, error: logCheckErr } = await sb.from('ips_qa_import_log').select('id, imported_count').eq('review_date', reviewDateIso).maybeSingle();
+  if (logCheckErr && !/relation .* does not exist/i.test(logCheckErr.message || '')) { console.error(logCheckErr); }
+  if (existingLog) {
+    showToast(`${reviewDateIso} was already imported (${existingLog.imported_count} entries). Pick a different date.`, true);
+    closeModal();
+    return;
+  }
+
+  try {
+    // created_at is a timestamp, not a plain date — bounding it to
+    // [start of day, start of next day) captures the whole selected
+    // day regardless of what time each review happened to be logged.
+    const startOfDay = `${reviewDateIso}T00:00:00Z`;
+    const nextDay = isoDate(new Date(new Date(reviewDateIso + 'T00:00:00Z').getTime() + 24 * 60 * 60 * 1000));
+    const endOfDay = `${nextDay}T00:00:00Z`;
+
+    const { data, error } = await sbQaReview
+      .from('review_records')
+      .select('status_reason, job_title, company, domain, country, recent_activity, major_error, minor_error, review_notes, created_at')
+      .or('major_error.eq.true,minor_error.eq.true')
+      .gte('created_at', startOfDay)
+      .lt('created_at', endOfDay);
+
+    if (error) {
+      console.error(error);
+      showToast('Could not reach the QA Review database — check the connection.', true);
+      return;
+    }
+    if (!data || !data.length) {
+      showToast(`No Major/Minor call-outs found for ${reviewDateIso}.`, true);
+      return;
+    }
+
+    const VALID_ACTIVITY = ['Recently Active', 'Active', 'Passive', 'Silent'];
+    const now = new Date();
+    const monthIso = isoDate(new Date(now.getFullYear(), now.getMonth(), 1)); // genuinely TODAY's month, not whatever month the admin happens to be viewing
+    const toInsert = [];
+    const unmatchedNames = new Set();
+
+    data.forEach(row => {
+      // Extract the reviewer's name from the front of status_reason —
+      // everything before the literal word "Marked".
+      const m = (row.status_reason || '').match(/^(.*?)\s+Marked\s+/i);
+      const reviewerName = m ? m[1].trim() : null;
+      if (!reviewerName) return; // can't attribute this row to anyone — skip rather than guess
+
+      // Match against THIS app's own roster by exact display_name —
+      // deliberately strict (no fuzzy matching) so an entry never
+      // silently attaches to the wrong person.
+      const emp = state.employees.find(e => e.display_name === reviewerName);
+      if (!emp) { unmatchedNames.add(reviewerName); return; }
+
+      const kind = row.major_error ? 'major' : 'minor'; // a row could theoretically have both flagged; major takes priority since that's the more severe classification
+      const activity = VALID_ACTIVITY.includes(row.recent_activity) ? row.recent_activity : null;
+
+      toInsert.push({
+        employee_id: emp.id,
+        month: monthIso,
+        kind,
+        status_reason: row.review_notes || null, // the actual explanation, WITHOUT the reviewer's name prefix
+        job_title: row.job_title || null,
+        company: row.company || null,
+        domain: row.domain || null,
+        country: row.country || null,
+        recent_activity: activity,
+      });
+    });
+
+    if (!toInsert.length) {
+      showToast(unmatchedNames.size
+        ? `Found entries for ${reviewDateIso}, but couldn't match any reviewer name to your roster: ${[...unmatchedNames].join(', ')}`
+        : `No importable Major/Minor call-outs found for ${reviewDateIso}.`, true);
+      return;
+    }
+
+    const { error: insertErr } = await sb.from('ips_qa_entries').insert(toInsert);
+    if (insertErr) {
+      console.error(insertErr);
+      showToast('Could not save the imported entries.', true);
+      return;
+    }
+
+    // Log this date as done — this is what makes the button safely
+    // re-clickable for OTHER dates while blocking a repeat of this one.
+    const { error: logErr } = await sb.from('ips_qa_import_log').insert({
+      review_date: reviewDateIso,
+      imported_count: toInsert.length,
+      imported_by: state.profile.display_name,
+    });
+    if (logErr) {
+      if (/relation .* does not exist/i.test(logErr.message || '')) {
+        showToast('Entries imported, but duplicate-protection needs setup — run ips_qa_import_log_schema.sql in Supabase.', true);
+      } else {
+        console.error(logErr); // entries are already saved successfully at this point — log failure alone shouldn't look like the whole import failed
+      }
+    }
+
+    const skippedNote = unmatchedNames.size ? ` (${unmatchedNames.size} unmatched name${unmatchedNames.size > 1 ? 's' : ''}: ${[...unmatchedNames].join(', ')})` : '';
+    showToast(`Imported ${toInsert.length} QA entr${toInsert.length === 1 ? 'y' : 'ies'} for ${reviewDateIso}.${skippedNote}`);
+    closeModal();
+    await loadIpsData();
+    renderIpsTables();
+  } catch (err) {
+    console.error(err);
+    showToast('Something went wrong during import.', true);
+  }
+}
+
 function downloadIpsQaAccuracyReport() {
   const roster = ipsRoster();
   const monthLabel = ipsMonthLabel(ipsState.month);
@@ -12312,6 +12505,7 @@ function openIpsTabbedReport(monthLabel, sections) {
 
 function attachIpsHandlers() {
   document.getElementById('ips-qa-download-report-btn')?.addEventListener('click', downloadIpsQaAccuracyReport);
+  document.getElementById('ips-qa-import-review-btn')?.addEventListener('click', openQaImportDateModal);
   document.getElementById('ips-missed-outputs-toggle')?.addEventListener('click', () => {
     ipsState.missedOutputsExpanded = !ipsState.missedOutputsExpanded;
     renderIpsTables();
