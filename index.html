@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-jeinna-only-md-peer-edit';
+const APP_VERSION = '2026-08-05-archive-grace-period';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11073,16 +11073,28 @@ async function archiveCompletedIpsDays() {
   _lastArchiveCheckAt = now;
 
   try {
-    const todayIso = isoDate(new Date());
+    // A full day's grace period, not just "strictly before today": a
+    // date only becomes archivable once an entire extra day has fully
+    // passed since it ended, not the instant midnight technically
+    // ticks over. This matters because archiving is "once and done" —
+    // once a date is written to ips_daily_archive it's never touched
+    // again — so if the check happened to fire moments after midnight
+    // while a claim/review from 11:59 PM was still mid-sync into
+    // ips_daily_entries, that snapshot would be permanently frozen a
+    // few seconds too early with no second chance to catch up. Waiting
+    // a full extra day gives every live sync (which itself runs on a
+    // short realtime debounce) an enormous, safe margin to finish
+    // before that date is ever considered for archiving.
+    const graceBoundaryIso = isoDate(new Date(Date.now() - 24 * 60 * 60 * 1000));
 
     // Find which dates already have SOME data worth archiving — scans
     // ips_daily_entries directly (not scoped to whatever month the
     // admin's IPS tab currently has selected) for any row with a real
-    // MD Task or Peer Review value, dated strictly before today.
+    // MD Task or Peer Review value, dated before the grace boundary.
     const { data: candidateRows, error: candErr } = await sb
       .from('ips_daily_entries')
       .select('employee_id, entry_date, md_value, peer_review_value')
-      .lt('entry_date', todayIso)
+      .lt('entry_date', graceBoundaryIso)
       .or('md_value.not.is.null,peer_review_value.not.is.null');
     if (candErr) { console.error('Archive check failed:', candErr); return; }
     if (!candidateRows || !candidateRows.length) return;
