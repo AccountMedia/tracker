@@ -838,6 +838,14 @@ function canManageIps() {
   if (!state.profile) return false;
   return isAdmin() || state.profile.role === 'ips';
 }
+// MD Task and Peer Review are auto-populated from the external
+// QA-review project — edit access is deliberately narrower than the
+// general canManageIps() group (admins/IPS): only Jeinna can manually
+// correct these two specific fields, everyone else (including other
+// admins/IPS staff) sees them as read-only.
+function canEditAutoSyncedIpsFields() {
+  return !!state.profile && state.profile.display_name === 'Jeinna Louise Perez';
+}
 // QA role: narrower than canManageIps() — grants edit access to the
 // QA Accuracy section's ENTRIES ONLY (add/edit/delete Major/Minor
 // entries, No call-out). Does NOT grant approve/reject dispute rights
@@ -1715,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-archive-recurring-watcher';
+const APP_VERSION = '2026-08-05-jeinna-only-md-peer-edit';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11545,13 +11553,13 @@ function renderIpsTables() {
         const cellPadLocked = `padding:8px ${rightPad}px 8px ${leftPad}px;`;
         // MD Task and Peer Review are both auto-populated from the
         // external QA-review project going forward and are no longer
-        // manually editable by regular employees — admins/IPS retain
-        // full edit access (canManageIps()), same as every other field,
-        // but everyone else always sees a plain read-only value here
-        // regardless of what directEdit/needsRequest would otherwise
-        // allow, since there's nothing left for them to correct or
-        // request a change to.
-        if ((field === 'md_value' || field === 'peer_review_value') && !canManageIps()) {
+        // manually editable by regular employees — OR by admins/IPS in
+        // general. Only Jeinna (canEditAutoSyncedIpsFields) can
+        // manually correct these two specific fields; everyone else
+        // always sees a plain read-only value here regardless of what
+        // directEdit/needsRequest would otherwise allow, since there's
+        // nothing left for them to correct or request a change to.
+        if ((field === 'md_value' || field === 'peer_review_value') && !canEditAutoSyncedIpsFields()) {
           return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
         }
         if (directEdit) {
@@ -13203,6 +13211,11 @@ async function saveIpsDailyEntry(input) {
 
   if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); renderIpsTables(); return; }
   if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
+  if ((field === 'md_value' || field === 'peer_review_value') && !canEditAutoSyncedIpsFields()) {
+    showToast('This field is auto-filled and can only be corrected by Jeinna.', true);
+    renderIpsTables();
+    return;
+  }
 
   const raw = input.value;
   const value = raw === '' ? null : parseFloat(raw);
