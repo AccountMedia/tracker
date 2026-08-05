@@ -1124,7 +1124,6 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
-  mdTaskSyncRanThisSession = false;
   hideLeaveNotifPanel();
   stopPriolistPolling();
   stopLiRestrictionTicker();
@@ -1713,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-priolist-md-output-realtime-sync';
+const APP_VERSION = '2026-08-05-peer-review-sync-both-realtime';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2286,6 +2285,84 @@ function stopPriolistMdOutputRealtimeSync() {
   if (_priolistMdOutputChannel) {
     try { sbQaReview.removeChannel(_priolistMdOutputChannel); } catch (err) { /* non-fatal */ }
     _priolistMdOutputChannel = null;
+  }
+}
+
+// ── PrioList Peer Review real-time sync from review_batches ───────────
+// Same 8am reset window as MD Output (resets daily alongside the rest
+// of the row), but SUMS total_records across every matching row for a
+// given employee, rather than counting rows — confirmed explicitly:
+// if Katrena appears twice with total_records 100 and 50, her Peer
+// Review is 150, not 2. Fully locked, same as MD Output.
+async function computePeerReviewSumsSinceBoundary() {
+  if (!sbQaReview) return null;
+  const boundaryDate = currentPriolistResetBoundary();
+  const boundaryTimestamp = new Date(`${boundaryDate}T00:00:00`);
+  boundaryTimestamp.setHours(8, 0, 0, 0);
+
+  const { data, error } = await sbQaReview
+    .from('review_batches')
+    .select('claimed_by, total_records, created_at')
+    .gte('created_at', boundaryTimestamp.toISOString())
+    .not('claimed_by', 'is', null);
+
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('PrioList Peer Review sync failed:', error);
+    return null;
+  }
+
+  const sums = new Map();
+  (data || []).forEach(row => {
+    const rawFirstName = (row.claimed_by || '').trim().split(/\s+/)[0];
+    if (!rawFirstName) return;
+    const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
+    const n = Number(row.total_records) || 0;
+    sums.set(firstName, (sums.get(firstName) || 0) + n);
+  });
+  return sums;
+}
+
+async function syncPriolistPeerReviewFromReviewBatches() {
+  const sums = await computePeerReviewSumsSinceBoundary();
+  if (!sums) return;
+
+  const updates = [];
+  const unmatchedNames = new Set();
+  sums.forEach((total, firstNameLower) => {
+    const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+    if (!emp) { unmatchedNames.add(firstNameLower); return; }
+    const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
+    if (!entry) return;
+    if (entry.peer_review === total) return; // no genuine change — skip the write entirely
+    updates.push({ id: entry.id, peer_review: total });
+  });
+
+  if (unmatchedNames.size) {
+    console.warn('PrioList Peer Review sync: could not match these claimed_by first names to any employee:', [...unmatchedNames].join(', '));
+  }
+  if (!updates.length) return;
+
+  await Promise.all(updates.map(u => sb.from('priolist_entries').update({ peer_review: u.peer_review }).eq('id', u.id)));
+}
+
+let _priolistPeerReviewChannel = null;
+function startPriolistPeerReviewRealtimeSync() {
+  if (_priolistPeerReviewChannel || !sbQaReview) return;
+  try {
+    const debouncedSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 400);
+    _priolistPeerReviewChannel = sbQaReview
+      .channel('rt:review_batches_peer_review')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => { debouncedSync(); })
+      .subscribe();
+    syncPriolistPeerReviewFromReviewBatches();
+  } catch (err) {
+    console.error('PrioList Peer Review realtime subscribe failed:', err);
+  }
+}
+function stopPriolistPeerReviewRealtimeSync() {
+  if (_priolistPeerReviewChannel) {
+    try { sbQaReview.removeChannel(_priolistPeerReviewChannel); } catch (err) { /* non-fatal */ }
+    _priolistPeerReviewChannel = null;
   }
 }
 
@@ -5331,6 +5408,7 @@ function startPriolistPolling() {
     renderPrioList();
   });
   startPriolistMdOutputRealtimeSync();
+  startPriolistPeerReviewRealtimeSync();
 }
 
 function stopPriolistPolling() {
@@ -5338,6 +5416,7 @@ function stopPriolistPolling() {
   unsubscribeRealtime('priolist_red_files');
   unsubscribeRealtime('priolist_employees');
   stopPriolistMdOutputRealtimeSync();
+  stopPriolistPeerReviewRealtimeSync();
 }
 
 // Entry point when switching INTO the PrioList tab. Paints instantly
@@ -5460,9 +5539,10 @@ function renderPrioList() {
     const menuIsOpen = state.priolistOpenMenuId === entry.id;
 
     return `
-      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#E2EEF6;' : ''}">
+      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#E2EEF6;' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</span>
+        <span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;" title="Auto-filled from review batches — not manually editable">${entry.peer_review ?? 0}</span>
         <span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;" title="Auto-filled from completed claims — not manually editable">${entry.md_output}</span>
         ${isMe
           ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
@@ -5494,9 +5574,10 @@ function renderPrioList() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div class="priolist-header-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+      <div class="priolist-header-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1fr 1.8fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
         <span>Rank</span>
         <span>Name</span>
+        <span>Peer Review</span>
         <span>MD Output</span>
         <span>Leads</span>
         <span>Total</span>
@@ -10768,8 +10849,10 @@ const MD_TASK_NAME_ALIASES = {
 };
 
 // ── MD Task auto-sync from claim_records (external QA-review project) ──
-// Runs automatically whenever the Daily Entry tab is opened — pulls
-// every claim completed on or after August 5, 2026 (the day this
+// Runs LIVE — a realtime subscription on claim_records (in the second
+// Supabase project) re-triggers this the instant a claim is inserted
+// or updated, not just once when the Daily Entry tab happens to open.
+// Pulls every claim completed on or after August 5, 2026 (the day this
 // feature went live; earlier dates are never touched, regardless of
 // what claim_records contains for them), groups by the FIRST NAME
 // extracted from "completed_by" and by the date extracted from
@@ -10779,11 +10862,8 @@ const MD_TASK_NAME_ALIASES = {
 // forward, which is also why regular employees can no longer edit it
 // directly (see the md_value lockdown in numCell).
 const MD_TASK_SYNC_CUTOFF = '2026-08-05'; // this feature's own start date — never touches anything earlier
-let mdTaskSyncRanThisSession = false;
 async function syncMdTaskFromClaimRecords() {
-  if (mdTaskSyncRanThisSession) return; // once per tab-open, not on every keystroke-triggered re-render
   if (!sbQaReview) return;
-  mdTaskSyncRanThisSession = true;
 
   try {
     const { data, error } = await sbQaReview
@@ -10819,6 +10899,12 @@ async function syncMdTaskFromClaimRecords() {
       const [firstNameLower, dateIso] = key.split('|');
       const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
+      // Skip entirely if the current in-memory value is already correct
+      // — avoids an unnecessary write (and the resulting realtime
+      // echo/re-render) on every trigger when nothing actually changed
+      // for this particular employee/date.
+      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === dateIso);
+      if (existing && existing.md_value === count) return;
       updates.push({ employee_id: emp.id, entry_date: dateIso, md_value: count, updated_by: 'claim_records sync', updated_at: new Date().toISOString() });
     });
 
@@ -10839,6 +10925,113 @@ async function syncMdTaskFromClaimRecords() {
     renderIpsTables();
   } catch (err) {
     console.error('MD Task sync error:', err);
+  }
+}
+
+// Genuinely real-time: subscribes directly to claim_records in the
+// SECOND Supabase project (same channel pattern as PrioList's MD
+// Output sync) — every insert/update fires a fresh count-and-sync
+// rather than waiting for the Daily Entry tab to be reopened.
+let _ipsMdTaskChannel = null;
+function startIpsMdTaskRealtimeSync() {
+  if (_ipsMdTaskChannel || !sbQaReview) return; // already subscribed, or second project not configured
+  try {
+    const debouncedSync = debounceRealtime(syncMdTaskFromClaimRecords, 400);
+    _ipsMdTaskChannel = sbQaReview
+      .channel('rt:claim_records_md_task')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'claim_records' }, () => { debouncedSync(); })
+      .subscribe();
+    syncMdTaskFromClaimRecords(); // also run once immediately, so Daily Entry is correct the moment it's opened, not just after the next live change
+  } catch (err) {
+    console.error('IPS MD Task realtime subscribe failed:', err);
+  }
+}
+function stopIpsMdTaskRealtimeSync() {
+  if (_ipsMdTaskChannel) {
+    try { sbQaReview.removeChannel(_ipsMdTaskChannel); } catch (err) { /* non-fatal */ }
+    _ipsMdTaskChannel = null;
+  }
+}
+
+// ── Peer Review auto-sync from review_batches (IPS Daily Entry) ───────
+// Same per-date, Aug-5-onward historical tracking as MD Task — NOT a
+// daily-resetting figure like PrioList's version of Peer Review.
+// Confirmed explicitly: PrioList's Peer Review resets at 8am, IPS's
+// does not. Sums total_records (not counting rows) per employee per
+// date, since multiple review_batches rows for the same person on the
+// same day should have their totals added together.
+async function syncIpsPeerReviewFromReviewBatches() {
+  if (!sbQaReview) return;
+
+  try {
+    const { data, error } = await sbQaReview
+      .from('review_batches')
+      .select('claimed_by, total_records, created_at')
+      .gte('created_at', `${MD_TASK_SYNC_CUTOFF}T00:00:00Z`)
+      .not('claimed_by', 'is', null);
+
+    if (error) {
+      if (!/relation .* does not exist/i.test(error.message || '')) console.error('IPS Peer Review sync failed:', error);
+      return;
+    }
+    if (!data || !data.length) return;
+
+    // Group by (first name, date) -> SUM of total_records.
+    const sums = new Map();
+    data.forEach(row => {
+      const rawFirstName = (row.claimed_by || '').trim().split(/\s+/)[0];
+      if (!rawFirstName) return;
+      const firstName = MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName;
+      const dateIso = (row.created_at || '').slice(0, 10);
+      if (!dateIso || dateIso < MD_TASK_SYNC_CUTOFF) return;
+      const key = `${firstName.toLowerCase()}|${dateIso}`;
+      sums.set(key, (sums.get(key) || 0) + (Number(row.total_records) || 0));
+    });
+
+    const updates = [];
+    const unmatchedNames = new Set();
+    sums.forEach((total, key) => {
+      const [firstNameLower, dateIso] = key.split('|');
+      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      if (!emp) { unmatchedNames.add(firstNameLower); return; }
+      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === dateIso);
+      if (existing && existing.peer_review_value === total) return; // no genuine change — skip the write
+      updates.push({ employee_id: emp.id, entry_date: dateIso, peer_review_value: total, updated_by: 'review_batches sync', updated_at: new Date().toISOString() });
+    });
+
+    if (unmatchedNames.size) {
+      console.warn('IPS Peer Review sync: could not match these claimed_by first names to any employee:', [...unmatchedNames].join(', '));
+    }
+    if (!updates.length) return;
+
+    const { error: upsertErr } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
+    if (upsertErr) { console.error('IPS Peer Review sync upsert failed:', upsertErr); return; }
+
+    await loadIpsData();
+    renderIpsTables();
+  } catch (err) {
+    console.error('IPS Peer Review sync error:', err);
+  }
+}
+
+let _ipsPeerReviewChannel = null;
+function startIpsPeerReviewRealtimeSync() {
+  if (_ipsPeerReviewChannel || !sbQaReview) return;
+  try {
+    const debouncedSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 400);
+    _ipsPeerReviewChannel = sbQaReview
+      .channel('rt:review_batches_ips_peer_review')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => { debouncedSync(); })
+      .subscribe();
+    syncIpsPeerReviewFromReviewBatches();
+  } catch (err) {
+    console.error('IPS Peer Review realtime subscribe failed:', err);
+  }
+}
+function stopIpsPeerReviewRealtimeSync() {
+  if (_ipsPeerReviewChannel) {
+    try { sbQaReview.removeChannel(_ipsPeerReviewChannel); } catch (err) { /* non-fatal */ }
+    _ipsPeerReviewChannel = null;
   }
 }
 
@@ -11119,6 +11312,8 @@ function stopIpsRealtime() {
   unsubscribeRealtime('ips_correction_requests');
   unsubscribeRealtime('ips_emergency_unlocks');
   unsubscribeRealtime('ips_qa_entries');
+  stopIpsMdTaskRealtimeSync();
+  stopIpsPeerReviewRealtimeSync();
 }
 
 function renderIps() {
@@ -11241,15 +11436,16 @@ function renderIpsTables() {
         const rightPad = isTrioMember ? 0 : (tightLeft ? 10 : 6);
         const cellPad = `padding:4px ${rightPad}px 4px ${leftPad}px;`;
         const cellPadLocked = `padding:8px ${rightPad}px 8px ${leftPad}px;`;
-        // MD Task is auto-populated from claim_records going forward and
-        // is no longer manually editable by regular employees at all —
-        // admins/IPS retain full edit access (canManageIps()), same as
-        // every other field, but everyone else always sees a plain
-        // read-only value here regardless of what directEdit/needsRequest
-        // would otherwise allow, since there's nothing left for them to
-        // correct or request a change to.
-        if (field === 'md_value' && !canManageIps()) {
-          return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled from completed claims — not manually editable">${val !== '' ? val : '—'}</td>`;
+        // MD Task and Peer Review are both auto-populated from the
+        // external QA-review project going forward and are no longer
+        // manually editable by regular employees — admins/IPS retain
+        // full edit access (canManageIps()), same as every other field,
+        // but everyone else always sees a plain read-only value here
+        // regardless of what directEdit/needsRequest would otherwise
+        // allow, since there's nothing left for them to correct or
+        // request a change to.
+        if ((field === 'md_value' || field === 'peer_review_value') && !canManageIps()) {
+          return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
         }
         if (directEdit) {
           const fieldColors = {
@@ -11730,7 +11926,8 @@ function renderIpsTables() {
   // Entry — that's where EC is now.
   if (ipsState.tab === 'ec') ipsState.tab = 'daily';
   const active = ipsState.tab;
-  if (active === 'daily') syncMdTaskFromClaimRecords(); // fires in the background; its own guard keeps this to once per session
+  startIpsMdTaskRealtimeSync(); // safe to call repeatedly — internally guarded against duplicate subscriptions
+  startIpsPeerReviewRealtimeSync();
 
   const body =
     active === 'daily' ? buildDailySection() :
