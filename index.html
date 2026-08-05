@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-fix-negative-sl-display';
+const APP_VERSION = '2026-08-04-add-peer-review-column';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11018,7 +11018,7 @@ function renderIpsTables() {
     let teamLq = 0, teamMd = 0, loggedCount = 0;
     roster.forEach(emp => {
       const e = ipsDailyFor(emp.id, day);
-      if (e && (e.lq_value != null || e.md_value != null)) loggedCount++;
+      if (e && (e.lq_value != null || e.md_value != null || e.peer_review_value != null)) loggedCount++;
       teamLq += e && e.lq_value != null ? Number(e.lq_value) : 0;
       teamMd += e && e.md_value != null ? Number(e.md_value) : 0;
     });
@@ -11029,7 +11029,8 @@ function renderIpsTables() {
       const e = ipsDailyFor(emp.id, day);
       const lq = e && e.lq_value != null ? e.lq_value : '';
       const md = e && e.md_value != null ? e.md_value : '';
-      const total = (lq === '' ? 0 : Number(lq)) + (md === '' ? 0 : Number(md));
+      const peerReview = e && e.peer_review_value != null ? e.peer_review_value : '';
+      const total = (lq === '' ? 0 : Number(lq)) + (md === '' ? 0 : Number(md)) + (peerReview === '' ? 0 : Number(peerReview));
       const poExcluded = !!(e && e.po_excluded);
       const otherTask = !!(e && e.other_task);
       const otherTaskNote = e && e.other_task_note ? e.other_task_note : '';
@@ -11081,6 +11082,7 @@ function renderIpsTables() {
           <td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap;">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>
           <td style="padding:8px; text-align:center; color:var(--ink-faint);">${workingDays || '—'}</td>
           ${numCell('errors', errors)}
+          ${numCell('peer_review_value', peerReview)}
           ${numCell('md_value', md)}
           ${numCell('lq_value', lq)}
           <td style="padding:8px; text-align:center; font-weight:700;">${total || '—'}</td>
@@ -11180,6 +11182,7 @@ function renderIpsTables() {
           <th style="padding:6px 10px; text-align:left;">Agent</th>
           <th style="padding:6px 10px;">Working Days</th>
           <th style="padding:6px 10px;">Errors (this day)</th>
+          <th style="padding:6px 10px;">Peer Review</th>
           <th style="padding:6px 10px;">Missing Data Task</th>
           <th style="padding:6px 10px;">Lead Qualification</th>
           <th style="padding:6px 10px;">Daily Total</th>
@@ -11602,7 +11605,7 @@ async function loadIpsPrevRanks() {
 
   try {
     const [dailyRes, qaEntriesRes, settingsRes] = await Promise.all([
-      sb.from('ips_daily_entries').select('employee_id, entry_date, lq_value, md_value, po_excluded, errors').gte('entry_date', prevDates[0]).lte('entry_date', prevEnd),
+      sb.from('ips_daily_entries').select('employee_id, entry_date, lq_value, md_value, peer_review_value, po_excluded, errors').gte('entry_date', prevDates[0]).lte('entry_date', prevEnd),
       sb.from('ips_qa_entries').select('employee_id, kind, dispute_status').eq('month', prevMonthIso),
       sb.from('ips_month_settings').select('working_days').eq('month', prevMonthIso).maybeSingle(),
     ]);
@@ -11618,7 +11621,7 @@ async function loadIpsPrevRanks() {
       const ratios = prevDates.map(d => {
         const e = byDate[d];
         if (!e || e.po_excluded || e.other_task) return null;
-        const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
+        const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0) + (e.peer_review_value != null ? Number(e.peer_review_value) : 0);
         const target = ipsDayTarget(emp.id, d);
         return (t > 0 && target > 0) ? t / target : null;
       }).filter(r => r != null);
@@ -11703,7 +11706,7 @@ async function openIpsYearModal(employeeId) {
     const ratios = dates.map(d => {
       const e = byDate[d];
       if (!e || e.po_excluded || e.other_task) return null;
-      const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
+      const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0) + (e.peer_review_value != null ? Number(e.peer_review_value) : 0);
       const target = dayTargetForYear(d);
       return (t > 0 && target > 0) ? t / target : null;
     }).filter(r => r != null);
@@ -11957,7 +11960,7 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
       const ratios = dates.map(d => {
         const e = dailyFor(empId, d);
         if (!e || e.po_excluded || e.other_task) return null;
-        const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0);
+        const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0) + (e.peer_review_value != null ? Number(e.peer_review_value) : 0);
         const target = ipsDayTarget(empId, d);
         return (t > 0 && target > 0) ? t / target : null;
       }).filter(r => r != null);
@@ -14082,7 +14085,7 @@ async function ensureIpsDataForPersonalAlerts() {
     const [dailyRes] = await Promise.all([
       sb
         .from('ips_daily_entries')
-        .select('employee_id, entry_date, lq_value, md_value, po_excluded, other_task')
+        .select('employee_id, entry_date, lq_value, md_value, peer_review_value, po_excluded, other_task')
         .eq('employee_id', state.profile.employee_id)
         .gte('entry_date', month)
         .lte('entry_date', monthEnd),
