@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-color-code-daily-inputs';
+const APP_VERSION = '2026-08-04-trio-max-tight';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11052,7 +11052,11 @@ function renderIpsTables() {
         r => r.employee_id === emp.id && r.entry_date === day && r.field === field && r.status === 'pending'
       );
 
-      const numCell = (field, val) => {
+      const numCell = (field, val, groupStart = false, tightLeft = false) => {
+        const leftPad = groupStart ? 40 : (tightLeft ? 4 : (field === 'md_value' ? 0 : 6));
+        const rightPad = (groupStart || field === 'md_value' || field === 'lq_value') ? 0 : (tightLeft ? 10 : 6);
+        const cellPad = `padding:4px ${rightPad}px 4px ${leftPad}px;`;
+        const cellPadLocked = `padding:8px ${rightPad}px 8px ${leftPad}px;`;
         if (directEdit) {
           const fieldColors = {
             errors: { border: 'rgba(192,57,43,0.45)', bg: 'rgba(192,57,43,0.07)' },       // subtle red — errors are the thing to minimize
@@ -11061,19 +11065,19 @@ function renderIpsTables() {
           const colors = fieldColors[field];
           const borderStyle = colors ? `border:1px solid ${colors.border};` : 'border:1px solid var(--line);';
           const bgStyle = colors ? colors.bg : (isMe ? '#fff' : 'var(--paper)');
-          return `<td style="padding:4px; text-align:center;">
+          return `<td style="${cellPad} text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
-              style="width:90px; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle};">
+              style="width:90px; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
           </td>`;
         }
         if (needsRequest) {
           const pending = pendingForField(field);
           if (pending) {
-            return `<td style="padding:8px; text-align:center;">
+            return `<td style="${cellPadLocked} text-align:center;">
               <span title="Correction pending approval: ${pending.old_value ?? '—'} → ${pending.new_value ?? '—'}" style="font-size:10px; font-weight:700; padding:2px 8px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">⏳ pending</span>
             </td>`;
           }
-          return `<td style="padding:4px; text-align:center;">
+          return `<td style="${cellPad} text-align:center;">
             <button class="btn btn-ghost btn-sm ips-request-correction-btn" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" data-current="${val}"
               style="padding:3px 8px; font-size:11px; min-width:52px;" title="Propose a change — needs admin/IPS approval">
               ${val !== '' ? val : '—'} <span style="opacity:0.6;">✎</span>
@@ -11081,15 +11085,15 @@ function renderIpsTables() {
           </td>`;
         }
         // Locked (future day, or someone else's row you can't touch)
-        return `<td style="padding:8px; text-align:center; color:var(--ink-soft);">${val !== '' ? val : '—'}</td>`;
+        return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);">${val !== '' ? val : '—'}</td>`;
       };
 
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
-          <td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap;">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>
-          <td style="padding:8px; text-align:center; color:var(--ink-faint);">${workingDays || '—'}</td>
-          ${numCell('errors', errors)}
-          ${numCell('peer_review_value', peerReview)}
+          <td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(emp.display_name)}">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>
+          <td style="padding:8px 4px 8px 10px; text-align:center; color:var(--ink-faint);">${workingDays || '—'}</td>
+          ${numCell('errors', errors, false, true)}
+          ${numCell('peer_review_value', peerReview, true)}
           ${numCell('md_value', md)}
           ${numCell('lq_value', lq)}
           <td style="padding:8px; text-align:center; font-weight:700;">${total || '—'}</td>
@@ -11187,11 +11191,11 @@ function renderIpsTables() {
       <table class="ips-table" id="ips-daily-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th>
-          <th style="padding:6px 10px;">Working Days</th>
-          <th style="padding:6px 10px;">Errors (this day)</th>
-          <th style="padding:6px 10px;">Peer Review</th>
-          <th style="padding:6px 10px;">Missing Data Task</th>
-          <th style="padding:6px 10px;">Lead Qualification</th>
+          <th style="padding:6px 4px 6px 10px;">Working Days</th>
+          <th style="padding:6px 10px 6px 4px;">Errors</th>
+          <th style="padding:6px 0px 6px 40px;">Peer Review</th>
+          <th style="padding:6px 0px;">MD Task</th>
+          <th style="padding:6px 0px;">LQ</th>
           <th style="padding:6px 10px;">Daily Total</th>
           <th style="padding:6px 10px; text-align:left;">VS Target</th>
         </tr></thead>
