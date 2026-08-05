@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-add-peer-review-column';
+const APP_VERSION = '2026-08-04-color-code-daily-inputs';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11054,9 +11054,16 @@ function renderIpsTables() {
 
       const numCell = (field, val) => {
         if (directEdit) {
+          const fieldColors = {
+            errors: { border: 'rgba(192,57,43,0.45)', bg: 'rgba(192,57,43,0.07)' },       // subtle red — errors are the thing to minimize
+            lq_value: { border: 'rgba(39,142,89,0.45)', bg: 'rgba(39,142,89,0.07)' },     // subtle green — Lead Qualification is core output
+          };
+          const colors = fieldColors[field];
+          const borderStyle = colors ? `border:1px solid ${colors.border};` : 'border:1px solid var(--line);';
+          const bgStyle = colors ? colors.bg : (isMe ? '#fff' : 'var(--paper)');
           return `<td style="padding:4px; text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
-              style="width:90px; padding:6px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px; background:${isMe ? '#fff' : 'var(--paper)'};">
+              style="width:90px; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle};">
           </td>`;
         }
         if (needsRequest) {
