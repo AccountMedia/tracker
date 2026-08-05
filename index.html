@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-peer-review-sync-both-realtime';
+const APP_VERSION = '2026-08-05-revert-errors-lq-colors';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11448,13 +11448,8 @@ function renderIpsTables() {
           return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
         }
         if (directEdit) {
-          const fieldColors = {
-            errors: { border: 'rgba(192,57,43,0.45)', bg: 'rgba(192,57,43,0.07)' },       // subtle red — errors are the thing to minimize
-            lq_value: { border: 'rgba(39,142,89,0.45)', bg: 'rgba(39,142,89,0.07)' },     // subtle green — Lead Qualification is core output
-          };
-          const colors = fieldColors[field];
-          const borderStyle = colors ? `border:1px solid ${colors.border};` : 'border:1px solid var(--line);';
-          const bgStyle = colors ? colors.bg : (isMe ? '#fff' : 'var(--paper)');
+          const borderStyle = 'border:1px solid var(--line);';
+          const bgStyle = isMe ? '#fff' : 'var(--paper)';
           return `<td style="${cellPad} text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
               style="width:${(isTrioMember || field === 'errors') ? '78px' : '90px'}; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
