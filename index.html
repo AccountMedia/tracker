@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-archive-two-precise-windows';
+const APP_VERSION = '2026-08-05-tighten-version-check';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1836,7 +1836,7 @@ async function loadAllData() {
   updateLeaveNavBadge();
   startNavBadgePolling();
   checkAppVersionAndReloadIfStale();
-  setInterval(() => { if (!document.hidden) checkAppVersionAndReloadIfStale(); }, 900000); // every 15 min, not every 60s — this is a tiny query but it ran for every logged-in person, all day; the banner isn't urgent enough to justify checking every minute
+  setInterval(() => { if (!document.hidden) checkAppVersionAndReloadIfStale(); }, 45 * 60 * 1000); // every 45 min — this is a tiny query but it ran for every logged-in person, all day; tightened from every 15 min since the banner is a nice-to-have notification, not something urgent enough to justify checking that often
 
   // PHASE 2 — everything else in the background; repaint when done so
   // views that need these datasets (dashboard counts, payroll, OT,
