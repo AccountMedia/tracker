@@ -1124,6 +1124,7 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
+  mdTaskSyncRanThisSession = false;
   hideLeaveNotifPanel();
   stopPriolistPolling();
   stopLiRestrictionTicker();
@@ -1712,7 +1713,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-fix-qa-header-alignment';
+const APP_VERSION = '2026-08-05-md-task-claim-records-sync';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10659,6 +10660,80 @@ async function loadIpsData() {
   }
 }
 
+// ── MD Task auto-sync from claim_records (external QA-review project) ──
+// Runs automatically whenever the Daily Entry tab is opened — pulls
+// every claim completed on or after August 5, 2026 (the day this
+// feature went live; earlier dates are never touched, regardless of
+// what claim_records contains for them), groups by the FIRST NAME
+// extracted from "completed_by" and by the date extracted from
+// "completed_at", matches each name against the employee roster by
+// first name, and REPLACES that employee's md_value for that date with
+// the fresh count — this is the authoritative source for MD Task going
+// forward, which is also why regular employees can no longer edit it
+// directly (see the md_value lockdown in numCell).
+const MD_TASK_SYNC_CUTOFF = '2026-08-05'; // this feature's own start date — never touches anything earlier
+let mdTaskSyncRanThisSession = false;
+async function syncMdTaskFromClaimRecords() {
+  if (mdTaskSyncRanThisSession) return; // once per tab-open, not on every keystroke-triggered re-render
+  if (!sbQaReview) return;
+  mdTaskSyncRanThisSession = true;
+
+  try {
+    const { data, error } = await sbQaReview
+      .from('claim_records')
+      .select('completed_by, completed_at')
+      .gte('completed_at', `${MD_TASK_SYNC_CUTOFF}T00:00:00Z`)
+      .not('completed_by', 'is', null)
+      .not('completed_at', 'is', null);
+
+    if (error) {
+      if (!/relation .* does not exist/i.test(error.message || '')) console.error('MD Task sync failed:', error);
+      return;
+    }
+    if (!data || !data.length) return;
+
+    // Group by (first name, date) -> count.
+    const counts = new Map(); // key: `${firstName}|${dateIso}` -> count
+    data.forEach(row => {
+      const firstName = (row.completed_by || '').trim().split(/\s+/)[0];
+      if (!firstName) return;
+      const dateIso = (row.completed_at || '').slice(0, 10); // YYYY-MM-DD from the timestamp
+      if (!dateIso || dateIso < MD_TASK_SYNC_CUTOFF) return; // redundant with the query filter, but safe against any timezone edge at the boundary
+      const key = `${firstName.toLowerCase()}|${dateIso}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    });
+
+    // Match each first name to a roster employee — first-name match
+    // only, same convention as the QA Review import's reviewer matching.
+    const updates = [];
+    const unmatchedNames = new Set();
+    counts.forEach((count, key) => {
+      const [firstNameLower, dateIso] = key.split('|');
+      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      if (!emp) { unmatchedNames.add(firstNameLower); return; }
+      updates.push({ employee_id: emp.id, entry_date: dateIso, md_value: count, updated_by: 'claim_records sync', updated_at: new Date().toISOString() });
+    });
+
+    if (unmatchedNames.size) {
+      console.warn('MD Task sync: could not match these completed_by first names to any employee:', [...unmatchedNames].join(', '));
+    }
+    if (!updates.length) return;
+
+    // One upsert per (employee, date) pair — only md_value is sent, so
+    // nothing else on an existing row (Errors, Peer Review, LQ, etc.)
+    // is ever touched by this sync.
+    const { error: upsertErr } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
+    if (upsertErr) { console.error('MD Task sync upsert failed:', upsertErr); return; }
+
+    // Refresh in-memory state and repaint so the new counts show up
+    // immediately without needing a manual page refresh.
+    await loadIpsData();
+    renderIpsTables();
+  } catch (err) {
+    console.error('MD Task sync error:', err);
+  }
+}
+
 // Fetches an employee's OWN QA entries across EVERY month (not just
 // whichever month the admin's IPS tab currently has selected) — used
 // by the employee-facing "My QA Notes" dispute view, since an employee
@@ -11058,6 +11133,16 @@ function renderIpsTables() {
         const rightPad = isTrioMember ? 0 : (tightLeft ? 10 : 6);
         const cellPad = `padding:4px ${rightPad}px 4px ${leftPad}px;`;
         const cellPadLocked = `padding:8px ${rightPad}px 8px ${leftPad}px;`;
+        // MD Task is auto-populated from claim_records going forward and
+        // is no longer manually editable by regular employees at all —
+        // admins/IPS retain full edit access (canManageIps()), same as
+        // every other field, but everyone else always sees a plain
+        // read-only value here regardless of what directEdit/needsRequest
+        // would otherwise allow, since there's nothing left for them to
+        // correct or request a change to.
+        if (field === 'md_value' && !canManageIps()) {
+          return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled from completed claims — not manually editable">${val !== '' ? val : '—'}</td>`;
+        }
         if (directEdit) {
           const fieldColors = {
             errors: { border: 'rgba(192,57,43,0.45)', bg: 'rgba(192,57,43,0.07)' },       // subtle red — errors are the thing to minimize
@@ -11537,6 +11622,7 @@ function renderIpsTables() {
   // Entry — that's where EC is now.
   if (ipsState.tab === 'ec') ipsState.tab = 'daily';
   const active = ipsState.tab;
+  if (active === 'daily') syncMdTaskFromClaimRecords(); // fires in the background; its own guard keeps this to once per session
 
   const body =
     active === 'daily' ? buildDailySection() :
