@@ -1713,7 +1713,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-md-task-name-alias-fix';
+const APP_VERSION = '2026-08-05-priolist-md-output-realtime-sync';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2190,6 +2190,103 @@ function currentPriolistResetBoundary() {
     boundary.setDate(boundary.getDate() - 1);
   }
   return isoDate(boundary);
+}
+
+// ── PrioList MD Output real-time sync from claim_records ──────────────
+// Unlike IPS's MD Task (a per-date historical figure), PrioList shows
+// ONE live number per employee for the current reset period — so this
+// counts only claim_records rows completed since the CURRENT reset
+// boundary (the same 8am cutoff PrioList's own daily reset already
+// uses, via currentPriolistResetBoundary — using a different boundary
+// here would make this number drift out of sync with when the rest of
+// the row resets). Fully locked for everyone including admins, so
+// there's no manual-override path to reconcile against.
+async function computeMdOutputCountsSinceBoundary() {
+  if (!sbQaReview) return null;
+  const boundaryDate = currentPriolistResetBoundary(); // 'YYYY-MM-DD', but the actual cutoff TIME is 8am that date
+  const boundaryTimestamp = new Date(`${boundaryDate}T00:00:00`);
+  boundaryTimestamp.setHours(8, 0, 0, 0);
+
+  const { data, error } = await sbQaReview
+    .from('claim_records')
+    .select('completed_by, completed_at')
+    .gte('completed_at', boundaryTimestamp.toISOString())
+    .not('completed_by', 'is', null)
+    .not('completed_at', 'is', null);
+
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('PrioList MD Output sync failed:', error);
+    return null;
+  }
+
+  // Group by first name (with the same alias resolution as the IPS
+  // sync) -> count. No date-splitting needed here, unlike IPS, since
+  // everything in this query already falls within the single current
+  // reset period.
+  const counts = new Map();
+  (data || []).forEach(row => {
+    const rawFirstName = (row.completed_by || '').trim().split(/\s+/)[0];
+    if (!rawFirstName) return;
+    const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
+    counts.set(firstName, (counts.get(firstName) || 0) + 1);
+  });
+  return counts;
+}
+
+async function syncPriolistMdOutputFromClaimRecords() {
+  const counts = await computeMdOutputCountsSinceBoundary();
+  if (!counts) return;
+
+  const updates = [];
+  const unmatchedNames = new Set();
+  counts.forEach((count, firstNameLower) => {
+    const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+    if (!emp) { unmatchedNames.add(firstNameLower); return; }
+    const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
+    if (!entry) return; // no PrioList row for this employee yet — self-heal in loadPriolistEntries will create one on next full load
+    if (entry.md_output === count) return; // no genuine change — skip the write entirely
+    updates.push({ id: entry.id, md_output: count });
+  });
+
+  if (unmatchedNames.size) {
+    console.warn('PrioList MD Output sync: could not match these completed_by first names to any employee:', [...unmatchedNames].join(', '));
+  }
+  if (!updates.length) return;
+
+  // Individual updates (not a bulk upsert) since each targets a
+  // DIFFERENT existing row by its own id — only md_output is ever
+  // sent, so nothing else on the row (Leads, Status, Note, etc.) is
+  // touched by this sync.
+  await Promise.all(updates.map(u => sb.from('priolist_entries').update({ md_output: u.md_output }).eq('id', u.id)));
+  // The realtime subscription already active on priolist_entries
+  // (see startPriolistPolling) picks up these writes and repaints
+  // automatically — no separate reload/render call needed here.
+}
+
+// Genuinely real-time: subscribes directly to claim_records in the
+// SECOND Supabase project. The shared subscribeRealtime() helper is
+// hardcoded to the primary project's client (sb), so this uses
+// sbQaReview's own .channel() call instead — every insert/update fires
+// a fresh count-and-sync rather than waiting for a page reload.
+let _priolistMdOutputChannel = null;
+function startPriolistMdOutputRealtimeSync() {
+  if (_priolistMdOutputChannel || !sbQaReview) return; // already subscribed, or second project not configured
+  try {
+    const debouncedSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 400);
+    _priolistMdOutputChannel = sbQaReview
+      .channel('rt:claim_records_md_output')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'claim_records' }, () => { debouncedSync(); })
+      .subscribe();
+    syncPriolistMdOutputFromClaimRecords(); // also run once immediately, so the number is correct the moment PrioList opens, not just after the next live change
+  } catch (err) {
+    console.error('PrioList MD Output realtime subscribe failed:', err);
+  }
+}
+function stopPriolistMdOutputRealtimeSync() {
+  if (_priolistMdOutputChannel) {
+    try { sbQaReview.removeChannel(_priolistMdOutputChannel); } catch (err) { /* non-fatal */ }
+    _priolistMdOutputChannel = null;
+  }
 }
 
 async function applyDailyPriolistReset() {
@@ -5233,12 +5330,14 @@ function startPriolistPolling() {
     applyRealtimePatch(payload, () => state.employees, (v) => { state.employees = v; });
     renderPrioList();
   });
+  startPriolistMdOutputRealtimeSync();
 }
 
 function stopPriolistPolling() {
   unsubscribeRealtime('priolist_entries');
   unsubscribeRealtime('priolist_red_files');
   unsubscribeRealtime('priolist_employees');
+  stopPriolistMdOutputRealtimeSync();
 }
 
 // Entry point when switching INTO the PrioList tab. Paints instantly
@@ -5364,9 +5463,7 @@ function renderPrioList() {
       <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#E2EEF6;' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</span>
-        ${isMe
-          ? `<input type="number" min="0" step="1" class="priolist-input md-input" data-id="${entry.id}" value="${entry.md_output}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
-          : `<span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;">${entry.md_output}</span>`}
+        <span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;" title="Auto-filled from completed claims — not manually editable">${entry.md_output}</span>
         ${isMe
           ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
           : `<span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;">${entry.leads}</span>`}
@@ -5484,7 +5581,7 @@ async function togglePriolistVisibility() {
 }
 
 function attachPriolistHandlers() {
-  document.querySelectorAll('.md-input, .leads-input').forEach(input => {
+  document.querySelectorAll('.leads-input').forEach(input => {
     input.addEventListener('change', () => savePriolistOutput(input.dataset.id));
   });
   document.querySelectorAll('.rank-input').forEach(input => {
@@ -5541,17 +5638,15 @@ async function savePriolistOutput(entryId) {
     return;
   }
 
-  const mdInput = document.querySelector(`.md-input[data-id="${entryId}"]`);
   const leadsInput = document.querySelector(`.leads-input[data-id="${entryId}"]`);
-  const md = parseFloat(mdInput.value);
   const leads = parseFloat(leadsInput.value);
 
-  if (isNaN(md) || md < 0 || isNaN(leads) || leads < 0) {
-    showToast('Enter valid, non-negative numbers.', true);
+  if (isNaN(leads) || leads < 0) {
+    showToast('Enter a valid, non-negative number.', true);
     return;
   }
 
-  const { error } = await sb.from('priolist_entries').update({ md_output: md, leads: leads }).eq('id', entryId);
+  const { error } = await sb.from('priolist_entries').update({ leads: leads }).eq('id', entryId);
   if (error) { showToast('Could not save.', true); return; }
   await loadPriolistEntries();
   renderPrioList();
