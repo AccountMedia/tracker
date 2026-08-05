@@ -1713,7 +1713,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-md-task-claim-records-sync';
+const APP_VERSION = '2026-08-05-md-task-name-alias-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10660,6 +10660,18 @@ async function loadIpsData() {
   }
 }
 
+// One-off name overrides: when claim_records' "completed_by" uses a
+// name that doesn't match an employee's actual first name in this app
+// (e.g. a middle name or nickname), map it here explicitly rather than
+// guessing — confirmed this is a narrow, known exception (Jeinna is
+// recorded as "Louise" there, her middle name), not a general pattern,
+// so an explicit list is the safer fix. Key = the name AS IT APPEARS
+// in claim_records (lowercase); value = the roster first name it
+// should actually match against.
+const MD_TASK_NAME_ALIASES = {
+  'louise': 'jeinna', // Jeinna Louise Perez — claim_records uses her middle name
+};
+
 // ── MD Task auto-sync from claim_records (external QA-review project) ──
 // Runs automatically whenever the Daily Entry tab is opened — pulls
 // every claim completed on or after August 5, 2026 (the day this
@@ -10695,8 +10707,9 @@ async function syncMdTaskFromClaimRecords() {
     // Group by (first name, date) -> count.
     const counts = new Map(); // key: `${firstName}|${dateIso}` -> count
     data.forEach(row => {
-      const firstName = (row.completed_by || '').trim().split(/\s+/)[0];
-      if (!firstName) return;
+      const rawFirstName = (row.completed_by || '').trim().split(/\s+/)[0];
+      if (!rawFirstName) return;
+      const firstName = MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName; // resolve known one-off name mismatches (e.g. Louise -> Jeinna)
       const dateIso = (row.completed_at || '').slice(0, 10); // YYYY-MM-DD from the timestamp
       if (!dateIso || dateIso < MD_TASK_SYNC_CUTOFF) return; // redundant with the query filter, but safe against any timezone edge at the boundary
       const key = `${firstName.toLowerCase()}|${dateIso}`;
