@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-fix-qa-header-phantom-gap';
+const APP_VERSION = '2026-08-05-archive-two-precise-windows';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11063,13 +11063,34 @@ function stopIpsPeerReviewRealtimeSync() {
 // This is NOT a one-shot-per-login check — someone can stay signed in
 // indefinitely (this app uses persistent localStorage login) and never
 // close their tab for days, in which case a check that only ran once
-// at login would never fire again. Instead this re-checks periodically
-// (see startIpsArchiveWatcher below) as long as the app is open, so a
-// permanently-open tab still catches each newly-completed day.
+// at login would never fire again. Instead this checks specifically at
+// 1am and 2am (see startIpsArchiveWatcher below) — the only window
+// that could ever have anything new to archive, since the shift ends
+// at midnight and the grace period means a date can't become
+// archivable any earlier than 24h after it ends. Checking around the
+// clock the other 22 hours would just be needless overhead for zero
+// benefit, since nothing new could exist to find. Two checks an hour
+// apart (not just one) gives a safety retry in case the first attempt
+// hits a network hiccup or nobody has the app open at exactly 1am.
 let _lastArchiveCheckAt = 0;
 async function archiveCompletedIpsDays() {
+  // Only worth checking during two tight daily windows — 12:00-12:15am
+  // and 3:00-3:15pm — rather than continuously throughout the day.
+  // This is a once-a-day concern (did a completed day, past its grace
+  // period, become archivable), not something that needs re-checking
+  // around the clock. Running this constantly for every logged-in
+  // person was real, measurable egress waste for a feature that only
+  // ever has actual work to do a couple of times a day at most.
+  const nowDate = new Date();
+  const hour = nowDate.getHours();
+  const minute = nowDate.getMinutes();
+  const minutesSinceMidnight = hour * 60 + minute;
+  const inMorningWindow = minutesSinceMidnight >= 0 && minutesSinceMidnight < 15;     // 12:00am-12:15am
+  const inAfternoonWindow = minutesSinceMidnight >= 15 * 60 && minutesSinceMidnight < 15 * 60 + 15; // 3:00pm-3:15pm
+  if (!inMorningWindow && !inAfternoonWindow) return;
+
   const now = Date.now();
-  if (now - _lastArchiveCheckAt < 60 * 60 * 1000) return; // at most once per hour — cheap query, but no reason to hit it on every render
+  if (now - _lastArchiveCheckAt < 10 * 60 * 1000) return; // avoid re-running twice within the same 15-minute window if the watcher happens to fire close together
   _lastArchiveCheckAt = now;
 
   try {
@@ -11153,7 +11174,7 @@ function startIpsArchiveWatcher() {
   stopIpsArchiveWatcher();
   _ipsArchiveWatcherHandle = setInterval(() => {
     if (state.profile) archiveCompletedIpsDays();
-  }, 15 * 60 * 1000); // every 15 minutes — archiveCompletedIpsDays' own hourly guard is the real rate limit; this just needs to be frequent enough that a day rolling over gets caught reasonably promptly
+  }, 10 * 60 * 1000); // every 10 minutes — guarantees at least one fire lands inside each 15-minute window (12:00-12:15am, 3:00-3:15pm) regardless of what offset a given session happened to start the timer at; archiveCompletedIpsDays itself does nothing outside those windows, so this is still far less frequent overall than checking all day
 }
 function stopIpsArchiveWatcher() {
   if (_ipsArchiveWatcherHandle) {
