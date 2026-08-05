@@ -1099,6 +1099,7 @@ function enterApp() {
   initNav();
   initSidebarChat();
   loadAllData();
+  archiveCompletedIpsDays(); // runs once per session; preserves yesterday's (or any unarchived earlier day's) MD Task/Peer Review numbers before the external source can delete them
   startMaintenanceWindowWatcher();
 }
 
@@ -1124,6 +1125,7 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
+  ipsArchiveCheckRanThisSession = false;
   hideLeaveNotifPanel();
   stopPriolistPolling();
   stopLiRestrictionTicker();
@@ -1712,7 +1714,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-revert-errors-lq-colors';
+const APP_VERSION = '2026-08-05-ips-daily-archive-qa-hide-count';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11035,6 +11037,80 @@ function stopIpsPeerReviewRealtimeSync() {
   }
 }
 
+// ── Daily archive of MD Task / Peer Review, protecting against the ──
+// ── external source's own daily data deletion ────────────────────────
+// The source project (claim_records/review_batches) deletes its own
+// data daily, so once a day is over, its numbers here are the LAST
+// chance to preserve a copy before that happens. This app has no
+// server of its own, so a snapshot can't fire at the literal stroke of
+// midnight regardless of whether anyone has the page open — instead,
+// this checks (once per session, whenever the app is opened) whether
+// any date up to and including YESTERDAY is missing from the archive,
+// and if so, captures its current numbers. Checking "up to yesterday"
+// rather than just "exactly yesterday" means even a multi-day gap
+// (nobody opened the app for a few days) still gets fully backfilled
+// on the next visit, rather than silently skipping missed days.
+let ipsArchiveCheckRanThisSession = false;
+async function archiveCompletedIpsDays() {
+  if (ipsArchiveCheckRanThisSession) return;
+  ipsArchiveCheckRanThisSession = true;
+
+  try {
+    const todayIso = isoDate(new Date());
+
+    // Find which dates already have SOME data worth archiving — scans
+    // ips_daily_entries directly (not scoped to whatever month the
+    // admin's IPS tab currently has selected) for any row with a real
+    // MD Task or Peer Review value, dated strictly before today.
+    const { data: candidateRows, error: candErr } = await sb
+      .from('ips_daily_entries')
+      .select('employee_id, entry_date, md_value, peer_review_value')
+      .lt('entry_date', todayIso)
+      .or('md_value.not.is.null,peer_review_value.not.is.null');
+    if (candErr) { console.error('Archive check failed:', candErr); return; }
+    if (!candidateRows || !candidateRows.length) return;
+
+    // Of those, find which (employee, date) pairs are ALREADY archived
+    // — an insert-if-missing check, so re-running this is always safe
+    // and never creates duplicates or overwrites an existing snapshot.
+    const candidateDates = [...new Set(candidateRows.map(r => r.entry_date))];
+    const { data: existingArchive, error: existErr } = await sb
+      .from('ips_daily_archive')
+      .select('employee_id, entry_date')
+      .in('entry_date', candidateDates);
+    if (existErr) {
+      if (!/relation .* does not exist/i.test(existErr.message || '')) console.error('Archive existing-check failed:', existErr);
+      return;
+    }
+    const alreadyArchived = new Set((existingArchive || []).map(r => `${r.employee_id}|${r.entry_date}`));
+
+    const toArchive = candidateRows
+      .filter(r => !alreadyArchived.has(`${r.employee_id}|${r.entry_date}`))
+      .map(r => ({
+        employee_id: r.employee_id,
+        entry_date: r.entry_date,
+        md_task: r.md_value,
+        peer_review: r.peer_review_value,
+      }));
+    if (!toArchive.length) return;
+
+    const { error: insertErr } = await sb.from('ips_daily_archive').insert(toArchive);
+    if (insertErr) {
+      if (/relation .* does not exist/i.test(insertErr.message || '')) {
+        console.warn('ips_daily_archive table not set up yet — run ips_daily_archive_schema.sql to enable data preservation.');
+      } else if (!/duplicate key/i.test(insertErr.message || '')) {
+        // A duplicate-key race here (e.g. two people opening the app
+        // at the same moment) is harmless and expected — the row is
+        // already archived either way, so only genuinely unexpected
+        // errors get logged.
+        console.error('Archive insert failed:', insertErr);
+      }
+    }
+  } catch (err) {
+    console.error('Archive check error:', err);
+  }
+}
+
 // Fetches an employee's OWN QA entries across EVERY month (not just
 // whichever month the admin's IPS tab currently has selected) — used
 // by the employee-facing "My QA Notes" dispute view, since an employee
@@ -11684,7 +11760,7 @@ function renderIpsTables() {
     const employeesWithResultsCount = roster.filter(emp => employeeIdsWithResults.has(emp.id)).length;
     return `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
-        <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px; font-weight:700; color:var(--teal);">${employeesWithResultsCount}/${roster.length} employees have results this month</p>
+        ${isAdmin() ? `<p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px; font-weight:700; color:var(--teal);">${employeesWithResultsCount}/${roster.length} employees have results this month</p>` : '<span></span>'}
         ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="ips-qa-import-review-btn" style="flex-shrink:0; font-size:11.5px;">Import from QA Review</button><button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>` : ''}
       </div>
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
