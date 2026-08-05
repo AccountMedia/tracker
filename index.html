@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-trio-max-tight';
+const APP_VERSION = '2026-08-04-errors-match-trio-width';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11053,8 +11053,9 @@ function renderIpsTables() {
       );
 
       const numCell = (field, val, groupStart = false, tightLeft = false) => {
-        const leftPad = groupStart ? 40 : (tightLeft ? 4 : (field === 'md_value' ? 0 : 6));
-        const rightPad = (groupStart || field === 'md_value' || field === 'lq_value') ? 0 : (tightLeft ? 10 : 6);
+        const isTrioMember = field === 'peer_review_value' || field === 'md_value' || field === 'lq_value';
+        const leftPad = groupStart ? 56 : (tightLeft ? 4 : (isTrioMember ? 0 : 6));
+        const rightPad = isTrioMember ? 0 : (tightLeft ? 10 : 6);
         const cellPad = `padding:4px ${rightPad}px 4px ${leftPad}px;`;
         const cellPadLocked = `padding:8px ${rightPad}px 8px ${leftPad}px;`;
         if (directEdit) {
@@ -11067,7 +11068,7 @@ function renderIpsTables() {
           const bgStyle = colors ? colors.bg : (isMe ? '#fff' : 'var(--paper)');
           return `<td style="${cellPad} text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
-              style="width:90px; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
+              style="width:${(isTrioMember || field === 'errors') ? '78px' : '90px'}; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
           </td>`;
         }
         if (needsRequest) {
@@ -11091,8 +11092,7 @@ function renderIpsTables() {
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:${isMe ? '800' : '600'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(emp.display_name)}">${isMe ? '▸ ' : ''}${escapeHtml(emp.display_name)}</td>
-          <td style="padding:8px 4px 8px 10px; text-align:center; color:var(--ink-faint);">${workingDays || '—'}</td>
-          ${numCell('errors', errors, false, true)}
+          ${numCell('errors', errors)}
           ${numCell('peer_review_value', peerReview, true)}
           ${numCell('md_value', md)}
           ${numCell('lq_value', lq)}
@@ -11191,9 +11191,8 @@ function renderIpsTables() {
       <table class="ips-table" id="ips-daily-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th>
-          <th style="padding:6px 4px 6px 10px;">Working Days</th>
-          <th style="padding:6px 10px 6px 4px;">Errors</th>
-          <th style="padding:6px 0px 6px 40px;">Peer Review</th>
+          <th style="padding:6px 10px;">Errors</th>
+          <th style="padding:6px 0px 6px 56px;">Peer Review</th>
           <th style="padding:6px 0px;">MD Task</th>
           <th style="padding:6px 0px;">LQ</th>
           <th style="padding:6px 10px;">Daily Total</th>
