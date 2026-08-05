@@ -1712,7 +1712,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-04-errors-match-trio-width';
+const APP_VERSION = '2026-08-04-fix-qa-header-alignment';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11250,7 +11250,6 @@ function renderIpsTables() {
       `;
     }).join('');
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">PO: computed automatically per day as (Lead Qualification + Missing Data) ÷ target, with zero days excluded from the average. The target is normally 800 but shrinks for approved leave hours that day (from the Leave Tracker) — e.g. 400 for a 4-hour VLH day — and a full 8-hour leave day is excluded entirely. Effective July 2026 onward. PO Total reconstructs an 800-based equivalent for comparability. EC Score: 1 − (Errors ÷ Working Days) for ${ipsMonthLabel(ipsState.month)} — both figures are edited on the Daily Entry tab and recalculate live here as the month fills in.</p>
       <table class="ips-table" style="border-collapse:collapse; width:100%;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th>
@@ -11261,6 +11260,7 @@ function renderIpsTables() {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">PO: computed automatically per day as (Lead Qualification + Missing Data) ÷ target, with zero days excluded from the average. The target is normally 800 but shrinks for approved leave hours that day (from the Leave Tracker) — e.g. 400 for a 4-hour VLH day — and a full 8-hour leave day is excluded entirely. Effective July 2026 onward. PO Total reconstructs an 800-based equivalent for comparability. EC Score: 1 − (Errors ÷ Working Days) for ${ipsMonthLabel(ipsState.month)} — both figures are edited on the Daily Entry tab and recalculate live here as the month fills in.</p>
     `;
   }
 
@@ -11293,9 +11293,14 @@ function renderIpsTables() {
         </tr>
       `;
     }).join('');
+    const employeeIdsWithResults = new Set([
+      ...ipsState.qaEntries.filter(e => e.month === ipsState.month).map(e => e.employee_id),
+      ...ipsState.qaNoCallouts.filter(r => r.month === ipsState.month).map(r => r.employee_id),
+    ]);
+    const employeesWithResultsCount = roster.filter(emp => employeeIdsWithResults.has(emp.id)).length;
     return `
-      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
-        <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${qaEditor ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
+        <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px; font-weight:700; color:var(--teal);">${employeesWithResultsCount}/${roster.length} employees have results this month</p>
         ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="ips-qa-import-review-btn" style="flex-shrink:0; font-size:11.5px;">Import from QA Review</button><button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>` : ''}
       </div>
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
@@ -11304,6 +11309,7 @@ function renderIpsTables() {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${qaEditor ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
     `;
   }
 
@@ -11395,11 +11401,11 @@ function renderIpsTables() {
     }).join('');
 
     return `
-      <p class="faint" style="font-size:11.5px; margin:0 0 18px;">Total Monthly Score = QA×50% + PO×30% + EC×20%. Click anyone for their full-year view.${prevRanks ? ' ▲▼ show movement vs last month.' : ''}</p>
       ${podiumHtml}
       <div style="display:flex; flex-direction:column; gap:8px;">
         ${listRows || (scored.length ? '' : '<p class="muted">No scores yet for this month.</p>')}
       </div>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">Total Monthly Score = QA×50% + PO×30% + EC×20%. Click anyone for their full-year view.${prevRanks ? ' ▲▼ show movement vs last month.' : ''}</p>
     `;
   }
 
