@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-archive-grace-period';
+const APP_VERSION = '2026-08-05-fix-qa-header-phantom-gap';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11810,10 +11810,12 @@ function renderIpsTables() {
     ]);
     const employeesWithResultsCount = roster.filter(emp => employeeIdsWithResults.has(emp.id)).length;
     return `
+      ${isAdmin() ? `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
-        ${isAdmin() ? `<p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px; font-weight:700; color:var(--teal);">${employeesWithResultsCount}/${roster.length} employees have results this month</p>` : '<span></span>'}
-        ${isAdmin() ? `<button class="btn btn-ghost btn-sm" id="ips-qa-import-review-btn" style="flex-shrink:0; font-size:11.5px;">Import from QA Review</button><button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>` : ''}
+        <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px; font-weight:700; color:var(--teal);">${employeesWithResultsCount}/${roster.length} employees have results this month</p>
+        <button class="btn btn-ghost btn-sm" id="ips-qa-import-review-btn" style="flex-shrink:0; font-size:11.5px;">Import from QA Review</button><button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>
       </div>
+      ` : ''}
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Entries</th>
