@@ -1099,7 +1099,8 @@ function enterApp() {
   initNav();
   initSidebarChat();
   loadAllData();
-  archiveCompletedIpsDays(); // runs once per session; preserves yesterday's (or any unarchived earlier day's) MD Task/Peer Review numbers before the external source can delete them
+  archiveCompletedIpsDays(); // immediate check on login
+  startIpsArchiveWatcher(); // and keep re-checking periodically for as long as the tab stays open, since persistent login means someone may never log in again for days
   startMaintenanceWindowWatcher();
 }
 
@@ -1125,7 +1126,7 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
-  ipsArchiveCheckRanThisSession = false;
+  stopIpsArchiveWatcher();
   hideLeaveNotifPanel();
   stopPriolistPolling();
   stopLiRestrictionTicker();
@@ -1714,7 +1715,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-ips-daily-archive-qa-hide-count';
+const APP_VERSION = '2026-08-05-archive-recurring-watcher';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11050,10 +11051,18 @@ function stopIpsPeerReviewRealtimeSync() {
 // rather than just "exactly yesterday" means even a multi-day gap
 // (nobody opened the app for a few days) still gets fully backfilled
 // on the next visit, rather than silently skipping missed days.
-let ipsArchiveCheckRanThisSession = false;
+//
+// This is NOT a one-shot-per-login check — someone can stay signed in
+// indefinitely (this app uses persistent localStorage login) and never
+// close their tab for days, in which case a check that only ran once
+// at login would never fire again. Instead this re-checks periodically
+// (see startIpsArchiveWatcher below) as long as the app is open, so a
+// permanently-open tab still catches each newly-completed day.
+let _lastArchiveCheckAt = 0;
 async function archiveCompletedIpsDays() {
-  if (ipsArchiveCheckRanThisSession) return;
-  ipsArchiveCheckRanThisSession = true;
+  const now = Date.now();
+  if (now - _lastArchiveCheckAt < 60 * 60 * 1000) return; // at most once per hour — cheap query, but no reason to hit it on every render
+  _lastArchiveCheckAt = now;
 
   try {
     const todayIso = isoDate(new Date());
@@ -11108,6 +11117,28 @@ async function archiveCompletedIpsDays() {
     }
   } catch (err) {
     console.error('Archive check error:', err);
+  }
+}
+
+// Runs archiveCompletedIpsDays() on a recurring timer, not just once at
+// login — a permanently-open tab (persistent localStorage login means
+// someone can stay signed in for days without ever hitting the login
+// screen again) still needs this to keep re-checking as time passes,
+// otherwise a day could complete and roll over while that tab is open
+// and never get archived until someone eventually logs back in fresh.
+// The function's own internal hourly guard keeps this cheap even
+// though the timer itself fires more often.
+let _ipsArchiveWatcherHandle = null;
+function startIpsArchiveWatcher() {
+  stopIpsArchiveWatcher();
+  _ipsArchiveWatcherHandle = setInterval(() => {
+    if (state.profile) archiveCompletedIpsDays();
+  }, 15 * 60 * 1000); // every 15 minutes — archiveCompletedIpsDays' own hourly guard is the real rate limit; this just needs to be frequent enough that a day rolling over gets caught reasonably promptly
+}
+function stopIpsArchiveWatcher() {
+  if (_ipsArchiveWatcherHandle) {
+    clearInterval(_ipsArchiveWatcherHandle);
+    _ipsArchiveWatcherHandle = null;
   }
 }
 
