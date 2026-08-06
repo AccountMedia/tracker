@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-tighten-version-check';
+const APP_VERSION = '2026-08-05-priolist-peer-review-daily-reset';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2175,7 +2175,7 @@ async function loadPriolistEntries(fullReload = true) {
     const today = isoDate(new Date());
     const { data: created, error: backfillErr } = await sb.from('priolist_entries').insert(
       missing.map(emp => ({
-        employee_id: emp.id, md_output: 0, leads: 0, status: '', file_color: null, note: '',
+        employee_id: emp.id, md_output: 0, leads: 0, status: '', file_color: null, note: '', peer_review: 0,
         last_reset_date: today,
       }))
     ).select();
@@ -2384,14 +2384,14 @@ async function applyDailyPriolistReset() {
 
   const { error } = await sb
     .from('priolist_entries')
-    .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', last_reset_date: boundary })
+    .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', peer_review: 0, last_reset_date: boundary })
     .lt('last_reset_date', boundary);
 
   if (error) { console.error('PrioList auto-reset failed:', error); return; }
 
   // Reflect the reset locally immediately rather than re-fetching.
   state.priolistEntries = state.priolistEntries.map(e =>
-    e.last_reset_date < boundary ? { ...e, md_output: 0, leads: 0, status: '', file_color: null, note: '', last_reset_date: boundary } : e
+    e.last_reset_date < boundary ? { ...e, md_output: 0, leads: 0, status: '', file_color: null, note: '', peer_review: 0, last_reset_date: boundary } : e
   );
 }
 
@@ -5772,12 +5772,12 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
 
 async function resetAllPriolistOutput() {
   if (!isAdmin()) { showToast('Only admins can reset the PrioList.', true); return; }
-  if (!confirm('Reset everyone\'s PrioList? MD Output, Leads, Total, Status, File color, and Note will all be cleared. This cannot be undone.')) return;
+  if (!confirm('Reset everyone\'s PrioList? Peer Review, MD Output, Leads, Total, Status, File color, and Note will all be cleared. This cannot be undone.')) return;
 
   const today = isoDate(new Date());
   const { error } = await sb
     .from('priolist_entries')
-    .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', last_reset_date: today })
+    .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', peer_review: 0, last_reset_date: today })
     .gte('rank', 0); // matches all rows; Supabase requires a filter on update-all
 
   if (error) { showToast('Could not reset the PrioList.', true); return; }
@@ -7795,7 +7795,7 @@ async function submitAddEmployee(e) {
   if (display_name !== 'Kristina Mutia') {
     const { error: priolistErr } = await sb.from('priolist_entries').insert({
       employee_id: newEmployee.id,
-      md_output: 0, leads: 0, status: '', file_color: null, note: '',
+      md_output: 0, leads: 0, status: '', file_color: null, note: '', peer_review: 0,
       last_reset_date: isoDate(new Date()),
     });
     if (priolistErr) console.error('Could not create PrioList row for new employee:', priolistErr);
