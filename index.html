@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-priolist-peer-review-daily-reset';
+const APP_VERSION = '2026-08-05-jeinna-linkedin-accounts';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9061,6 +9061,28 @@ async function initSidebarChat() {
 
   toggle.addEventListener('click', (e) => {
     e.stopPropagation(); // prevent this same click from also being seen by the outside-click listener below, which would otherwise immediately re-close a panel this click just opened
+
+    // Jeinna gets the two-option picker instead of Team Chat opening
+    // directly — everyone else's click behavior below is completely
+    // unaffected, since this branch only ever applies to her.
+    if (state.profile.display_name === 'Jeinna Louise Perez') {
+      const picker = document.getElementById('jeinna-bubble-picker');
+      if (picker) {
+        const opening = picker.style.display === 'none';
+        // Closing either open panel when the main bubble is clicked
+        // again, so re-clicking always returns to a clean collapsed
+        // state rather than leaving something stuck open underneath.
+        document.getElementById('team-chat-panel').style.display = 'none';
+        document.getElementById('linkedin-accounts-panel').style.display = 'none';
+        picker.style.display = opening ? 'flex' : 'none';
+        return;
+      }
+    }
+
+    openTeamChatPanel();
+  });
+
+  function openTeamChatPanel() {
     const opening = panel.style.display === 'none';
     panel.style.display = opening ? 'flex' : 'none';
     if (opening) {
@@ -9076,6 +9098,23 @@ async function initSidebarChat() {
       const list = document.getElementById('sidebar-chat-messages');
       if (list) list.scrollTop = list.scrollHeight;
     }
+  }
+
+  // The two-option picker only exists in the DOM for everyone (it's
+  // just hidden by default), but only Jeinna's toggle-click handler
+  // above ever reveals it — wiring these buttons unconditionally here
+  // is harmless for everyone else, since the picker never becomes
+  // visible for them in the first place.
+  document.querySelectorAll('.jeinna-picker-option').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.getElementById('jeinna-bubble-picker').style.display = 'none';
+      if (btn.dataset.target === 'chat') {
+        openTeamChatPanel();
+      } else if (btn.dataset.target === 'linkedin') {
+        openLinkedInAccountsPanel();
+      }
+    });
   });
 
   // Closes the panel on any click outside the chat box (panel +
@@ -9085,10 +9124,13 @@ async function initSidebarChat() {
   // picking a reaction, etc.) should obviously not close it either.
   document.addEventListener('click', (e) => {
     const wrap = document.getElementById('team-chat-wrap');
-    if (!wrap || panel.style.display === 'none') return;
-    if (!wrap.contains(e.target)) {
-      panel.style.display = 'none';
-    }
+    if (!wrap) return;
+    if (wrap.contains(e.target)) return;
+    if (panel.style.display !== 'none') panel.style.display = 'none';
+    const picker = document.getElementById('jeinna-bubble-picker');
+    if (picker && picker.style.display !== 'none') picker.style.display = 'none';
+    const linkedinPanel = document.getElementById('linkedin-accounts-panel');
+    if (linkedinPanel && linkedinPanel.style.display !== 'none') linkedinPanel.style.display = 'none';
   });
 
   const [messages, reactions] = await Promise.all([loadTeamChatMessages(), loadTeamChatReactions()]);
@@ -9130,6 +9172,158 @@ async function initSidebarChat() {
     // there's exactly one code path responsible for rendering a new
     // message rather than two that could ever drift apart.
   });
+}
+
+// =====================================================================
+// LINKEDIN ACCOUNTS — Jeinna only
+// =====================================================================
+let linkedinAccountsLoaded = false;
+let linkedinAccountsRows = [];
+
+async function loadLinkedinAccounts() {
+  const { data, error } = await sb.from('linkedin_accounts').select('*').order('created_at', { ascending: true });
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load LinkedIn Accounts:', error);
+    return [];
+  }
+  return data || [];
+}
+
+function renderLinkedinAccountRow(row) {
+  const emailLocked = !!row.email; // once a real email is saved, the field is permanently non-editable — deleting the row is the only way to change it
+  return `
+    <div class="linkedin-account-row" data-id="${row.id}" style="display:flex; align-items:center; gap:6px; padding:6px 4px; border-bottom:1px solid rgba(255,255,255,0.08);">
+      <input type="checkbox" class="linkedin-account-checkbox" data-id="${row.id}" ${row.checked ? 'checked' : ''}
+        style="flex-shrink:0; width:15px; height:15px; cursor:pointer;">
+      ${emailLocked
+        ? `<span class="linkedin-account-email-locked" data-id="${row.id}" title="Click to copy" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:#E4E8F5; cursor:pointer; padding:5px 7px; border-radius:6px; background:rgba(255,255,255,0.05);">${escapeHtml(row.email)}</span>`
+        : `<input type="email" class="linkedin-account-email-input" data-id="${row.id}" placeholder="Enter email..." style="flex:1; min-width:0; padding:5px 7px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:12px;">`}
+      <input type="number" min="0" step="1" class="linkedin-account-count-input" data-id="${row.id}" placeholder="0" title="Enter a number to ADD to today's total"
+        style="width:52px; flex-shrink:0; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:12px;">
+      <span class="linkedin-account-count-total" data-id="${row.id}" title="Today's total" style="flex-shrink:0; min-width:22px; text-align:center; font-size:11px; font-weight:700; color:#5DA6C1;">${row.daily_count || 0}</span>
+      <button type="button" class="linkedin-account-delete-btn" data-id="${row.id}" title="Delete row" style="flex-shrink:0; background:none; border:none; color:#7C87AE; cursor:pointer; font-size:14px; padding:2px 4px; line-height:1;">×</button>
+    </div>
+  `;
+}
+
+function renderLinkedinAccountsList() {
+  const list = document.getElementById('linkedin-accounts-list');
+  if (!list) return;
+  list.innerHTML = linkedinAccountsRows.length
+    ? linkedinAccountsRows.map(renderLinkedinAccountRow).join('')
+    : `<div class="faint" style="color:#7C87AE; font-size:12px; text-align:center; padding:14px 4px;">No accounts yet — click + to add one.</div>`;
+}
+
+let linkedinAccountsHandlersWired = false;
+function wireLinkedinAccountsHandlers() {
+  if (linkedinAccountsHandlersWired) return; // event delegation only needs wiring once — rows added later work automatically
+  linkedinAccountsHandlersWired = true;
+  const list = document.getElementById('linkedin-accounts-list');
+  if (!list) return;
+
+  // Checkbox toggle — a plain marker with no other effect, freely
+  // re-checkable/uncheckable, per the confirmed requirement.
+  list.addEventListener('change', async (e) => {
+    if (e.target.classList.contains('linkedin-account-checkbox')) {
+      const id = e.target.dataset.id;
+      const checked = e.target.checked;
+      const { error } = await sb.from('linkedin_accounts').update({ checked }).eq('id', id);
+      if (error) { console.error(error); showToast('Could not update checkbox.', true); }
+      return;
+    }
+
+    // Email — saved ONCE. The input only exists in the DOM at all
+    // while email is still null, so this path can only ever fire for
+    // a genuinely new row; once saved, the row re-renders with the
+    // locked <span> version instead, and this listener has nothing
+    // left to trigger on for that row ever again.
+    if (e.target.classList.contains('linkedin-account-email-input')) {
+      const id = e.target.dataset.id;
+      const email = e.target.value.trim();
+      if (!email) return;
+      const { error } = await sb.from('linkedin_accounts').update({ email }).eq('id', id);
+      if (error) { console.error(error); showToast('Could not save email.', true); }
+      return;
+    }
+
+    // Count — ADDS to the existing total rather than replacing it,
+    // per the explicit 20-then-30-equals-50 requirement. Reads the
+    // CURRENT value from local state right before writing, to keep
+    // this correct even if the row was updated elsewhere a moment ago.
+    if (e.target.classList.contains('linkedin-account-count-input')) {
+      const id = e.target.dataset.id;
+      const addAmount = parseInt(e.target.value, 10);
+      e.target.value = ''; // clear the input immediately — it's an "add this much" box, not a persistent display of the total
+      if (!addAmount || addAmount <= 0) return;
+      const row = linkedinAccountsRows.find(r => r.id === id);
+      const newTotal = (row ? row.daily_count : 0) + addAmount;
+      const { error } = await sb.from('linkedin_accounts').update({ daily_count: newTotal }).eq('id', id);
+      if (error) { console.error(error); showToast('Could not update count.', true); return; }
+      // Optimistic local update so the total shown updates immediately
+      // rather than waiting on the realtime echo to come back.
+      if (row) row.daily_count = newTotal;
+      const totalSpan = list.querySelector(`.linkedin-account-count-total[data-id="${id}"]`);
+      if (totalSpan) totalSpan.textContent = newTotal;
+      return;
+    }
+  });
+
+  // Click-to-copy on a locked email — genuinely copies to the
+  // clipboard, per the explicit requirement.
+  list.addEventListener('click', async (e) => {
+    const emailSpan = e.target.closest('.linkedin-account-email-locked');
+    if (emailSpan) {
+      try {
+        await navigator.clipboard.writeText(emailSpan.textContent);
+        showToast('Email copied.');
+      } catch (err) {
+        console.error('Clipboard copy failed:', err);
+        showToast('Could not copy — try selecting the text manually.', true);
+      }
+      return;
+    }
+
+    const deleteBtn = e.target.closest('.linkedin-account-delete-btn');
+    if (deleteBtn) {
+      const id = deleteBtn.dataset.id;
+      if (!confirm('Delete this row? This cannot be undone.')) return;
+      const { error } = await sb.from('linkedin_accounts').delete().eq('id', id);
+      if (error) { console.error(error); showToast('Could not delete row.', true); return; }
+      linkedinAccountsRows = linkedinAccountsRows.filter(r => r.id !== id);
+      renderLinkedinAccountsList();
+      return;
+    }
+  });
+
+  document.getElementById('linkedin-accounts-add-btn')?.addEventListener('click', async () => {
+    const { data, error } = await sb.from('linkedin_accounts').insert({}).select().single();
+    if (error) { console.error(error); showToast('Could not add row.', true); return; }
+    linkedinAccountsRows.push(data);
+    renderLinkedinAccountsList();
+  });
+
+  // Live sync — keeps this panel current if it's ever opened on two
+  // devices at once, or if a scheduled reset/backend change happens
+  // while it's open.
+  subscribeRealtime('linkedin_accounts', 'linkedin_accounts', (payload) => {
+    applyRealtimePatch(payload, () => linkedinAccountsRows, (v) => { linkedinAccountsRows = v; });
+    renderLinkedinAccountsList();
+  });
+}
+
+async function openLinkedInAccountsPanel() {
+  const panel = document.getElementById('linkedin-accounts-panel');
+  if (!panel) return;
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? 'flex' : 'none';
+  if (!opening) return;
+
+  if (!linkedinAccountsLoaded) {
+    linkedinAccountsLoaded = true;
+    linkedinAccountsRows = await loadLinkedinAccounts();
+  }
+  renderLinkedinAccountsList();
+  wireLinkedinAccountsHandlers();
 }
 
 function renderTeamFundsView() {
@@ -15809,6 +16003,33 @@ setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
     .chat-reaction-pick-btn:hover { background: rgba(255,255,255,0.12) !important; }
     #sidebar-chat-input:empty::before { content: attr(data-placeholder); color: #7C87AE; pointer-events: none; }
   </style>
+
+  <!-- LinkedIn Accounts — Jeinna only. Sibling panel to Team Chat's own,
+       toggled the same way, just via a different trigger button. -->
+  <div id="linkedin-accounts-panel" style="display:none; flex-direction:column; width:340px; height:400px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
+    <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+      <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">LinkedIn Accounts</span>
+      <button id="linkedin-accounts-add-btn" title="Add a row" style="background:none; border:1px solid rgba(255,255,255,0.2); color:#5DA6C1; border-radius:6px; width:22px; height:22px; font-size:15px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;">+</button>
+    </div>
+    <div id="linkedin-accounts-list" style="flex:1; min-height:0; overflow-y:auto; padding:8px 10px;">
+      <div class="faint" style="color:#7C87AE; font-size:12px; text-align:center; padding:14px 4px;">Loading...</div>
+    </div>
+  </div>
+
+  <!-- The two-option picker — Jeinna only. Shown instead of directly
+       opening Team Chat when she clicks the main bubble; picking an
+       option here opens the matching panel and closes the picker. -->
+  <div id="jeinna-bubble-picker" style="display:none; flex-direction:column; gap:8px; align-items:flex-end;">
+    <button type="button" class="jeinna-picker-option" data-target="linkedin" style="display:flex; align-items:center; gap:8px; padding:8px 14px 8px 10px; border-radius:999px; border:1px solid rgba(255,255,255,0.15); background:#1A2340; color:#E4E8F5; font-size:12.5px; font-weight:600; cursor:pointer; box-shadow:var(--shadow-md);">
+      <span style="width:26px; height:26px; border-radius:50%; background:#0A66C2; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; color:#fff; flex-shrink:0;">in</span>
+      LinkedIn Accounts
+    </button>
+    <button type="button" class="jeinna-picker-option" data-target="chat" style="display:flex; align-items:center; gap:8px; padding:8px 14px 8px 10px; border-radius:999px; border:1px solid rgba(255,255,255,0.15); background:#1A2340; color:#E4E8F5; font-size:12.5px; font-weight:600; cursor:pointer; box-shadow:var(--shadow-md);">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5DA6C1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+      Team Chat
+    </button>
+  </div>
+
   <div id="team-chat-panel" style="display:none; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
     <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
       <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">Team Chat</span>
