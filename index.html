@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-ips-correction-plain-input';
+const APP_VERSION = '2026-08-05-fix-bubble-click-after-login';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9047,11 +9047,24 @@ function updateTeamChatBadge() {
   }
 }
 
+let _initSidebarChatRetries = 0;
 async function initSidebarChat() {
   if (!state.profile) return;
   const panel = document.getElementById('team-chat-panel');
   const toggle = document.getElementById('team-chat-bubble-toggle');
-  if (!panel || !toggle) return;
+  if (!panel || !toggle) {
+    // Previously this just silently gave up for the rest of the
+    // session if the elements weren't in the DOM at this exact
+    // instant — meaning the bubble could end up permanently
+    // unclickable until a hard refresh re-ran everything from
+    // scratch. Retrying shortly after fixes this defensively,
+    // regardless of the precise reason the elements weren't ready
+    // the first time. Capped so a genuinely broken/missing element
+    // doesn't retry forever.
+    if (_initSidebarChatRetries++ < 10) setTimeout(initSidebarChat, 300);
+    return;
+  }
+  _initSidebarChatRetries = 0;
 
   // Closed by default — the person clicks the bubble to open it, same
   // as every other floating bubble in this app (Notes, Calculator,
