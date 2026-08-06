@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-linkedin-accounts-grand-total';
+const APP_VERSION = '2026-08-05-ips-correction-plain-input';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11814,14 +11814,20 @@ function renderIpsTables() {
           const pending = pendingForField(field);
           if (pending) {
             return `<td style="${cellPadLocked} text-align:center;">
-              <span title="Correction pending approval: ${pending.old_value ?? '—'} → ${pending.new_value ?? '—'}" style="font-size:10px; font-weight:700; padding:2px 8px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">⏳ pending</span>
+              <span title="Correction pending approval" style="font-size:10px; font-weight:700; padding:2px 8px; border-radius:999px; background:var(--amber-wash); color:var(--amber);">⏳ pending</span>
             </td>`;
           }
+          // Visually IDENTICAL to a normal current-day editable cell —
+          // no pencil icon, no button styling. The only difference is
+          // which JS class wires it up (ips-correction-input, not
+          // ips-daily-input), which is what routes a change on this
+          // specific input through the confirm-then-approval flow
+          // instead of saving directly.
+          const borderStyle = 'border:1px solid var(--line);';
+          const bgStyle = isMe ? '#fff' : 'var(--paper)';
           return `<td style="${cellPad} text-align:center;">
-            <button class="btn btn-ghost btn-sm ips-request-correction-btn" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" data-current="${val}"
-              style="padding:3px 8px; font-size:11px; min-width:52px;" title="Propose a change — needs admin/IPS approval">
-              ${val !== '' ? val : '—'} <span style="opacity:0.6;">✎</span>
-            </button>
+            <input type="number" min="0" step="1" class="ips-correction-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" data-current="${val}" value="${val}"
+              style="width:${(isTrioMember || field === 'errors') ? '78px' : '90px'}; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
           </td>`;
         }
         // Locked (future day, or someone else's row you can't touch)
@@ -13370,8 +13376,18 @@ function attachIpsHandlers() {
     ipsState.missedOutputsExpanded = !ipsState.missedOutputsExpanded;
     renderIpsTables();
   });
-  document.querySelectorAll('.ips-request-correction-btn').forEach(btn => {
-    btn.addEventListener('click', () => openIpsCorrectionRequestModal(btn.dataset.empId, btn.dataset.date, btn.dataset.field, btn.dataset.current));
+  document.querySelectorAll('.ips-correction-input').forEach(input => {
+    input.addEventListener('change', () => {
+      const newVal = input.value;
+      const currentVal = input.dataset.current;
+      if (newVal === '' || newVal === currentVal) { input.value = currentVal; return; } // no genuine change — nothing to confirm
+      if (!confirm('Editing this value requires approval. Continue?')) {
+        input.value = currentVal; // revert the visible box so it doesn't look like the edit went through
+        return;
+      }
+      submitIpsCorrectionRequest(input.dataset.empId, input.dataset.date, input.dataset.field, currentVal, newVal);
+      input.value = currentVal; // revert visually — the OLD value stays displayed until admin/IPS approves, exactly as before
+    });
   });
   document.querySelectorAll('.ips-approve-correction-btn').forEach(btn => {
     btn.addEventListener('click', () => approveIpsCorrection(btn.dataset.id));
@@ -13650,52 +13666,29 @@ async function saveIpsOtherTask(employeeId, dateIso, otherTask, note) {
 
 // ── Past-day correction requests (employee proposes, admin/IPS approves) ──
 
-function openIpsCorrectionRequestModal(employeeId, dateIso, field, currentValue) {
-  const fieldLabel = field === 'errors' ? 'Errors' : field === 'md_value' ? 'Missing Data Task' : 'Lead Qualification';
-  openModal(`Request a correction — ${fieldLabel}`, `
-    <form id="ips-correction-form" style="display:flex; flex-direction:column; gap:14px;">
-      <p class="muted" style="font-size:12.5px; margin:0;">
-        ${formatPrettyDate(dateIso)} is a past day, so this change needs admin/IPS approval before it takes effect.
-        Your current value stays in place until then.
-      </p>
-      <div class="field">
-        <label>Current value</label>
-        <div style="padding:9px 10px; border-radius:6px; border:1px solid var(--line-soft); background:var(--paper); color:var(--ink-soft);">${currentValue !== '' ? currentValue : '—'}</div>
-      </div>
-      <div class="field">
-        <label for="ips-correction-new-value">Proposed value</label>
-        <input type="number" id="ips-correction-new-value" min="0" step="1" required autofocus
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-      </div>
-      <button type="submit" class="btn btn-primary" style="justify-content:center;">Submit for approval</button>
-    </form>
-  `);
-  document.getElementById('ips-correction-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const newValRaw = document.getElementById('ips-correction-new-value').value;
-    const newVal = newValRaw === '' ? null : parseFloat(newValRaw);
-    if (newVal == null || isNaN(newVal) || newVal < 0) { showToast('Enter a valid, non-negative number.', true); return; }
-    const oldVal = currentValue !== '' ? Number(currentValue) : null;
-    if (newVal === oldVal) { showToast('That already matches the current value.', true); return; }
+async function submitIpsCorrectionRequest(employeeId, dateIso, field, currentValue, newValueRaw) {
+  const fieldLabel = field === 'errors' ? 'Errors' : field === 'md_value' ? 'Missing Data Task' : field === 'peer_review_value' ? 'Peer Review' : 'Lead Qualification';
+  const newVal = parseFloat(newValueRaw);
+  if (isNaN(newVal) || newVal < 0) { showToast('Enter a valid, non-negative number.', true); return; }
+  const oldVal = currentValue !== '' ? Number(currentValue) : null;
+  if (newVal === oldVal) return; // already guarded by the caller, but harmless to double-check here
 
-    const { data: newRequest, error } = await sb.from('ips_correction_requests').insert({
-      employee_id: employeeId, entry_date: dateIso, field,
-      old_value: oldVal, new_value: newVal,
-      status: 'pending', requested_by: state.profile.display_name,
-    }).select().single();
-    if (error) {
-      console.error(error);
-      showToast(/relation .* does not exist/i.test(error.message || '') ? 'Correction requests need setup — run ips_correction_requests_schema.sql in Supabase.' : 'Could not submit the request.', true);
-      return;
-    }
-    closeModal();
-    showToast('Correction submitted — waiting on admin/IPS approval.');
-    const requestingEmp = state.employees.find(e => e.id === employeeId);
-    const empLabel = requestingEmp ? requestingEmp.display_name : 'Someone';
-    pushIpsNotification(`${empLabel} requested a correction — ${fieldLabel} on ${formatPrettyDate(dateIso)}: ${oldVal ?? '—'} → ${newVal}.`, newRequest ? newRequest.id : null);
-    await loadIpsData();
-    renderIpsTables();
-  });
+  const { data: newRequest, error } = await sb.from('ips_correction_requests').insert({
+    employee_id: employeeId, entry_date: dateIso, field,
+    old_value: oldVal, new_value: newVal,
+    status: 'pending', requested_by: state.profile.display_name,
+  }).select().single();
+  if (error) {
+    console.error(error);
+    showToast(/relation .* does not exist/i.test(error.message || '') ? 'Correction requests need setup — run ips_correction_requests_schema.sql in Supabase.' : 'Could not submit the request.', true);
+    return;
+  }
+  showToast('Correction submitted — waiting on admin/IPS approval.');
+  const requestingEmp = state.employees.find(e => e.id === employeeId);
+  const empLabel = requestingEmp ? requestingEmp.display_name : 'Someone';
+  pushIpsNotification(`${empLabel} requested a correction — ${fieldLabel} on ${formatPrettyDate(dateIso)}: ${oldVal ?? '—'} → ${newVal}.`, newRequest ? newRequest.id : null);
+  await loadIpsData();
+  renderIpsTables();
 }
 
 // Approving applies the proposed value exactly like a direct edit would
