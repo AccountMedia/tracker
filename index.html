@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-fix-review-batches-column';
+const APP_VERSION = '2026-08-13-priolist-total-includes-peer-review';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5519,8 +5519,8 @@ function renderPrioList() {
     const unranked = rows.filter(r => r.entry.status !== 'Active');
 
     ranked.sort((a, b) => {
-      const totalA = Number(a.entry.md_output) + Number(a.entry.leads);
-      const totalB = Number(b.entry.md_output) + Number(b.entry.leads);
+      const totalA = Number(a.entry.peer_review) + Number(a.entry.md_output) + Number(a.entry.leads);
+      const totalB = Number(b.entry.peer_review) + Number(b.entry.md_output) + Number(b.entry.leads);
       if (totalA !== totalB) return totalA - totalB; // lowest output first
       return b.entry.rank - a.entry.rank; // tied total: higher rank number appears first
     });
@@ -5530,7 +5530,7 @@ function renderPrioList() {
   }
 
   const tableRows = orderedRows.map(({ entry, emp }) => {
-    const total = round2(Number(entry.md_output) + Number(entry.leads));
+    const total = round2(Number(entry.peer_review) + Number(entry.md_output) + Number(entry.leads));
     const isMe = emp.id === state.profile.employee_id;
 
     // A file color must be picked before a status can be chosen at all.
