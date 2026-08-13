@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-prevent-md-value-decrease';
+const APP_VERSION = '2026-08-13-qa-import-mqr-only';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12940,12 +12940,16 @@ async function importQaAccuracyFromReview(reviewDateIso) {
     // Pulls EVERY review from that date, not just the flagged ones —
     // needed to correctly identify reviewers whose entire day was
     // clean (for the automatic no-callout tagging below), not just to
-    // find the Major/Minor rows.
+    // find the Major/Minor rows. Filtered to qa_track = 'MQR' only —
+    // 'PIP' entries are excluded entirely from this import, per the
+    // explicit requirement, applied here at the query level so they're
+    // never even fetched rather than filtered out afterward.
     const { data, error } = await sbQaReview
       .from('review_records')
-      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, major_error, minor_error, review_notes, created_at')
+      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, major_error, minor_error, review_notes, created_at, qa_track')
       .gte('created_at', startOfDay)
-      .lt('created_at', endOfDay);
+      .lt('created_at', endOfDay)
+      .eq('qa_track', 'MQR');
 
     if (error) {
       console.error(error);
@@ -12953,7 +12957,7 @@ async function importQaAccuracyFromReview(reviewDateIso) {
       return;
     }
     if (!data || !data.length) {
-      showToast(`No reviews found for ${reviewDateIso}.`, true);
+      showToast(`No MQR reviews found for ${reviewDateIso}.`, true);
       return;
     }
 
