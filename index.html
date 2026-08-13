@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-dispute-undo-button';
+const APP_VERSION = '2026-08-13-shift-boundary-7am';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2195,7 +2195,7 @@ async function loadPriolistEntries(fullReload = true) {
 function currentPriolistResetBoundary() {
   const now = new Date();
   const boundary = new Date(now);
-  boundary.setHours(8, 0, 0, 0);
+  boundary.setHours(7, 0, 0, 0);
   if (now < boundary) {
     boundary.setDate(boundary.getDate() - 1);
   }
@@ -2213,9 +2213,9 @@ function currentPriolistResetBoundary() {
 // there's no manual-override path to reconcile against.
 async function computeMdOutputCountsSinceBoundary() {
   if (!sbQaReview) return null;
-  const boundaryDate = currentPriolistResetBoundary(); // 'YYYY-MM-DD', but the actual cutoff TIME is 8am that date
+  const boundaryDate = currentPriolistResetBoundary(); // 'YYYY-MM-DD', but the actual cutoff TIME is 7am that date
   const boundaryTimestamp = new Date(`${boundaryDate}T00:00:00`);
-  boundaryTimestamp.setHours(8, 0, 0, 0);
+  boundaryTimestamp.setHours(7, 0, 0, 0);
 
   const { data, error } = await sbQaReview
     .from('claim_records')
@@ -2309,7 +2309,7 @@ async function computePeerReviewSumsSinceBoundary() {
   if (!sbQaReview) return null;
   const boundaryDate = currentPriolistResetBoundary();
   const boundaryTimestamp = new Date(`${boundaryDate}T00:00:00`);
-  boundaryTimestamp.setHours(8, 0, 0, 0);
+  boundaryTimestamp.setHours(7, 0, 0, 0);
 
   const { data, error } = await sbQaReview
     .from('review_batches')
@@ -11093,6 +11093,24 @@ const MD_TASK_NAME_ALIASES = {
 // forward, which is also why regular employees can no longer edit it
 // directly (see the md_value lockdown in numCell).
 const MD_TASK_SYNC_CUTOFF = '2026-08-05'; // this feature's own start date — never touches anything earlier
+// Given a timestamp, returns which 7am-to-7am "work day" it belongs
+// to, as a 'YYYY-MM-DD' string — a claim at 3am counts toward the
+// PREVIOUS calendar date's work day, since the 7am boundary hasn't
+// been crossed yet, exactly matching how PrioList's own daily reset
+// (currentPriolistResetBoundary) already works. This is what keeps
+// MD Task (IPS, grouped by this work-day) and MD Output (PrioList,
+// windowed from the current 7am boundary) reporting the SAME number
+// for "today" — before this fix, IPS used a plain calendar-date split
+// instead, which disagreed with PrioList any time between midnight
+// and 7am.
+function workDayForTimestamp(isoTimestamp) {
+  const d = new Date(isoTimestamp);
+  const boundary = new Date(d);
+  boundary.setHours(7, 0, 0, 0);
+  if (d < boundary) boundary.setDate(boundary.getDate() - 1);
+  return isoDate(boundary);
+}
+
 async function syncMdTaskFromClaimRecords() {
   if (!sbQaReview) return;
 
@@ -11110,13 +11128,14 @@ async function syncMdTaskFromClaimRecords() {
     }
     if (!data || !data.length) return;
 
-    // Group by (first name, date) -> count.
-    const counts = new Map(); // key: `${firstName}|${dateIso}` -> count
+    // Group by (first name, WORK DAY) -> count — using the 8am-anchored
+    // work day, not a plain calendar date, so this agrees with PrioList.
+    const counts = new Map(); // key: `${firstName}|${workDay}` -> count
     data.forEach(row => {
       const rawFirstName = (row.completed_by || '').trim().split(/\s+/)[0];
       if (!rawFirstName) return;
       const firstName = MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName; // resolve known one-off name mismatches (e.g. Louise -> Jeinna)
-      const dateIso = (row.completed_at || '').slice(0, 10); // YYYY-MM-DD from the timestamp
+      const dateIso = row.completed_at ? workDayForTimestamp(row.completed_at) : null;
       if (!dateIso || dateIso < MD_TASK_SYNC_CUTOFF) return; // redundant with the query filter, but safe against any timezone edge at the boundary
       const key = `${firstName.toLowerCase()}|${dateIso}`;
       counts.set(key, (counts.get(key) || 0) + 1);
@@ -11207,13 +11226,15 @@ async function syncIpsPeerReviewFromReviewBatches() {
     }
     if (!data || !data.length) return;
 
-    // Group by (first name, date) -> SUM of total_records.
+    // Group by (first name, WORK DAY) -> SUM of total_records — using
+    // the 8am-anchored work day (see workDayForTimestamp above), so
+    // this agrees with PrioList's own Peer Review numbers.
     const sums = new Map();
     data.forEach(row => {
       const rawFirstName = (row.claimed_by || '').trim().split(/\s+/)[0];
       if (!rawFirstName) return;
       const firstName = MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName;
-      const dateIso = (row.created_at || '').slice(0, 10);
+      const dateIso = row.created_at ? workDayForTimestamp(row.created_at) : null;
       if (!dateIso || dateIso < MD_TASK_SYNC_CUTOFF) return;
       const key = `${firstName.toLowerCase()}|${dateIso}`;
       sums.set(key, (sums.get(key) || 0) + (Number(row.total_records) || 0));
