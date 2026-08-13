@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-priolist-total-includes-peer-review';
+const APP_VERSION = '2026-08-13-prevent-md-value-decrease';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11151,11 +11151,21 @@ async function syncMdTaskFromClaimRecords() {
     counts.forEach((count, firstNameLower) => {
       const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
+      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === todayWorkDay);
       // Skip entirely if the current in-memory value is already correct
       // — avoids an unnecessary write (and the resulting realtime
       // echo/re-render) on every trigger when nothing actually changed.
-      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === todayWorkDay);
       if (existing && existing.md_value === count) return;
+      // Safeguard: claim_records only ever gets NEW rows added during
+      // the day (nothing is ever deleted), so a freshly-computed count
+      // for TODAY should never legitimately be LOWER than what's
+      // already saved. If it is, this run is working from stale or
+      // incomplete data — skip the write rather than overwrite a
+      // correct, higher number with an incorrect, lower one.
+      if (existing && existing.md_value != null && count < existing.md_value) {
+        console.warn(`MD Task sync: computed ${count} for ${emp.display_name}, but ${existing.md_value} is already saved for today — skipping this write since a same-day decrease should be impossible.`);
+        return;
+      }
       updates.push({ employee_id: emp.id, entry_date: todayWorkDay, md_value: count, updated_by: 'claim_records sync', updated_at: new Date().toISOString() });
     });
 
@@ -11232,6 +11242,14 @@ async function syncIpsPeerReviewFromReviewBatches() {
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
       const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === todayWorkDay);
       if (existing && existing.peer_review_value === total) return; // no genuine change — skip the write
+      // Safeguard: review_batches only ever gets NEW/updated rows
+      // within the day, so a same-day total should never legitimately
+      // decrease. If it does, this run has stale/incomplete data —
+      // skip the write rather than overwrite a correct, higher total.
+      if (existing && existing.peer_review_value != null && total < existing.peer_review_value) {
+        console.warn(`Peer Review sync: computed ${total} for ${emp.display_name}, but ${existing.peer_review_value} is already saved for today — skipping this write since a same-day decrease should be impossible.`);
+        return;
+      }
       updates.push({ employee_id: emp.id, entry_date: todayWorkDay, peer_review_value: total, updated_by: 'review_batches sync', updated_at: new Date().toISOString() });
     });
 
