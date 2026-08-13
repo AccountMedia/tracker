@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-fix-timezone-boundary';
+const APP_VERSION = '2026-08-13-ips-mirrors-priolist-query';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11133,47 +11133,30 @@ async function syncMdTaskFromClaimRecords() {
   if (!sbQaReview) return;
 
   try {
-    const { data, error } = await sbQaReview
-      .from('claim_records')
-      .select('completed_by, completed_at')
-      .gte('completed_at', `${MD_TASK_SYNC_CUTOFF}T00:00:00Z`)
-      .not('completed_by', 'is', null)
-      .not('completed_at', 'is', null);
+    // Mirrors PrioList's OWN trusted MD Output query exactly — same
+    // boundary computation, same simple ">= boundary" filter, so
+    // there's no separate logic path that could ever disagree with
+    // PrioList's number. This ONLY ever computes and writes TODAY's
+    // count — past dates are never touched, re-queried, or recomputed
+    // by this function at all, so once a day's number is saved it
+    // stays exactly as it is, permanently, unless someone with
+    // permission (Jeinna) manually edits it.
+    const counts = await computeMdOutputCountsSinceBoundary();
+    if (!counts) return;
 
-    if (error) {
-      if (!/relation .* does not exist/i.test(error.message || '')) console.error('MD Task sync failed:', error);
-      return;
-    }
-    if (!data || !data.length) return;
+    const todayWorkDay = currentPriolistResetBoundary(); // the SAME boundary date PrioList itself is currently using
 
-    // Group by (first name, WORK DAY) -> count — using the 8am-anchored
-    // work day, not a plain calendar date, so this agrees with PrioList.
-    const counts = new Map(); // key: `${firstName}|${workDay}` -> count
-    data.forEach(row => {
-      const rawFirstName = (row.completed_by || '').trim().split(/\s+/)[0];
-      if (!rawFirstName) return;
-      const firstName = MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName; // resolve known one-off name mismatches (e.g. Louise -> Jeinna)
-      const dateIso = row.completed_at ? workDayForTimestamp(row.completed_at) : null;
-      if (!dateIso || dateIso < MD_TASK_SYNC_CUTOFF) return; // redundant with the query filter, but safe against any timezone edge at the boundary
-      const key = `${firstName.toLowerCase()}|${dateIso}`;
-      counts.set(key, (counts.get(key) || 0) + 1);
-    });
-
-    // Match each first name to a roster employee — first-name match
-    // only, same convention as the QA Review import's reviewer matching.
     const updates = [];
     const unmatchedNames = new Set();
-    counts.forEach((count, key) => {
-      const [firstNameLower, dateIso] = key.split('|');
+    counts.forEach((count, firstNameLower) => {
       const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
       // Skip entirely if the current in-memory value is already correct
       // — avoids an unnecessary write (and the resulting realtime
-      // echo/re-render) on every trigger when nothing actually changed
-      // for this particular employee/date.
-      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === dateIso);
+      // echo/re-render) on every trigger when nothing actually changed.
+      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === todayWorkDay);
       if (existing && existing.md_value === count) return;
-      updates.push({ employee_id: emp.id, entry_date: dateIso, md_value: count, updated_by: 'claim_records sync', updated_at: new Date().toISOString() });
+      updates.push({ employee_id: emp.id, entry_date: todayWorkDay, md_value: count, updated_by: 'claim_records sync', updated_at: new Date().toISOString() });
     });
 
     if (unmatchedNames.size) {
@@ -11181,9 +11164,10 @@ async function syncMdTaskFromClaimRecords() {
     }
     if (!updates.length) return;
 
-    // One upsert per (employee, date) pair — only md_value is sent, so
-    // nothing else on an existing row (Errors, Peer Review, LQ, etc.)
-    // is ever touched by this sync.
+    // One upsert per employee for TODAY's date only — only md_value is
+    // sent, so nothing else on an existing row (Errors, Peer Review,
+    // LQ, etc.) is ever touched by this sync, and no past date is ever
+    // included in this write.
     const { error: upsertErr } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
     if (upsertErr) { console.error('MD Task sync upsert failed:', upsertErr); return; }
 
@@ -11232,41 +11216,23 @@ async function syncIpsPeerReviewFromReviewBatches() {
   if (!sbQaReview) return;
 
   try {
-    const { data, error } = await sbQaReview
-      .from('review_batches')
-      .select('claimed_by, total_records, created_at')
-      .gte('created_at', `${MD_TASK_SYNC_CUTOFF}T00:00:00Z`)
-      .not('claimed_by', 'is', null);
+    // Mirrors PrioList's OWN trusted Peer Review calculation exactly —
+    // same boundary, same query. Only ever computes and writes TODAY's
+    // total; past dates are never touched or recomputed by this
+    // function, so a saved historical value stays exactly as it is.
+    const sums = await computePeerReviewSumsSinceBoundary();
+    if (!sums) return;
 
-    if (error) {
-      if (!/relation .* does not exist/i.test(error.message || '')) console.error('IPS Peer Review sync failed:', error);
-      return;
-    }
-    if (!data || !data.length) return;
-
-    // Group by (first name, WORK DAY) -> SUM of total_records — using
-    // the 8am-anchored work day (see workDayForTimestamp above), so
-    // this agrees with PrioList's own Peer Review numbers.
-    const sums = new Map();
-    data.forEach(row => {
-      const rawFirstName = (row.claimed_by || '').trim().split(/\s+/)[0];
-      if (!rawFirstName) return;
-      const firstName = MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName;
-      const dateIso = row.created_at ? workDayForTimestamp(row.created_at) : null;
-      if (!dateIso || dateIso < MD_TASK_SYNC_CUTOFF) return;
-      const key = `${firstName.toLowerCase()}|${dateIso}`;
-      sums.set(key, (sums.get(key) || 0) + (Number(row.total_records) || 0));
-    });
+    const todayWorkDay = currentPriolistResetBoundary();
 
     const updates = [];
     const unmatchedNames = new Set();
-    sums.forEach((total, key) => {
-      const [firstNameLower, dateIso] = key.split('|');
+    sums.forEach((total, firstNameLower) => {
       const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
-      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === dateIso);
+      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === todayWorkDay);
       if (existing && existing.peer_review_value === total) return; // no genuine change — skip the write
-      updates.push({ employee_id: emp.id, entry_date: dateIso, peer_review_value: total, updated_by: 'review_batches sync', updated_at: new Date().toISOString() });
+      updates.push({ employee_id: emp.id, entry_date: todayWorkDay, peer_review_value: total, updated_by: 'review_batches sync', updated_at: new Date().toISOString() });
     });
 
     if (unmatchedNames.size) {
