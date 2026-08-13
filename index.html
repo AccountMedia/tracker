@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-05-fix-bubble-click-after-login';
+const APP_VERSION = '2026-08-05-dispute-undo-button';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13900,7 +13900,10 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
               <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
             `}
           ` : ''}
-          ${admin && !isEditable ? `<span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>` : ''}
+          ${admin && !isEditable ? `
+            <span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>
+            ${canResolve && ['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) ? `<button type="button" class="ips-qa-undo-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:none; border:1px solid var(--line); border-radius:6px; cursor:pointer; color:var(--ink-soft); margin-left:8px;">Undo</button>` : ''}
+          ` : ''}
           ${admin && isEditable ? `
             <div style="margin-left:auto; position:relative; width:26px; height:24px; flex-shrink:0;">
               <button type="button" class="ips-qa-entry-menu-toggle" data-id="${e.id}" title="More actions" style="
@@ -14015,6 +14018,12 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   document.addEventListener('click', closeAllIpsQaEntryMenus);
   document.querySelectorAll('.ips-qa-approve-dispute-btn').forEach(btn => {
     btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'approved', employeeId, emp, admin));
+  });
+  document.querySelectorAll('.ips-qa-undo-dispute-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!confirm('Are you sure you want to undo?')) return;
+      undoDisputeResolution(btn.dataset.id, employeeId);
+    });
   });
   document.querySelectorAll('.ips-qa-reject-as-minor-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -14273,6 +14282,22 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, 
   const isRejectAsMinor = resolution === 'rejected_as_minor';
   const reviewedAt = new Date().toISOString();
   const evidenceUrls = files.length ? await uploadQaDisputeEvidence(entryId, files) : [];
+
+  // Snapshot the entry's REAL current state before this resolution
+  // overwrites anything — this is what a later "Undo" restores from,
+  // so it reflects exactly how the entry looked a moment ago, not an
+  // assumption about what it must have looked like.
+  const entryBeforeResolution = ipsState.qaEntries.find(e => e.id === entryId);
+  const undoSnapshot = entryBeforeResolution ? {
+    dispute_status: entryBeforeResolution.dispute_status,
+    kind: entryBeforeResolution.kind,
+    dispute_reviewed_by: entryBeforeResolution.dispute_reviewed_by,
+    dispute_reviewed_at: entryBeforeResolution.dispute_reviewed_at,
+    dispute_reject_reason: entryBeforeResolution.dispute_reject_reason,
+    dispute_approve_note: entryBeforeResolution.dispute_approve_note,
+    dispute_review_evidence_urls: entryBeforeResolution.dispute_review_evidence_urls,
+  } : null;
+
   const payload = {
     dispute_status: resolution,
     dispute_reviewed_by: state.profile.display_name,
@@ -14281,6 +14306,7 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, 
     dispute_approve_note: resolution === 'approved' ? (note || null) : null,
     dispute_seen_by_employee: false,
     updated_at: reviewedAt,
+    dispute_undo_snapshot: undoSnapshot,
   };
   if (evidenceUrls.length) payload.dispute_review_evidence_urls = evidenceUrls;
   // "Reject, Count as Minor": the dispute itself is rejected (the entry
@@ -14326,6 +14352,50 @@ async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, 
   // Minor tab so the admin actually sees where the entry went, rather
   // than reopening on Major where it may now be the only thing missing.
   if (isRejectAsMinor) ipsState.qaTab = 'minor';
+  openIpsQaManageModal(employeeId);
+}
+
+// Reverses a dispute resolution (approve/reject/reject-as-minor) back
+// to its exact prior state, using the snapshot captured the moment
+// resolution happened — restores dispute_status to 'disputed' and
+// every dispute-related field to precisely what it held before,
+// including reversing a reject-as-minor's kind change if that's what
+// happened. Deliberately touches ONLY these dispute fields — nothing
+// else about the entry (company, job title, status reason, etc.) is
+// affected, since this is a targeted undo of the resolution action
+// itself, not a general re-opening of editing on an otherwise still-
+// locked entry.
+async function undoDisputeResolution(entryId, employeeId) {
+  if (!canResolveIpsQaDisputes()) { showToast('Only Kristina and Jeinna can undo a resolution.', true); return; }
+
+  const entry = ipsState.qaEntries.find(e => e.id === entryId);
+  const snapshot = entry ? entry.dispute_undo_snapshot : null;
+  if (!snapshot) { showToast('No undo information is available for this entry.', true); return; }
+
+  const payload = {
+    dispute_status: snapshot.dispute_status,
+    kind: snapshot.kind,
+    dispute_reviewed_by: snapshot.dispute_reviewed_by,
+    dispute_reviewed_at: snapshot.dispute_reviewed_at,
+    dispute_reject_reason: snapshot.dispute_reject_reason,
+    dispute_approve_note: snapshot.dispute_approve_note,
+    dispute_review_evidence_urls: snapshot.dispute_review_evidence_urls,
+    dispute_undo_snapshot: null, // cleared — a stale snapshot here would incorrectly imply a second undo is possible after this entry gets resolved again
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await sb.from('ips_qa_entries').update(payload).eq('id', entryId);
+  if (error) {
+    console.error(error);
+    showToast(/dispute_undo_snapshot.* does not exist/i.test(error.message || '') ? 'Undo needs setup — run ips_qa_entries_dispute_undo.sql in Supabase.' : 'Could not undo the resolution.', true);
+    return;
+  }
+
+  showToast('Resolution undone — the entry is back to pending dispute review.');
+  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, ...payload } : e);
+  await loadIpsData();
+  renderIpsTables();
+  ipsState.qaTab = 'major'; // undo can only ever apply to a Major entry (only Major disputes can be filed in the first place), so this correctly always lands back on the Major tab regardless of whether it had been downgraded to Minor
   openIpsQaManageModal(employeeId);
 }
 
