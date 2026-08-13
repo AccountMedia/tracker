@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-qa-import-mqr-only';
+const APP_VERSION = '2026-08-13-fix-qa-import-batch-link';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12937,19 +12937,38 @@ async function importQaAccuracyFromReview(reviewDateIso) {
     const nextDay = isoDate(new Date(new Date(reviewDateIso + 'T00:00:00Z').getTime() + 24 * 60 * 60 * 1000));
     const endOfDay = `${nextDay}T00:00:00Z`;
 
-    // Pulls EVERY review from that date, not just the flagged ones —
-    // needed to correctly identify reviewers whose entire day was
-    // clean (for the automatic no-callout tagging below), not just to
-    // find the Major/Minor rows. Filtered to qa_track = 'MQR' only —
-    // 'PIP' entries are excluded entirely from this import, per the
-    // explicit requirement, applied here at the query level so they're
-    // never even fetched rather than filtered out afterward.
+    // First, find which BATCHES (in the separate review_batches table)
+    // are tagged qa_track = 'MQR' — review_records itself has no
+    // qa_track column of its own; that field genuinely lives on
+    // review_batches, linked via review_records.batch_id = 
+    // review_batches.id (confirmed directly against the real data).
+    // 'PIP' batches are excluded here at the source, before their
+    // records are ever fetched.
+    const { data: mqrBatches, error: batchErr } = await sbQaReview
+      .from('review_batches')
+      .select('id')
+      .eq('qa_track', 'MQR');
+    if (batchErr) {
+      console.error(batchErr);
+      showToast('Could not reach the QA Review database — check the connection.', true);
+      return;
+    }
+    const mqrBatchIds = (mqrBatches || []).map(b => b.id);
+    if (!mqrBatchIds.length) {
+      showToast(`No MQR batches found.`, true);
+      return;
+    }
+
+    // Pulls EVERY review from that date within an MQR batch, not just
+    // the flagged ones — needed to correctly identify reviewers whose
+    // entire day was clean (for the automatic no-callout tagging
+    // below), not just to find the Major/Minor rows.
     const { data, error } = await sbQaReview
       .from('review_records')
-      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, major_error, minor_error, review_notes, created_at, qa_track')
+      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, major_error, minor_error, review_notes, created_at, batch_id')
       .gte('created_at', startOfDay)
       .lt('created_at', endOfDay)
-      .eq('qa_track', 'MQR');
+      .in('batch_id', mqrBatchIds);
 
     if (error) {
       console.error(error);
