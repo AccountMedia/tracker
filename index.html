@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-ips-mirrors-priolist-query';
+const APP_VERSION = '2026-08-13-fix-review-batches-column';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2329,8 +2329,8 @@ async function computePeerReviewSumsSinceBoundary() {
 
   const { data, error } = await sbQaReview
     .from('review_batches')
-    .select('claimed_by, total_records, created_at')
-    .gte('created_at', boundaryTimestamp.toISOString())
+    .select('claimed_by, total_records, updated_at')
+    .gte('updated_at', boundaryTimestamp.toISOString())
     .not('claimed_by', 'is', null);
 
   if (error) {
