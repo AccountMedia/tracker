@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-shift-boundary-7am';
+const APP_VERSION = '2026-08-13-fix-timezone-boundary';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2192,14 +2192,23 @@ async function loadPriolistEntries(fullReload = true) {
 // Returns the ISO date string of the most recent 8 AM boundary that has
 // already passed. Before 8 AM, that's yesterday's date; from 8 AM onward,
 // it's today's date. A row resets once per boundary crossed.
+// Returns today's 7am PHT boundary date, as 'YYYY-MM-DD' — explicitly
+// computed in Philippine time (via PH_UTC_OFFSET_MINUTES), NOT the
+// viewer's own browser/device timezone. Using new Date().setHours()
+// directly would silently use whatever timezone the device happens to
+// be set to, which could disagree with the boundary IPS's own syncs
+// compute (also anchored to PHT) — exactly the kind of subtle mismatch
+// that previously caused PrioList and IPS to show different "today"
+// totals even after both were nominally set to the same 7am hour.
 function currentPriolistResetBoundary() {
-  const now = new Date();
-  const boundary = new Date(now);
-  boundary.setHours(7, 0, 0, 0);
-  if (now < boundary) {
-    boundary.setDate(boundary.getDate() - 1);
+  const nowPhMs = Date.now() + PH_UTC_OFFSET_MINUTES * 60 * 1000;
+  const nowPh = new Date(nowPhMs); // a Date whose UTC getters read as PH wall-clock time
+  const boundaryPh = new Date(nowPh);
+  boundaryPh.setUTCHours(7, 0, 0, 0);
+  if (nowPh < boundaryPh) {
+    boundaryPh.setUTCDate(boundaryPh.getUTCDate() - 1);
   }
-  return isoDate(boundary);
+  return boundaryPh.toISOString().slice(0, 10);
 }
 
 // ── PrioList MD Output real-time sync from claim_records ──────────────
@@ -2213,9 +2222,13 @@ function currentPriolistResetBoundary() {
 // there's no manual-override path to reconcile against.
 async function computeMdOutputCountsSinceBoundary() {
   if (!sbQaReview) return null;
-  const boundaryDate = currentPriolistResetBoundary(); // 'YYYY-MM-DD', but the actual cutoff TIME is 7am that date
-  const boundaryTimestamp = new Date(`${boundaryDate}T00:00:00`);
-  boundaryTimestamp.setHours(7, 0, 0, 0);
+  const boundaryDate = currentPriolistResetBoundary(); // 'YYYY-MM-DD', already computed in PHT — the cutoff TIME is 7am PHT that date
+  // 7am PHT = 11pm UTC the PREVIOUS day (PHT is UTC+8) — construct the
+  // boundary as an explicit UTC instant rather than trusting the
+  // browser's own local timezone to interpret "7am" correctly.
+  const [y, m, d] = boundaryDate.split('-').map(Number);
+  const boundaryTimestamp = new Date(Date.UTC(y, m - 1, d, 7, 0, 0));
+  boundaryTimestamp.setUTCMinutes(boundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
 
   const { data, error } = await sbQaReview
     .from('claim_records')
@@ -2307,9 +2320,12 @@ function stopPriolistMdOutputRealtimeSync() {
 // Review is 150, not 2. Fully locked, same as MD Output.
 async function computePeerReviewSumsSinceBoundary() {
   if (!sbQaReview) return null;
-  const boundaryDate = currentPriolistResetBoundary();
-  const boundaryTimestamp = new Date(`${boundaryDate}T00:00:00`);
-  boundaryTimestamp.setHours(7, 0, 0, 0);
+  const boundaryDate = currentPriolistResetBoundary(); // already PHT-correct
+  // 7am PHT expressed as the correct UTC instant — see the identical
+  // fix in computeMdOutputCountsSinceBoundary above.
+  const [y, m, d] = boundaryDate.split('-').map(Number);
+  const boundaryTimestamp = new Date(Date.UTC(y, m - 1, d, 7, 0, 0));
+  boundaryTimestamp.setUTCMinutes(boundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
 
   const { data, error } = await sbQaReview
     .from('review_batches')
@@ -11104,11 +11120,13 @@ const MD_TASK_SYNC_CUTOFF = '2026-08-05'; // this feature's own start date — n
 // instead, which disagreed with PrioList any time between midnight
 // and 7am.
 function workDayForTimestamp(isoTimestamp) {
-  const d = new Date(isoTimestamp);
-  const boundary = new Date(d);
-  boundary.setHours(7, 0, 0, 0);
-  if (d < boundary) boundary.setDate(boundary.getDate() - 1);
-  return isoDate(boundary);
+  const utcMs = new Date(isoTimestamp).getTime();
+  const phMs = utcMs + PH_UTC_OFFSET_MINUTES * 60 * 1000;
+  const phDate = new Date(phMs); // a Date whose UTC getters read as PH wall-clock time for this instant
+  const boundaryPh = new Date(phDate);
+  boundaryPh.setUTCHours(7, 0, 0, 0);
+  if (phDate < boundaryPh) boundaryPh.setUTCDate(boundaryPh.getUTCDate() - 1);
+  return boundaryPh.toISOString().slice(0, 10);
 }
 
 async function syncMdTaskFromClaimRecords() {
