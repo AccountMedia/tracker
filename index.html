@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-fix-qa-import-batch-link';
+const APP_VERSION = '2026-08-13-qa-import-use-updated-at';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12930,24 +12930,32 @@ async function importQaAccuracyFromReview(reviewDateIso) {
   if (!sbQaReview) { showToast('QA Review connection is not configured.', true); return; }
 
   try {
-    // created_at is a timestamp, not a plain date — bounding it to
-    // [start of day, start of next day) captures the whole selected
-    // day regardless of what time each review happened to be logged.
+    // updated_at (not uploaded_at, and not review_records' own
+    // created_at) is the real, actual review timestamp — same column
+    // already confirmed correct for the Peer Review sync earlier. The
+    // file's upload date and the reviewer's actual review date can
+    // genuinely differ (e.g. uploaded Aug 12, reviewed Aug 13), so
+    // bounding by updated_at is what makes "select Aug 13" correctly
+    // surface work actually done on Aug 13, regardless of when the
+    // underlying file was uploaded.
     const startOfDay = `${reviewDateIso}T00:00:00Z`;
     const nextDay = isoDate(new Date(new Date(reviewDateIso + 'T00:00:00Z').getTime() + 24 * 60 * 60 * 1000));
     const endOfDay = `${nextDay}T00:00:00Z`;
 
     // First, find which BATCHES (in the separate review_batches table)
-    // are tagged qa_track = 'MQR' — review_records itself has no
-    // qa_track column of its own; that field genuinely lives on
-    // review_batches, linked via review_records.batch_id = 
-    // review_batches.id (confirmed directly against the real data).
-    // 'PIP' batches are excluded here at the source, before their
-    // records are ever fetched.
+    // were actually reviewed (updated_at) on the selected date AND are
+    // tagged qa_track = 'MQR' — review_records itself has no qa_track
+    // column of its own; that field genuinely lives on review_batches,
+    // linked via review_records.batch_id = review_batches.id
+    // (confirmed directly against the real data). 'PIP' batches, and
+    // batches reviewed on a different date, are excluded here at the
+    // source, before any review_records rows are ever fetched.
     const { data: mqrBatches, error: batchErr } = await sbQaReview
       .from('review_batches')
       .select('id')
-      .eq('qa_track', 'MQR');
+      .eq('qa_track', 'MQR')
+      .gte('updated_at', startOfDay)
+      .lt('updated_at', endOfDay);
     if (batchErr) {
       console.error(batchErr);
       showToast('Could not reach the QA Review database — check the connection.', true);
@@ -12955,19 +12963,19 @@ async function importQaAccuracyFromReview(reviewDateIso) {
     }
     const mqrBatchIds = (mqrBatches || []).map(b => b.id);
     if (!mqrBatchIds.length) {
-      showToast(`No MQR batches found.`, true);
+      showToast(`No MQR batches reviewed on ${reviewDateIso}.`, true);
       return;
     }
 
-    // Pulls EVERY review from that date within an MQR batch, not just
-    // the flagged ones — needed to correctly identify reviewers whose
-    // entire day was clean (for the automatic no-callout tagging
-    // below), not just to find the Major/Minor rows.
+    // Pulls EVERY review belonging to those specific MQR batches, not
+    // just the flagged ones — needed to correctly identify reviewers
+    // whose entire day was clean (for the automatic no-callout tagging
+    // below), not just to find the Major/Minor rows. No date filter is
+    // applied here — the batch lookup above already scoped this to the
+    // right date via each batch's own updated_at.
     const { data, error } = await sbQaReview
       .from('review_records')
       .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, major_error, minor_error, review_notes, created_at, batch_id')
-      .gte('created_at', startOfDay)
-      .lt('created_at', endOfDay)
       .in('batch_id', mqrBatchIds);
 
     if (error) {
