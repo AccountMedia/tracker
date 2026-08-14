@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-errors-always-editable';
+const APP_VERSION = '2026-08-14-teamfunds-rnr-default';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10368,7 +10368,7 @@ function tfDateField(id, label, required = true) {
 function openTfTransactionModal(type) {
   const isCredit = type === 'credit';
   const creditPresets = ['LI Excess', 'TB Funds', 'Other'];
-  const debitPresets = ['Birthday Cake', 'Performance Bonus', 'Other'];
+  const debitPresets = ['RnR', 'Birthday Cake', 'Performance Bonus', 'Other'];
 
   openModal(isCredit ? 'Add funds (inflow)' : 'Record expense (outflow)', `
     <form id="tf-tx-form" style="display:flex; flex-direction:column; gap:14px;">
@@ -10403,7 +10403,7 @@ function openTfTransactionModal(type) {
           <label for="tf-tx-note">Details <span id="tf-tx-note-optional" class="faint">(optional)</span></label>
           <textarea id="tf-tx-note" rows="3"
             style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
-            placeholder="e.g. Birthday cake for Mae Angiele — July 5, 2026"></textarea>
+            placeholder="e.g. R&amp;R activity for the team — August 2026"></textarea>
         </div>
       `}
       <button type="submit" class="btn btn-primary" style="justify-content:center;">
@@ -10421,6 +10421,7 @@ function openTfTransactionModal(type) {
     'TB Funds':  'e.g. Team building fund allocation — Q3 2026',
     'Other':     'Describe the source of funds (required)',
   } : {
+    'RnR':                'e.g. R&R activity for the team — August 2026',
     'Birthday Cake':     'e.g. Birthday cake for Mae Angiele — July 5, 2026',
     'Performance Bonus': 'e.g. Performance bonus for top MD output — June 2026',
     'Other':             'Describe the purpose of this expense (required)',
