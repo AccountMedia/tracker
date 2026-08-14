@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-lwnp-diagnostic-logging';
+const APP_VERSION = '2026-08-14-fix-vl-sl-spillover-floor-bug';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2525,39 +2525,41 @@ function storedBalanceFiscalYear(employee) {
 // `fiscalYearStart` defaults to the CURRENT fiscal year (today's) when
 // not given, matching how every existing call site already used these
 // functions (asking "what's their balance right now").
-function fiscalPoolBalance(employee, pool, fiscalYearStart) {
+// The TRUE (unfloored) fiscal pool balance — can be negative, unlike
+// fiscalPoolBalance's public display value. This exists specifically
+// because the LWNP-conversion planning below needs to "add back" a
+// row's own already-counted usage to reconstruct the balance as it
+// stood BEFORE that row — and doing that arithmetic on an
+// already-floored-at-zero number silently manufactures credit that
+// never existed (e.g. an employee whose true SL balance is -1, floored
+// to 0 for display, would incorrectly appear to have +1 SL available
+// once their own 1-day usage is naively added back onto that floored
+// zero, instead of correctly landing back at 0).
+function fiscalPoolBalanceUnfloored(employee, pool, fiscalYearStart) {
   const targetFY = fiscalYearStart != null ? fiscalYearStart : currentFiscalYear();
   const storedFY = storedBalanceFiscalYear(employee);
   const storedAmount = pool === 'vl' ? (employee.vl_balance ?? 0) : (employee.sl_balance ?? 0);
   const standardAllotment = pool === 'vl' ? STANDARD_FISCAL_VL_ALLOTMENT : STANDARD_FISCAL_SL_ALLOTMENT;
-
-  // Starting allotment for the requested fiscal year: the legacy stored
-  // number if this IS the fiscal year that snapshot belongs to,
-  // otherwise the standard fixed allotment (every other fiscal year,
-  // past or future, starts fresh at 25 VL / 6 SL).
   const startingAllotment = targetFY === storedFY ? storedAmount : standardAllotment;
-
-  // balance_as_of_date only matters for excluding leave already baked
-  // into the stored snapshot, and only within that snapshot's own
-  // fiscal year — every other fiscal year has no such snapshot, so all
-  // of that year's own leave counts from scratch.
   const asOf = targetFY === storedFY ? (employee.balance_as_of_date || '0000-01-01') : '0000-01-01';
-
   const used = entriesForEmployee(employee.id)
     .filter(e => fiscalYearForDate(e.leave_date) === targetFY)
     .filter(e => e.leave_date >= asOf)
     .filter(e => LEAVE_TYPES[e.leave_type] && LEAVE_TYPES[e.leave_type].credit === pool)
     .reduce((sum, e) => sum + dayFractionForEntry(e), 0);
+  return round2(startingAllotment - used);
+}
 
-  // Floored at zero: a real leave-credit balance can never meaningfully
-  // go negative — any genuine overflow beyond what's available is
-  // already converted to Leave Without Pay by the auto-split logic
-  // before it gets this far. Without this floor, a tiny floating-point
-  // rounding difference (e.g. a partial-hour entry landing right at
-  // the edge of the remaining allotment) could display something like
-  // -0.01 instead of a clean 0, even though nothing is actually wrong
-  // with the underlying accounting.
-  return Math.max(0, round2(startingAllotment - used));
+function fiscalPoolBalance(employee, pool, fiscalYearStart) {
+  // Floored at zero: a DISPLAYED leave-credit balance can never
+  // meaningfully show as negative — any genuine overflow beyond what's
+  // available is already converted to Leave Without Pay by the
+  // auto-split logic before it gets this far. Without this floor, a
+  // tiny floating-point rounding difference (e.g. a partial-hour entry
+  // landing right at the edge of the remaining allotment) could
+  // display something like -0.01 instead of a clean 0, even though
+  // nothing is actually wrong with the underlying accounting.
+  return Math.max(0, fiscalPoolBalanceUnfloored(employee, pool, fiscalYearStart));
 }
 
 function getVLBalance(employee, fiscalYearStart) {
@@ -4677,10 +4679,17 @@ function creditPoolForType(leaveType) {
   return LEAVE_TYPES[leaveType] ? LEAVE_TYPES[leaveType].credit : null;
 }
 
-// Returns the employee's current balance in the given pool ('vl' or
-// 'sl'), using the same live calculation as the Leave Credits card.
+// Returns the employee's TRUE (unfloored — can be negative) balance in
+// the given pool, used specifically for the LWNP-conversion planning
+// below, which needs to correctly "add back" a row's own usage to
+// reconstruct the balance as it stood before that row. Using the
+// floored, display-only value here was the root cause of a real bug:
+// an employee whose true balance had already gone negative (floored to
+// 0 for display) would have their own usage incorrectly added back
+// onto that floored zero instead of the true negative number,
+// manufacturing credit that never existed.
 function poolBalance(employee, pool, fiscalYearStart) {
-  return pool === 'vl' ? getVLBalance(employee, fiscalYearStart) : getSLBalance(employee, fiscalYearStart);
+  return fiscalPoolBalanceUnfloored(employee, pool, fiscalYearStart);
 }
 
 // The "no pay" counterpart for a given paid leave type — used when a
