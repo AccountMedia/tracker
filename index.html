@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-fix-vl-sl-spillover-floor-bug';
+const APP_VERSION = '2026-08-14-admin-change-leave-type';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4264,6 +4264,7 @@ function openDayPanel(dateIso) {
         <div class="faint" style="font-size:12px;">${escapeHtml(e.note || 'No note')}${groupSuffix}</div>
         ${e.approved_by ? `<div class="faint" style="font-size:11px; margin-top:2px;">Approved by ${escapeHtml(e.approved_by)}</div>` : ''}
         ${canEditDates ? `<span class="edit-dates-link" data-id="${e.id}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px;">Edit dates</span>` : ''}
+        ${admin && e.status === STATUS.APPROVED && e.requested_by !== SYSTEM_HOLIDAY_MARKER ? `<span class="change-leave-type-link" data-id="${e.id}" data-current-type="${e.leave_type}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px; margin-left:${canEditDates ? '10px' : '0'};">Change type</span>` : ''}
       </div>
       <span class="faint" style="font-size:11px;">${formatStatusLabel(e.status)}</span>
       ${admin && e.leave_date < today ? `<span class="force-delete-btn" data-id="${e.id}" title="Delete this entry" style="cursor:pointer; color:var(--ink-faint); font-size:13px; margin-left:6px; padding:0 4px; line-height:1;">×</span>` : ''}
@@ -4299,6 +4300,9 @@ function openDayPanel(dateIso) {
   });
   document.querySelectorAll('.edit-dates-link').forEach(b => {
     b.addEventListener('click', () => openEditDatesModal(b.dataset.id));
+  });
+  document.querySelectorAll('.change-leave-type-link').forEach(b => {
+    b.addEventListener('click', () => openChangeLeaveTypeModal(b.dataset.id, b.dataset.currentType));
   });
 }
 
@@ -4395,6 +4399,68 @@ async function submitEditDates(e, entry) {
   await loadLeaveEntries();
   renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   renderDashboard();
+}
+
+// =====================================================================
+// CHANGE LEAVE TYPE (admin-only manual safeguard for an approved entry)
+// =====================================================================
+// A direct, unconditional field change — no balance re-checking, no
+// automatic spillover/LNP recalculation. This is deliberately simple:
+// since every leave-credit balance is calculated LIVE from whatever
+// leave_type currently sits on each row (see fiscalPoolBalance), simply
+// changing this one field is the entire fix — the OLD type's credit is
+// automatically "restored" (that row stops counting against it) and the
+// NEW type's credit is automatically deducted (it starts counting
+// against it instead), with no separate restore/deduct bookkeeping
+// required. This exists specifically as a manual override for cases
+// where the automatic deduction logic didn't behave as expected —
+// intentionally NOT re-running that same automatic logic here, so it
+// works regardless of any edge case in it.
+function openChangeLeaveTypeModal(entryId, currentType) {
+  const entry = state.leaveEntries.find(e => e.id === entryId);
+  if (!entry) return;
+
+  const typeOptions = Object.keys(LEAVE_TYPES)
+    .filter(t => t !== 'LNP' && t !== 'HLNP') // LNP/HLNP are auto-derived overflow markers, not something an admin should hand-pick here
+    .map(t => `<option value="${t}" ${t === currentType ? 'selected' : ''}>${LEAVE_TYPES[t].label} (${t})</option>`)
+    .join('');
+
+  openModal('Change Leave Type', `
+    <form id="change-leave-type-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">
+        ${employeeName(entry.employee_id)} — ${formatPrettyDate(entry.leave_date)}<br>
+        Currently: <strong>${LEAVE_TYPES[currentType] ? LEAVE_TYPES[currentType].label : currentType}</strong>
+      </p>
+      <div class="field">
+        <label for="change-leave-type-select">New leave type</label>
+        <select id="change-leave-type-select" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          ${typeOptions}
+        </select>
+      </div>
+      <p class="muted" style="font-size:11.5px; margin:0;">
+        This directly changes the leave type on this entry — the original type's credit is freed up and the new type's credit is used instead. No balance check is performed; use this only when you're intentionally correcting or overriding the type.
+      </p>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Save</button>
+    </form>
+  `);
+
+  document.getElementById('change-leave-type-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newType = document.getElementById('change-leave-type-select').value;
+    if (newType === currentType) { closeModal(); return; }
+
+    const { error } = await sb.from('leave_entries').update({ leave_type: newType }).eq('id', entryId);
+    if (error) {
+      console.error(error);
+      showToast('Could not change the leave type.', true);
+      return;
+    }
+    closeModal();
+    showToast(`Leave type changed to ${LEAVE_TYPES[newType].label}.`);
+    await loadLeaveEntries();
+    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
+    renderDashboard();
+  });
 }
 
 // ---- Pending panel --------------------------------------------------
