@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-admin-change-leave-type';
+const APP_VERSION = '2026-08-14-qa-import-corrected-url';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13060,7 +13060,7 @@ async function importQaAccuracyFromReview(reviewDateIso) {
     // right date via each batch's own updated_at.
     const { data, error } = await sbQaReview
       .from('review_records')
-      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, major_error, minor_error, review_notes, created_at, batch_id')
+      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id')
       .in('batch_id', mqrBatchIds);
 
     if (error) {
@@ -13177,9 +13177,10 @@ async function importQaAccuracyFromReview(reviewDateIso) {
           // linkedin_url column existed), fill in ONLY the missing
           // fields — never touch dispute_status, kind, or anything
           // else about a row that may already have an approved dispute.
+          const linkedinUrl = row.corrected_profile_url || row.profile_url || null; // corrected_profile_url takes priority when present
           const patch = {};
           if (!existingMatch.lead_name && leadName) patch.lead_name = leadName;
-          if (!existingMatch.linkedin_url && row.profile_url) patch.linkedin_url = row.profile_url;
+          if (!existingMatch.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
           if (!existingMatch.recent_activity && activity) patch.recent_activity = activity;
           if (Object.keys(patch).length) toBackfill.push({ id: existingMatch.id, patch });
           return;
@@ -13196,7 +13197,7 @@ async function importQaAccuracyFromReview(reviewDateIso) {
           domain: row.domain || null,
           country: row.country || null,
           recent_activity: activity,
-          linkedin_url: row.profile_url || null,
+          linkedin_url: linkedinUrl,
         });
       });
     });
