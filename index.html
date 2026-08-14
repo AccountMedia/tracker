@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-13-qa-import-use-updated-at';
+const APP_VERSION = '2026-08-14-lwnp-diagnostic-logging';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4915,6 +4915,16 @@ async function decideRequest(id, decision) {
         : state.leaveEntries.filter(e => e.id === id && e.status === STATUS.APPROVED);
 
       const { updates, inserts } = planLeaveWithoutPayConversion(employee, groupRows);
+      if (updates.length || inserts.length) {
+        console.log('LWNP/spillover conversion applied:', { employee: employee.display_name, groupRows, updates, inserts });
+      } else if (groupRows.some(r => r.leave_type !== 'VL' && r.leave_type !== 'SL')) {
+        // Diagnostic only — logs when a non-VL/SL leave type (like EL)
+        // was approved but the conversion function decided nothing
+        // needed to change, so if a genuine under-deduction happens
+        // again, this will show exactly what groupRows and the
+        // employee's balance looked like at that moment.
+        console.log('LWNP/spillover conversion found nothing to do for:', { employee: employee.display_name, groupRows });
+      }
 
       for (const u of updates) {
         const { error: updateErr } = await sb.from('leave_entries').update(u.fields).eq('id', u.id);
