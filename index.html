@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-qa-import-corrected-url';
+const APP_VERSION = '2026-08-14-errors-always-editable';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11922,6 +11922,20 @@ function renderIpsTables() {
         // nothing left for them to correct or request a change to.
         if ((field === 'md_value' || field === 'peer_review_value') && !canEditAutoSyncedIpsFields()) {
           return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
+        }
+        // Errors is editable AT ANY TIME — future, today, or any past
+        // day — for the same people who could already edit it (the
+        // employee on their own row, or admins/IPS on anyone's row).
+        // Every other field keeps the normal day-based rules below
+        // completely unchanged; this bypass is deliberately scoped to
+        // just this one field.
+        if (field === 'errors' && canEditIpsRow(emp.id)) {
+          const borderStyle = 'border:1px solid var(--line);';
+          const bgStyle = isMe ? '#fff' : 'var(--paper)';
+          return `<td style="${cellPad} text-align:center;">
+            <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
+              style="width:${(isTrioMember || field === 'errors') ? '78px' : '90px'}; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
+          </td>`;
         }
         if (directEdit) {
           const borderStyle = 'border:1px solid var(--line);';
