@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-qa-import-exclude-pip-only';
+const APP_VERSION = '2026-08-14-fix-linkedinurl-scope-bug';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13188,6 +13188,8 @@ async function importQaAccuracyFromReview(reviewDateIso) {
           return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
         });
 
+        const linkedinUrl = row.corrected_profile_url || row.profile_url || null; // corrected_profile_url takes priority when present — declared here, before the branch below, so both the backfill path AND the fresh-insert path can see it
+
         if (existingMatch) {
           skippedDuplicateCount++;
           // Backfill: if this existing row is missing lead_name/
@@ -13195,7 +13197,6 @@ async function importQaAccuracyFromReview(reviewDateIso) {
           // linkedin_url column existed), fill in ONLY the missing
           // fields — never touch dispute_status, kind, or anything
           // else about a row that may already have an approved dispute.
-          const linkedinUrl = row.corrected_profile_url || row.profile_url || null; // corrected_profile_url takes priority when present
           const patch = {};
           if (!existingMatch.lead_name && leadName) patch.lead_name = leadName;
           if (!existingMatch.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
