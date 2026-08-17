@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-teamfunds-r-and-r-label';
+const APP_VERSION = '2026-08-14-qa-import-exclude-pip-only';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13044,16 +13044,19 @@ async function importQaAccuracyFromReview(reviewDateIso) {
 
     // First, find which BATCHES (in the separate review_batches table)
     // were actually reviewed (updated_at) on the selected date AND are
-    // tagged qa_track = 'MQR' — review_records itself has no qa_track
-    // column of its own; that field genuinely lives on review_batches,
-    // linked via review_records.batch_id = review_batches.id
-    // (confirmed directly against the real data). 'PIP' batches, and
-    // batches reviewed on a different date, are excluded here at the
-    // source, before any review_records rows are ever fetched.
-    const { data: mqrBatches, error: batchErr } = await sbQaReview
+    // NOT tagged qa_track = 'PIP' — review_records itself has no
+    // qa_track column of its own; that field genuinely lives on
+    // review_batches, linked via review_records.batch_id =
+    // review_batches.id (confirmed directly against the real data).
+    // Everything except PIP is included (not just MQR specifically),
+    // so this also correctly picks up any future track value without
+    // needing another code change. Batches reviewed on a different
+    // date are excluded here too, before any review_records rows are
+    // ever fetched.
+    const { data: eligibleBatches, error: batchErr } = await sbQaReview
       .from('review_batches')
       .select('id')
-      .eq('qa_track', 'MQR')
+      .or('qa_track.neq.PIP,qa_track.is.null') // SQL's NULL semantics mean a plain neq() alone would silently exclude a blank qa_track too — this explicitly keeps null in, matching the genuine "everything except PIP" intent
       .gte('updated_at', startOfDay)
       .lt('updated_at', endOfDay);
     if (batchErr) {
@@ -13061,9 +13064,9 @@ async function importQaAccuracyFromReview(reviewDateIso) {
       showToast('Could not reach the QA Review database — check the connection.', true);
       return;
     }
-    const mqrBatchIds = (mqrBatches || []).map(b => b.id);
-    if (!mqrBatchIds.length) {
-      showToast(`No MQR batches reviewed on ${reviewDateIso}.`, true);
+    const eligibleBatchIds = (eligibleBatches || []).map(b => b.id);
+    if (!eligibleBatchIds.length) {
+      showToast(`No non-PIP batches reviewed on ${reviewDateIso}.`, true);
       return;
     }
 
@@ -13076,7 +13079,7 @@ async function importQaAccuracyFromReview(reviewDateIso) {
     const { data, error } = await sbQaReview
       .from('review_records')
       .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id')
-      .in('batch_id', mqrBatchIds);
+      .in('batch_id', eligibleBatchIds);
 
     if (error) {
       console.error(error);
@@ -13084,7 +13087,7 @@ async function importQaAccuracyFromReview(reviewDateIso) {
       return;
     }
     if (!data || !data.length) {
-      showToast(`No MQR reviews found for ${reviewDateIso}.`, true);
+      showToast(`No non-PIP reviews found for ${reviewDateIso}.`, true);
       return;
     }
 
