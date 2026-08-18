@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-qa-accuracy-live-sync';
+const APP_VERSION = '2026-08-17-fix-concede-approved-sync';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11413,7 +11413,9 @@ function qaDisputeProofUrlsFor(rawPaths) {
 
 function qaDisputeStatusFor(row) {
   if (row.dispute_status === 'Approved') return 'approved'; // the ONE outcome that stops counting against QA%
-  return 'none'; // Rejected, Concede, or no dispute at all — all still count, per the confirmed rule
+  if (row.dispute_status === 'Rejected') return 'rejected'; // still counts, but genuinely shown as "reviewed and rejected" rather than lumped in with "no dispute at all"
+  if (row.dispute_action === 'Concede') return 'conceded'; // still counts, but genuinely shown as "you conceded this" rather than looking like nothing ever happened
+  return 'none'; // no dispute or concession at all
 }
 
 async function syncQaAccuracyFromReviewRecords() {
@@ -11438,7 +11440,7 @@ async function syncQaAccuracyFromReviewRecords() {
 
     const { data, error } = await sbQaReview
       .from('review_records')
-      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id, dispute_action, dispute_explanation, dispute_status, dispute_proof_urls')
+      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id, dispute_action, dispute_explanation, dispute_status, dispute_proof_urls, original_major_error, original_minor_error')
       .in('batch_id', eligibleBatchIds);
     if (error) { console.error('QA Accuracy sync (records fetch) failed:', error); return; }
     if (!data || !data.length) return;
@@ -11472,7 +11474,18 @@ async function syncQaAccuracyFromReviewRecords() {
       const emp = state.employees.find(e => e.display_name === reviewerName);
       if (!emp) { unmatchedNames.add(reviewerName); return; }
 
-      const flaggedRows = rows.filter(r => r.major_error || r.minor_error);
+      // A row counts as "flagged" if EITHER its current major_error/
+      // minor_error is true, OR it was ORIGINALLY flagged before a
+      // dispute got approved — approval flips the live flags back to
+      // false in the source system (confirmed against real data), but
+      // preserves what it originally was in original_major_error/
+      // original_minor_error. Without also checking the original
+      // flags, an approved-dispute row would become permanently
+      // invisible to this sync the moment its live flags cleared —
+      // meaning the corresponding entry here would never get its
+      // dispute_status updated to 'approved', and would keep counting
+      // against QA% forever despite being approved in the source.
+      const flaggedRows = rows.filter(r => r.major_error || r.minor_error || r.original_major_error || r.original_minor_error);
 
       if (!flaggedRows.length) {
         if (!employeeIdsWithRealEntries.has(emp.id) && !employeeIdsAlreadyNoCallout.has(emp.id)) {
@@ -11482,7 +11495,7 @@ async function syncQaAccuracyFromReviewRecords() {
       }
 
       flaggedRows.forEach(row => {
-        const kind = row.major_error ? 'major' : 'minor';
+        const kind = (row.major_error || row.original_major_error) ? 'major' : 'minor';
         const activity = VALID_ACTIVITY.includes(row.recent_activity) ? row.recent_activity : null;
         const leadName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
         const statusReason = row.review_notes || null;
