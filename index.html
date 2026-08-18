@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-qa-sync-diagnostic-logging';
+const APP_VERSION = '2026-08-17-qa-sync-batch-diagnostic';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11436,6 +11436,8 @@ async function syncQaAccuracyFromReviewRecords() {
       .lt('updated_at', monthEnd);
     if (batchErr) { console.error('QA Accuracy sync (batch lookup) failed:', batchErr); return; }
     const eligibleBatchIds = (eligibleBatches || []).map(b => b.id);
+    console.log('[QA SYNC DIAG] monthStart:', monthStart, '| monthEnd:', monthEnd, '| eligibleBatchIds count:', eligibleBatchIds.length);
+    console.log('[QA SYNC DIAG] Katrena\'s known batch (201fb3fc-8c1b-449f-8137-6779cebfdba6) is eligible:', eligibleBatchIds.includes('201fb3fc-8c1b-449f-8137-6779cebfdba6'));
     if (!eligibleBatchIds.length) return;
 
     const { data, error } = await sbQaReview
