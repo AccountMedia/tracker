@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-fix-concede-approved-sync';
+const APP_VERSION = '2026-08-17-qa-live-dispute-lookup';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11449,7 +11449,7 @@ async function syncQaAccuracyFromReviewRecords() {
     const unmatchedNames = new Set();
 
     const [{ data: existingEntries, error: existingErr }, { data: existingNoCallouts, error: noCalloutErr }] = await Promise.all([
-      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity, company, job_title, dispute_status, dispute_explanation').eq('month', monthIso),
+      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity, company, job_title').eq('month', monthIso),
       sb.from('ips_qa_no_callouts').select('employee_id').eq('month', monthIso),
     ]);
     if (existingErr) { console.error('QA Accuracy sync (existing entries check) failed:', existingErr); return; }
@@ -11467,8 +11467,9 @@ async function syncQaAccuracyFromReviewRecords() {
     });
 
     const toInsert = [];
-    const toUpdate = []; // [{ id, patch }] — dispute fields kept live on existing entries, unlike the old one-time import
+    const toBackfill = []; // [{ id, patch }] — only genuinely-missing display fields (lead_name/linkedin_url/recent_activity), NEVER dispute fields — those are looked up live now, not stored
     const toMarkNoCallout = [];
+    const freshDisputeLookup = new Map(); // rebuilt from scratch on every run — the new live source of truth for dispute status, replacing the old "write it to the database and hope the sync caught every row" approach
 
     byReviewer.forEach((rows, reviewerName) => {
       const emp = state.employees.find(e => e.display_name === reviewerName);
@@ -11479,12 +11480,7 @@ async function syncQaAccuracyFromReviewRecords() {
       // dispute got approved — approval flips the live flags back to
       // false in the source system (confirmed against real data), but
       // preserves what it originally was in original_major_error/
-      // original_minor_error. Without also checking the original
-      // flags, an approved-dispute row would become permanently
-      // invisible to this sync the moment its live flags cleared —
-      // meaning the corresponding entry here would never get its
-      // dispute_status updated to 'approved', and would keep counting
-      // against QA% forever despite being approved in the source.
+      // original_minor_error.
       const flaggedRows = rows.filter(r => r.major_error || r.minor_error || r.original_major_error || r.original_minor_error);
 
       if (!flaggedRows.length) {
@@ -11516,20 +11512,20 @@ async function syncQaAccuracyFromReviewRecords() {
           return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
         });
 
+        // Record this row's LIVE dispute outcome in the fresh lookup,
+        // keyed by employee+identity — used regardless of whether this
+        // is a new or existing entry, since ipsQaEntryCounts() will
+        // consult this lookup by the entry's own employee_id+lead_name
+        // (or company+job_title) at read time, not by database id.
+        const lookupKey = `${emp.id}|${normalizedLeadName || `${normalizedCompany}::${normalizedJobTitle}`}`;
+        freshDisputeLookup.set(lookupKey, { dispute_status: disputeStatus, dispute_explanation: disputeExplanation, dispute_evidence_urls: disputeEvidenceUrls });
+
         if (existingMatch) {
           const patch = {};
           if (!existingMatch.lead_name && leadName) patch.lead_name = leadName;
           if (!existingMatch.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
           if (!existingMatch.recent_activity && activity) patch.recent_activity = activity;
-          // Dispute fields: kept LIVE, unlike the rest of the row —
-          // this is the whole point of replacing the manual button.
-          // Only writes when genuinely different, to avoid a pointless
-          // no-op update (and the resulting realtime echo) every time
-          // this sync runs.
-          if (existingMatch.dispute_status !== disputeStatus) patch.dispute_status = disputeStatus;
-          if ((existingMatch.dispute_explanation || null) !== disputeExplanation) patch.dispute_explanation = disputeExplanation;
-          patch.dispute_evidence_urls = disputeEvidenceUrls; // always set alongside explanation changes — always safe to re-write the same value when nothing changed
-          if (Object.keys(patch).length) toUpdate.push({ id: existingMatch.id, patch });
+          if (Object.keys(patch).length) toBackfill.push({ id: existingMatch.id, patch });
           return;
         }
 
@@ -11545,9 +11541,6 @@ async function syncQaAccuracyFromReviewRecords() {
           country: row.country || null,
           recent_activity: activity,
           linkedin_url: linkedinUrl,
-          dispute_status: disputeStatus,
-          dispute_explanation: disputeExplanation,
-          dispute_evidence_urls: disputeEvidenceUrls,
         });
       });
     });
@@ -11556,9 +11549,9 @@ async function syncQaAccuracyFromReviewRecords() {
       console.warn('QA Accuracy sync: could not match these reviewer names to any employee:', [...unmatchedNames].join(', '));
     }
 
-    for (const { id, patch } of toUpdate) {
-      const { error: updateErr } = await sb.from('ips_qa_entries').update(patch).eq('id', id);
-      if (updateErr) console.error('QA Accuracy sync: update failed for entry', id, updateErr);
+    for (const { id, patch } of toBackfill) {
+      const { error: backfillErr } = await sb.from('ips_qa_entries').update(patch).eq('id', id);
+      if (backfillErr) console.error('QA Accuracy sync: backfill failed for entry', id, backfillErr);
     }
 
     if (toInsert.length) {
@@ -11573,10 +11566,16 @@ async function syncQaAccuracyFromReviewRecords() {
       if (noCalloutInsertErr) console.error('QA Accuracy sync: no-callout insert failed:', noCalloutInsertErr);
     }
 
-    if (toUpdate.length || toInsert.length || toMarkNoCallout.length) {
-      await loadIpsData();
-      renderIpsTables();
-    }
+    // Publish the freshly-built lookup — this is the new live source of
+    // truth ipsQaEntryCounts() reads from, replacing the old stored
+    // dispute_status column entirely. Published and re-rendered on
+    // EVERY run, not just when something was inserted/backfilled,
+    // since a dispute outcome changing (e.g. a fresh Approval) updates
+    // this lookup's VALUES without necessarily creating any new
+    // insert/backfill operation — the screen still needs to reflect it.
+    qaLiveDisputeLookup = freshDisputeLookup;
+    if (toInsert.length) { await loadIpsData(); }
+    renderIpsTables();
   } catch (err) {
     console.error('QA Accuracy sync error:', err);
   }
@@ -11847,6 +11846,33 @@ function ipsQaEntriesFor(employeeId, monthIso, kind) {
   return ipsState.qaEntries.filter(e => e.employee_id === employeeId && e.month === monthIso && (!kind || e.kind === kind));
 }
 
+// The live, in-memory dispute-status lookup — rebuilt fresh on every
+// syncQaAccuracyFromReviewRecords() run (see there), keyed by
+// `${employee_id}|${normalized lead name, or company::job_title if no
+// name}`. This REPLACES trusting a stored ips_qa_entries.dispute_status
+// column to have been correctly synced — instead, QA% is computed
+// directly from whatever review_records says RIGHT NOW, every time,
+// eliminating the entire class of bug where a sync fails to catch or
+// correctly update a specific row. ONLY ever populated for the CURRENT
+// month — a past month's dispute outcomes are frozen historical facts
+// by the time they're "past," with no live sync racing to update them,
+// so those genuinely fall back to whatever's already stored.
+let qaLiveDisputeLookup = new Map();
+function qaLiveDisputeStatusFor(entry) {
+  const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  if (entry.month !== currentMonthIso) return entry.dispute_status || 'none'; // past month — the live lookup was never built for this, use the stored value
+  const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const normalizedLeadName = normalizeText(entry.lead_name);
+  const key = `${entry.employee_id}|${normalizedLeadName || `${normalizeText(entry.company)}::${normalizeText(entry.job_title)}`}`;
+  const live = qaLiveDisputeLookup.get(key);
+  // Falls back to whatever's stored on the entry itself if this
+  // specific lead genuinely isn't in the live lookup yet (e.g. the
+  // sync hasn't completed its first run this session) — better to show
+  // last-known information than nothing at all while the live data
+  // loads in.
+  return live ? live.dispute_status : (entry.dispute_status || 'none');
+}
+
 // Whether a QA entry currently counts against QA% — every entry counts
 // EXCEPT one that has been disputed and the dispute was approved (that
 // removes it from the tally entirely, per the agreed rule: an admin
@@ -11854,9 +11880,11 @@ function ipsQaEntriesFor(employeeId, monthIso, kind) {
 // Rejected disputes, conceded entries, and never-disputed entries all
 // still count normally.
 function ipsQaEntryCounts(employeeId, monthIso) {
-  const effective = (kind) => ipsQaEntriesFor(employeeId, monthIso, kind).filter(e => e.dispute_status !== 'approved').length;
+  const effective = (kind) => ipsQaEntriesFor(employeeId, monthIso, kind).filter(e => qaLiveDisputeStatusFor(e) !== 'approved').length;
   return { major: effective('major'), minor: effective('minor') };
 }
+
+
 
 // Whether an admin has explicitly marked this employee as reviewed-
 // and-clean for this month (see "No call-out" in the manage modal).
@@ -12843,7 +12871,7 @@ async function openIpsYearModal(employeeId) {
       return (t > 0 && target > 0) ? t / target : null;
     }).filter(r => r != null);
     const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
-    const effectiveEntries = monthQaEntries.filter(e => e.dispute_status !== 'approved');
+    const effectiveEntries = monthQaEntries.filter(e => qaLiveDisputeStatusFor(e) !== 'approved');
     const majorCount = effectiveEntries.filter(e => e.kind === 'major').length;
     const minorCount = effectiveEntries.filter(e => e.kind === 'minor').length;
     const qa = Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
@@ -13101,7 +13129,7 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
     const errorsSumFor = (empId) => dates.reduce((s, d) => { const e = dailyFor(empId, d); return s + (e && e.errors != null ? Number(e.errors) : 0); }, 0);
     const ecFor = (empId) => { const wd = Number(workingDays || 0); return wd ? (1 - (errorsSumFor(empId) / wd)) : null; };
     const qaFor = (empId) => {
-      const effective = qaEntriesForMonth(empId).filter(e => e.dispute_status !== 'approved');
+      const effective = qaEntriesForMonth(empId).filter(e => qaLiveDisputeStatusFor(e) !== 'approved');
       const majorCount = effective.filter(e => e.kind === 'major').length;
       const minorCount = effective.filter(e => e.kind === 'minor').length;
       return Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
@@ -13136,7 +13164,7 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
       header: ['Agent', 'QA %', 'Major (effective)', 'Minor (effective)', 'Pending Disputes', 'Lead Names (Major/Minor)'],
       rows: roster.map(emp => {
         const entries = qaEntriesForMonth(emp.id);
-        const effective = entries.filter(e => e.dispute_status !== 'approved');
+        const effective = entries.filter(e => qaLiveDisputeStatusFor(e) !== 'approved');
         const majorCount = effective.filter(e => e.kind === 'major').length;
         const minorCount = effective.filter(e => e.kind === 'minor').length;
         const pendingDisputes = entries.filter(e => e.dispute_status === 'disputed').length;
@@ -13202,7 +13230,7 @@ function downloadIpsQaAccuracyReport() {
     const qa = qaFrac != null ? round2(qaFrac * 100) : 100; // no entries + no No-call-out still reports as 100% here, per the agreed rule for this specific report
     const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
     // Matches ipsQaEntryCounts()'s rule exactly: only 'approved' is excluded.
-    const stillCounting = (kind) => allEntries.filter(e => e.kind === kind && e.dispute_status !== 'approved');
+    const stillCounting = (kind) => allEntries.filter(e => e.kind === kind && qaLiveDisputeStatusFor(e) !== 'approved');
 
     const cellFor = (kind) => {
       const entries = stillCounting(kind);
@@ -13904,18 +13932,18 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
   // Ties within the same tier keep their original relative order
   // (a stable sort) rather than being further reshuffled.
   const disputeTier = (status) => status === 'disputed' ? 0 : (status === 'conceded' || status === 'approved' || status === 'rejected') ? 2 : 1;
-  const sortedEntries = [...entries].sort((a, b) => disputeTier(a.dispute_status) - disputeTier(b.dispute_status));
+  const sortedEntries = [...entries].sort((a, b) => disputeTier(qaLiveDisputeStatusFor(a)) - disputeTier(qaLiveDisputeStatusFor(b)));
   const majorEntries = sortedEntries.filter(e => e.kind === 'major');
   const minorEntries = sortedEntries.filter(e => e.kind === 'minor');
   const disputed = entries.filter(e => e.dispute_status === 'disputed');
   const hasNoCallout = ipsQaHasNoCallout(employeeId, ipsState.month);
   const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
   const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
-  const canResolve = canResolveIpsQaDisputes(); // Jeinna/Kristina only — narrower than 'admin' (which also covers QA-role entry editing)
 
   function entryCard(e) {
     const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
     const wash = e.kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
+    const liveStatus = qaLiveDisputeStatusFor(e);
     const statusBadge = {
       none:      '',
       conceded:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green-wash); color:var(--green);">✓ conceded</span>`,
@@ -13923,8 +13951,8 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
       approved:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green); color:#fff;">✓ dispute approved — removed from count</span>`,
       rejected_as_minor: `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:#2D6A9F; color:#fff;">dispute rejected — downgraded to Minor</span>`,
       rejected:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--ink-faint); color:#fff;">dispute rejected — still counts</span>`,
-    }[e.dispute_status] || '';
-    const excluded = e.dispute_status === 'approved'; // ONLY a full approval excludes it — rejected_as_minor still counts, just as Minor
+    }[liveStatus] || '';
+    const excluded = liveStatus === 'approved'; // ONLY a full approval excludes it — rejected_as_minor still counts, just as Minor
     const isEditable = !['conceded', 'approved', 'rejected_as_minor', 'rejected'].includes(e.dispute_status);
     return `
       <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:8px; ${excluded ? 'opacity:0.55;' : ''}">
@@ -13968,26 +13996,8 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
         ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
         ${['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_review_evidence_urls?.length ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reviewer's images:</span>${renderDisputeEvidenceGallery(e.dispute_review_evidence_urls)}</div>` : ''}
         <div style="display:flex; gap:6px; margin-top:8px; align-items:center; position:relative;">
-          ${admin && e.dispute_status === 'disputed' && canResolve ? `
-            <button class="btn btn-sm ips-qa-approve-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:var(--green); color:#fff;">Approve dispute</button>
-            ${e.kind === 'major' ? `
-              <div class="ips-qa-reject-dropdown-wrap" style="position:relative; flex-shrink:0;">
-                <button type="button" class="btn btn-ghost btn-sm ips-qa-reject-dropdown-toggle" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; display:inline-flex; align-items:center; gap:4px;">
-                  Reject dispute
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                </button>
-                <div class="ips-qa-reject-dropdown-menu" data-id="${e.id}" style="display:none; position:absolute; bottom:calc(100% + 4px); left:0; z-index:40; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:170px; overflow:hidden;">
-                  <button type="button" class="ips-qa-reject-dispute-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:9px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:var(--ink);">Reject</button>
-                  <button type="button" class="ips-qa-reject-as-minor-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:9px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:#2D6A9F;">Reject, Count as Minor</button>
-                </div>
-              </div>
-            ` : `
-              <button class="btn btn-ghost btn-sm ips-qa-reject-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px;">Reject dispute</button>
-            `}
-          ` : ''}
           ${admin && !isEditable ? `
             <span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>
-            ${canResolve && ['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) ? `<button type="button" class="ips-qa-undo-dispute-btn" data-id="${e.id}" style="font-size:10.5px; padding:3px 9px; background:none; border:1px solid var(--line); border-radius:6px; cursor:pointer; color:var(--ink-soft); margin-left:8px;">Undo</button>` : ''}
           ` : ''}
           ${admin && isEditable ? `
             <div style="margin-left:auto; position:relative; width:26px; height:24px; flex-shrink:0;">
@@ -14052,11 +14062,6 @@ function closeAllIpsQaEntryMenus() {
   document.querySelectorAll('.ips-qa-entry-menu').forEach(m => { m.style.display = 'none'; });
 }
 
-// Same pattern, for the "Reject dispute ▾" dropdown (Major entries).
-function closeAllIpsQaRejectDropdowns() {
-  document.querySelectorAll('.ips-qa-reject-dropdown-menu').forEach(m => { m.style.display = 'none'; });
-}
-
 function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   document.getElementById('ips-qa-add-major-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'major', null));
   document.getElementById('ips-qa-add-minor-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'minor', null));
@@ -14086,7 +14091,6 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
       const menu = document.querySelector(`.ips-qa-entry-menu[data-id="${toggle.dataset.id}"]`);
       const isOpen = menu.style.display === 'block';
       closeAllIpsQaEntryMenus();
-      closeAllIpsQaRejectDropdowns();
       menu.style.display = isOpen ? 'none' : 'block';
     });
   });
@@ -14101,47 +14105,6 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
   // this, each render would leak one more permanent listener.
   document.removeEventListener('click', closeAllIpsQaEntryMenus);
   document.addEventListener('click', closeAllIpsQaEntryMenus);
-  document.querySelectorAll('.ips-qa-approve-dispute-btn').forEach(btn => {
-    btn.addEventListener('click', () => openResolveDisputeModal(btn.dataset.id, 'approved', employeeId, emp, admin));
-  });
-  document.querySelectorAll('.ips-qa-undo-dispute-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (!confirm('Are you sure you want to undo?')) return;
-      undoDisputeResolution(btn.dataset.id, employeeId);
-    });
-  });
-  document.querySelectorAll('.ips-qa-reject-as-minor-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      closeAllIpsQaRejectDropdowns();
-      openResolveDisputeModal(btn.dataset.id, 'rejected_as_minor', employeeId, emp, admin);
-    });
-  });
-  document.querySelectorAll('.ips-qa-reject-dispute-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      closeAllIpsQaRejectDropdowns();
-      openResolveDisputeModal(btn.dataset.id, 'rejected', employeeId, emp, admin);
-    });
-  });
-  // "Reject dispute ▾" dropdown (Major entries only) — same interaction
-  // model as the Hub Switcher: click toggles the menu open/closed,
-  // selecting an option or clicking outside closes it. The trigger
-  // button itself never changes size or position, so nothing in the
-  // surrounding row shifts when the menu opens.
-  document.querySelectorAll('.ips-qa-reject-dropdown-toggle').forEach(toggle => {
-    toggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const menu = document.querySelector(`.ips-qa-reject-dropdown-menu[data-id="${toggle.dataset.id}"]`);
-      const isOpen = menu.style.display === 'block';
-      closeAllIpsQaRejectDropdowns();
-      closeAllIpsQaEntryMenus();
-      menu.style.display = isOpen ? 'none' : 'block';
-    });
-  });
-  document.querySelectorAll('.ips-qa-reject-dropdown-menu').forEach(menu => {
-    menu.addEventListener('click', (e) => e.stopPropagation());
-  });
-  document.removeEventListener('click', closeAllIpsQaRejectDropdowns);
-  document.addEventListener('click', closeAllIpsQaRejectDropdowns);
 }
 
 // Admin explicitly confirms "I reviewed this employee for this month
@@ -14299,191 +14262,6 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
   openIpsQaManageModal(employeeId);
 }
 
-// Admin resolves a pending dispute. Approving removes the entry from
-// the QA% count (per the agreed rule); rejecting leaves it counting
-// exactly as before — either way the dispute_status is updated so the
-// employee can see the outcome, and the notification tied to this
-// dispute is cleared for every admin/IPS viewer.
-// Opens a proper modal (replacing the old confirm()/prompt() browser
-// dialogs, whose single-line prompt box was too narrow to comfortably
-// type in) for resolving a dispute. Both approve and reject now offer
-// the same optional, appropriately-sized note field.
-function openResolveDisputeModal(entryId, resolution, employeeId, emp, admin) {
-  const isApprove = resolution === 'approved';
-  const isRejectAsMinor = resolution === 'rejected_as_minor';
-  const title = isApprove ? 'Approve dispute' : isRejectAsMinor ? 'Reject, Count as Minor' : 'Reject dispute';
-  const description = isApprove
-    ? 'This entry will no longer count against QA%.'
-    : isRejectAsMinor
-      ? 'The dispute is rejected — this entry still stands — but it will be downgraded from Major to Minor, moving to the Minor list and counting as −1 instead of −3 against QA%, permanently.'
-      : 'This entry will continue counting against QA% as before.';
-  const btnColor = isApprove ? 'var(--green)' : isRejectAsMinor ? '#2D6A9F' : 'var(--coral)';
-  openModal(title, `
-    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">${description}</p>
-    <form id="ips-qa-resolve-form" style="display:flex; flex-direction:column; gap:14px;">
-      <div class="field">
-        <label for="ips-qa-resolve-note">Note (optional, visible to the employee)</label>
-        <textarea id="ips-qa-resolve-note" rows="6"
-          style="width:100%; padding:10px 12px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:13.5px; resize:vertical; min-height:120px;"
-          placeholder="Optional: explain your decision..."></textarea>
-      </div>
-      <div class="field">
-        <label for="ips-qa-resolve-images">Attach images (optional, visible to the employee)</label>
-        <div id="ips-qa-resolve-images-dropzone" style="border:2px dashed var(--line); border-radius:8px; padding:10px; transition:border-color 0.12s, background 0.12s;">
-          <input type="file" id="ips-qa-resolve-images" accept="image/*" multiple
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-          <p class="faint" style="font-size:10.5px; margin:6px 0 0;">Or drag images here, or paste (Ctrl+V) a screenshot/Snipping Tool capture</p>
-        </div>
-        <div id="ips-qa-resolve-images-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
-      </div>
-      <button type="submit" class="btn btn-primary" id="ips-qa-resolve-submit-btn" style="justify-content:center; background:${btnColor};">${title}</button>
-    </form>
-  `, { width: '600px' });
-  enableImageDropAndPaste('ips-qa-resolve-images-dropzone', 'ips-qa-resolve-images');
-  document.getElementById('ips-qa-resolve-images').addEventListener('change', (e) => {
-    const preview = document.getElementById('ips-qa-resolve-images-preview');
-    preview.innerHTML = '';
-    Array.from(e.target.files).forEach(file => {
-      const url = URL.createObjectURL(file);
-      const thumb = document.createElement('img');
-      thumb.src = url;
-      thumb.style.cssText = 'width:56px; height:56px; object-fit:cover; border-radius:6px; border:1px solid var(--line);';
-      preview.appendChild(thumb);
-    });
-  });
-  document.getElementById('ips-qa-resolve-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const note = document.getElementById('ips-qa-resolve-note').value.trim();
-    const files = Array.from(document.getElementById('ips-qa-resolve-images').files);
-    const submitBtn = document.getElementById('ips-qa-resolve-submit-btn');
-    submitBtn.disabled = true;
-    submitBtn.textContent = files.length ? 'Uploading images...' : 'Saving...';
-    await resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, note, files);
-  });
-}
-
-async function resolveIpsQaDispute(entryId, resolution, employeeId, emp, admin, note, files = []) {
-  if (!canResolveIpsQaDisputes()) { showToast('Only Kristina and Jeinna can resolve disputes.', true); return; }
-  const isRejectAsMinor = resolution === 'rejected_as_minor';
-  const reviewedAt = new Date().toISOString();
-  const evidenceUrls = files.length ? await uploadQaDisputeEvidence(entryId, files) : [];
-
-  // Snapshot the entry's REAL current state before this resolution
-  // overwrites anything — this is what a later "Undo" restores from,
-  // so it reflects exactly how the entry looked a moment ago, not an
-  // assumption about what it must have looked like.
-  const entryBeforeResolution = ipsState.qaEntries.find(e => e.id === entryId);
-  const undoSnapshot = entryBeforeResolution ? {
-    dispute_status: entryBeforeResolution.dispute_status,
-    kind: entryBeforeResolution.kind,
-    dispute_reviewed_by: entryBeforeResolution.dispute_reviewed_by,
-    dispute_reviewed_at: entryBeforeResolution.dispute_reviewed_at,
-    dispute_reject_reason: entryBeforeResolution.dispute_reject_reason,
-    dispute_approve_note: entryBeforeResolution.dispute_approve_note,
-    dispute_review_evidence_urls: entryBeforeResolution.dispute_review_evidence_urls,
-  } : null;
-
-  const payload = {
-    dispute_status: resolution,
-    dispute_reviewed_by: state.profile.display_name,
-    dispute_reviewed_at: reviewedAt,
-    dispute_reject_reason: (resolution === 'rejected' || isRejectAsMinor) ? (note || null) : null,
-    dispute_approve_note: resolution === 'approved' ? (note || null) : null,
-    dispute_seen_by_employee: false,
-    updated_at: reviewedAt,
-    dispute_undo_snapshot: undoSnapshot,
-  };
-  if (evidenceUrls.length) payload.dispute_review_evidence_urls = evidenceUrls;
-  // "Reject, Count as Minor": the dispute itself is rejected (the entry
-  // isn't removed), but the admin agrees it's less severe than a full
-  // Major — so it's downgraded to a real Minor going forward: moves to
-  // the Minor tab, counts as -1 instead of -3, permanently. Unlike a
-  // full rejection (which leaves the entry counting exactly as
-  // originally filed), this changes its actual kind — which is why it
-  // needs its own dispute_status ('rejected_as_minor') rather than
-  // reusing 'rejected'.
-  if (isRejectAsMinor) payload.kind = 'minor';
-  const { error } = await sb.from('ips_qa_entries').update(payload).eq('id', entryId);
-  if (error) {
-    console.error(error);
-    showToast(
-      /dispute_review_evidence_urls.* does not exist/i.test(error.message || '') ? 'Image attachments need setup — run ips_qa_entries_review_evidence.sql in Supabase.'
-      : /violates check constraint.*dispute_status/i.test(error.message || '') ? 'Needs setup — run ips_qa_entries_fix_dispute_status_constraint.sql in Supabase.'
-      : /dispute_seen_by_employee.* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_qa_entries_dispute_seen.sql in Supabase.'
-      : 'Could not resolve the dispute.',
-      true
-    );
-    return;
-  }
-  showToast(
-    resolution === 'approved' ? 'Dispute approved — QA% recalculated.'
-    : isRejectAsMinor ? 'Dispute rejected, entry downgraded to Minor — QA% recalculated.'
-    : 'Dispute rejected — entry still counts.'
-  );
-  // Patch the in-memory row immediately — don't wait on loadIpsData()
-  // below, which only re-fetches whichever month the IPS tab currently
-  // has selected. If this entry belongs to a DIFFERENT month than what's
-  // showing, that fetch would silently miss it (and its full-array
-  // replacement would leave the resolved entry's stale 'disputed'
-  // status sitting in memory), which is exactly what let this dispute
-  // keep showing under "QA disputes need your review" after being
-  // resolved. This patch guarantees My Alerts sees the change instantly
-  // regardless of month scoping.
-  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, ...payload } : e);
-  await clearIpsNotificationForRequest(entryId);
-  await loadIpsData();
-  renderIpsTables();
-  // If it was just downgraded to Minor, switch the manage modal to the
-  // Minor tab so the admin actually sees where the entry went, rather
-  // than reopening on Major where it may now be the only thing missing.
-  if (isRejectAsMinor) ipsState.qaTab = 'minor';
-  openIpsQaManageModal(employeeId);
-}
-
-// Reverses a dispute resolution (approve/reject/reject-as-minor) back
-// to its exact prior state, using the snapshot captured the moment
-// resolution happened — restores dispute_status to 'disputed' and
-// every dispute-related field to precisely what it held before,
-// including reversing a reject-as-minor's kind change if that's what
-// happened. Deliberately touches ONLY these dispute fields — nothing
-// else about the entry (company, job title, status reason, etc.) is
-// affected, since this is a targeted undo of the resolution action
-// itself, not a general re-opening of editing on an otherwise still-
-// locked entry.
-async function undoDisputeResolution(entryId, employeeId) {
-  if (!canResolveIpsQaDisputes()) { showToast('Only Kristina and Jeinna can undo a resolution.', true); return; }
-
-  const entry = ipsState.qaEntries.find(e => e.id === entryId);
-  const snapshot = entry ? entry.dispute_undo_snapshot : null;
-  if (!snapshot) { showToast('No undo information is available for this entry.', true); return; }
-
-  const payload = {
-    dispute_status: snapshot.dispute_status,
-    kind: snapshot.kind,
-    dispute_reviewed_by: snapshot.dispute_reviewed_by,
-    dispute_reviewed_at: snapshot.dispute_reviewed_at,
-    dispute_reject_reason: snapshot.dispute_reject_reason,
-    dispute_approve_note: snapshot.dispute_approve_note,
-    dispute_review_evidence_urls: snapshot.dispute_review_evidence_urls,
-    dispute_undo_snapshot: null, // cleared — a stale snapshot here would incorrectly imply a second undo is possible after this entry gets resolved again
-    updated_at: new Date().toISOString(),
-  };
-
-  const { error } = await sb.from('ips_qa_entries').update(payload).eq('id', entryId);
-  if (error) {
-    console.error(error);
-    showToast(/dispute_undo_snapshot.* does not exist/i.test(error.message || '') ? 'Undo needs setup — run ips_qa_entries_dispute_undo.sql in Supabase.' : 'Could not undo the resolution.', true);
-    return;
-  }
-
-  showToast('Resolution undone — the entry is back to pending dispute review.');
-  ipsState.qaEntries = ipsState.qaEntries.map(e => e.id === entryId ? { ...e, ...payload } : e);
-  await loadIpsData();
-  renderIpsTables();
-  ipsState.qaTab = 'major'; // undo can only ever apply to a Major entry (only Major disputes can be filed in the first place), so this correctly always lands back on the Major tab regardless of whether it had been downgraded to Minor
-  openIpsQaManageModal(employeeId);
-}
-
 // =====================================================================
 // EMPLOYEE-FACING QA DISPUTE VIEW — "My QA Notes"
 // =====================================================================
@@ -14534,7 +14312,7 @@ function renderMyQaEntriesModalBody() {
   const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const mine = ipsState.qaEntries
     .filter(e => e.employee_id === myId && e.month === currentMonthIso)
-    .sort((a, b) => disputeTier(a.dispute_status) - disputeTier(b.dispute_status)
+    .sort((a, b) => disputeTier(qaLiveDisputeStatusFor(a)) - disputeTier(qaLiveDisputeStatusFor(b))
       || (b.month || '').localeCompare(a.month || '')
       || (a.created_at || '').localeCompare(b.created_at || ''));
   const majorEntries = mine.filter(e => e.kind === 'major');
@@ -14552,7 +14330,7 @@ function renderMyQaEntriesModalBody() {
       approved:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ Your dispute was approved — this entry no longer counts against your QA%.</div>`,
       rejected_as_minor: `<div style="margin-top:8px; font-size:11px; font-weight:600; color:#2D6A9F;">Your dispute was reviewed and rejected, but the entry was downgraded from Major to Minor — it now counts as −1 instead of −3.</div>`,
       rejected:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--ink-soft);">Your dispute was reviewed and rejected — this entry still counts.</div>`,
-    }[e.dispute_status] || '';
+    }[qaLiveDisputeStatusFor(e)] || '';
     return `
       <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:10px;">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
