@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-fix-linkedinurl-scope-bug';
+const APP_VERSION = '2026-08-14-disable-qa-dispute-add-upload-alert';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13294,15 +13294,31 @@ function downloadIpsQaAccuracyReport() {
   // or below — matches the same threshold already used on the live QA
   // Accuracy tab. Keyed "rowIndex,colIndex" per openIpsTabbedReport's
   // cellColors contract; only the percentage itself gets colored, not
-  // the Major/Minor reason text next to it.
+  // the Major/Minor reason text next to it. Shared across both blocks
+  // since both tables show the same score column at the same index.
   const cellColors = new Map();
   rows.forEach((r, i) => { if (r.qa <= 95) cellColors.set(`${i},1`, '#C0392B'); });
 
+  const scoreHeader = `${monthLabel.toUpperCase()} SCORE`;
+
   openIpsTabbedReport(monthLabel, [{
     title: 'QA Accuracy',
-    header: ['Employee Name', `${monthLabel.toUpperCase()} SCORE`, 'MAJOR', 'MINOR'],
-    rows: rows.map(r => [r.name, r.qa + '%', r.major, r.minor]),
-    cellColors,
+    blocks: [
+      {
+        label: 'Major',
+        header: ['Employee Name', scoreHeader, 'MAJOR'],
+        rows: rows.map(r => [r.name, r.qa + '%', r.major]),
+        cellColors,
+        wrapText: true, // long reason text wraps within the cell instead of forcing the table wide — this is what keeps the two tables close together and readable, rather than one running far off to the side
+      },
+      {
+        label: 'Minor',
+        header: ['Employee Name', scoreHeader, 'MINOR'],
+        rows: rows.map(r => [r.name, r.qa + '%', r.minor]),
+        cellColors,
+        wrapText: true,
+      },
+    ],
   }]);
 }
 
@@ -13509,7 +13525,7 @@ function openIpsTabbedReport(monthLabel, sections) {
       <h1>IPS — Productivity Output Report</h1>
       <p class="sub">${escapeHtml(monthLabel)}</p>
       <div class="toolbar"><button id="dl-btn">Download CSV</button></div>
-      <div class="rpt-tabs">${tabsHtml}</div>
+      ${sections.length > 1 ? `<div class="rpt-tabs">${tabsHtml}</div>` : ''}
       ${panelsHtml}
       <script>
         const tabs = document.querySelectorAll('.rpt-tab');
@@ -14618,8 +14634,6 @@ function renderMyQaEntriesModalBody() {
   function entryCard(e) {
     const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
     const wash = e.kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
-    const canAct = e.dispute_status === 'none';
-    const canEditDispute = e.dispute_status === 'disputed'; // only while pending — not once approved/rejected
     const statusLine = {
       none:      '',
       conceded:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ You conceded this entry.</div>`,
@@ -14667,17 +14681,6 @@ function renderMyQaEntriesModalBody() {
         ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
         ${['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_review_evidence_urls?.length ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reviewer's images:</span>${renderDisputeEvidenceGallery(e.dispute_review_evidence_urls)}</div>` : ''}
         ${statusLine}
-        ${canAct ? `
-          <div style="display:flex; gap:8px; margin-top:10px;">
-            <button class="btn btn-sm ips-qa-concede-btn" data-id="${e.id}" style="flex:1; justify-content:center; background:var(--green); color:#fff; font-size:11.5px;">Concede</button>
-            <button class="btn btn-ghost btn-sm ips-qa-dispute-btn" data-id="${e.id}" style="flex:1; justify-content:center; font-size:11.5px; color:var(--coral); border-color:var(--coral-wash);">Dispute</button>
-          </div>
-        ` : ''}
-        ${canEditDispute ? `
-          <div style="margin-top:10px;">
-            <button class="btn btn-ghost btn-sm ips-qa-edit-dispute-btn" data-id="${e.id}" style="width:100%; justify-content:center; font-size:11.5px;">Edit dispute</button>
-          </div>
-        ` : ''}
       </div>
     `;
   }
@@ -14708,27 +14711,10 @@ function renderMyQaEntriesModalBody() {
       renderMyQaEntriesModalBody();
     });
   });
-  document.querySelectorAll('.ips-qa-concede-btn').forEach(btn => {
-    btn.addEventListener('click', () => concedeMyQaEntry(btn.dataset.id));
-  });
-  document.querySelectorAll('.ips-qa-dispute-btn').forEach(btn => {
-    btn.addEventListener('click', () => openDisputeExplanationModal(btn.dataset.id));
-  });
-  document.querySelectorAll('.ips-qa-edit-dispute-btn').forEach(btn => {
-    btn.addEventListener('click', () => openDisputeExplanationModal(btn.dataset.id));
-  });
 }
 
 async function concedeMyQaEntry(entryId) {
-  if (!confirm('Concede this entry? This confirms you accept it as recorded — it will continue counting against your QA%.')) return;
-  const { error } = await sb.from('ips_qa_entries').update({
-    dispute_status: 'conceded',
-    updated_at: new Date().toISOString(),
-  }).eq('id', entryId);
-  if (error) { showToast('Could not save your response.', true); return; }
-  showToast('Entry conceded.');
-  await loadMyQaEntries(true);
-  renderMyQaEntriesModalBody();
+  showToast('Conceding entries is no longer available.', true);
 }
 
 // Separate small modal for the mandatory dispute explanation, opened
@@ -14842,30 +14828,7 @@ async function uploadQaDisputeEvidence(entryId, files) {
 }
 
 async function submitQaDispute(entryId, explanation, files = []) {
-  const entry = ipsState.qaEntries.find(e => e.id === entryId);
-  const evidenceUrls = files.length ? await uploadQaDisputeEvidence(entryId, files) : [];
-  const { data: updated, error } = await sb.from('ips_qa_entries').update({
-    dispute_status: 'disputed',
-    dispute_explanation: explanation,
-    dispute_evidence_urls: evidenceUrls.length ? evidenceUrls : null,
-    disputed_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  }).eq('id', entryId).select().single();
-  if (error) {
-    console.error(error);
-    showToast(/column .*dispute_evidence_urls.* does not exist/i.test(error.message || '') ? 'Needs setup — run qa_dispute_evidence_storage.sql in Supabase.' : 'Could not submit your dispute.', true);
-    return;
-  }
-  showToast('Dispute submitted — an admin/IPS will review it.');
-  // Notify admin/IPS — same pattern as the correction-request stream,
-  // linked to this entry's id so the notification/badge clears
-  // automatically once an admin approves or rejects the dispute.
-  const empLabel = state.profile.display_name;
-  const kindLabel = entry ? (entry.kind === 'major' ? 'Major' : 'Minor') : 'QA';
-  const leadLabel = entry?.lead_name || 'a lead';
-  pushIpsNotification(`${empLabel} disputed a ${kindLabel} QA entry for ${leadLabel} — needs review.`, entryId);
-  await loadMyQaEntries(true);
-  renderMyQaEntriesModalBody();
+  showToast('Disputing entries is no longer available.', true);
 }
 
 // Saves edits to an ALREADY-SUBMITTED dispute (text and/or evidence
@@ -14877,25 +14840,7 @@ async function submitQaDispute(entryId, explanation, files = []) {
 // already notified once when the dispute was first filed, and this is
 // just a refinement of that same pending item.
 async function updateQaDispute(entryId, explanation, newFiles, keptUrls) {
-  const { data: current, error: fetchErr } = await sb.from('ips_qa_entries').select('dispute_status').eq('id', entryId).maybeSingle();
-  if (fetchErr || !current) { showToast('Could not verify this dispute — please try again.', true); return; }
-  if (current.dispute_status !== 'disputed') {
-    showToast('This dispute has already been reviewed and can no longer be edited.', true);
-    await loadMyQaEntries(true);
-    renderMyQaEntriesModalBody();
-    return;
-  }
-  const newUrls = newFiles.length ? await uploadQaDisputeEvidence(entryId, newFiles) : [];
-  const finalUrls = [...keptUrls, ...newUrls];
-  const { error } = await sb.from('ips_qa_entries').update({
-    dispute_explanation: explanation,
-    dispute_evidence_urls: finalUrls.length ? finalUrls : null,
-    updated_at: new Date().toISOString(),
-  }).eq('id', entryId).eq('dispute_status', 'disputed'); // belt-and-suspenders: only writes if STILL disputed at the exact moment of the update
-  if (error) { showToast('Could not save your changes.', true); return; }
-  showToast('Dispute updated.');
-  await loadMyQaEntries(true);
-  renderMyQaEntriesModalBody();
+  showToast('Editing disputes is no longer available.', true);
 }
 
 // =====================================================================
@@ -14981,58 +14926,27 @@ function myPersonalAlertItems() {
     });
   }
 
-  // 3. QA entries awaiting my Concede/Dispute decision — spans every
-  // month I have entries in, not just the currently-viewed IPS month.
-  // Relies on ipsState.qaEntries already being populated (either by an
-  // admin's month-scoped IPS visit, or by this employee having opened
-  // "My QA Notes" at least once this session via loadMyQaEntries) —
-  // deliberately does NOT trigger its own fetch here, to keep this
-  // check as lightweight as the other two items above.
-  const myPendingQaEntries = (ipsState.qaEntries || []).filter(e => e.employee_id === myId && e.dispute_status === 'none');
-  if (myPendingQaEntries.length) {
+  // 3. QA% uploaded for the month — fires ONCE per employee per month,
+  // the first time they have ANY QA data at all for that month (a real
+  // Major/Minor entry, OR a "No call-out" clean-review record) —
+  // whichever arrives first. Deliberately does NOT repeat if more
+  // entries get added later in the same month; "seen" tracking below
+  // (the same localStorage mechanism every other alert already uses)
+  // is what prevents it firing again once acknowledged, and the
+  // sortKey is pinned to the FIRST piece of data that ever arrived
+  // that month, so a later entry doesn't bump it back into view.
+  const myEntriesThisMonth = (ipsState.qaEntries || []).filter(e => e.employee_id === myId && e.month === ipsState.month);
+  const myNoCalloutThisMonth = (ipsState.qaNoCallouts || []).find(n => n.employee_id === myId && n.month === ipsState.month);
+  if (myEntriesThisMonth.length || myNoCalloutThisMonth) {
+    const earliestEntryAt = myEntriesThisMonth.reduce((m, e) => (!m || (e.created_at || '') < m) ? e.created_at : m, null);
+    const noCalloutAt = myNoCalloutThisMonth ? myNoCalloutThisMonth.created_at : null;
+    // Whichever came first is what "uploaded" genuinely means for this
+    // employee this month — a real entry or being marked clean.
+    const uploadedAt = [earliestEntryAt, noCalloutAt].filter(Boolean).sort()[0] || isoDate(new Date());
     items.push({
-      icon: '📋', label: 'QA entries need your response',
-      detail: `${myPendingQaEntries.length} ${myPendingQaEntries.length === 1 ? 'entry needs' : 'entries need'} you to Concede or Dispute`,
-      sortKey: myPendingQaEntries.reduce((m, e) => (e.created_at || '') > m ? e.created_at : m, ''),
-    });
-  }
-
-  // 4. Pending QA disputes awaiting admin review — visible ONLY to
-  // Jeinna and Kristina by name (the two people who actually review
-  // these), not the broader admin/IPS role in general. Shows in THEIR
-  // own My Alerts regardless of which employee's entry was disputed —
-  // this is the "notify the reviewers" counterpart to item #3 above
-  // (which notifies the employee whose entry it is).
-  if (['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name)) {
-    const pendingDisputes = (ipsState.qaEntries || []).filter(e => e.dispute_status === 'disputed');
-    if (pendingDisputes.length) {
-      const names = [...new Set(pendingDisputes.map(e => {
-        const emp = state.employees.find(x => x.id === e.employee_id);
-        return emp ? emp.display_name : 'Someone';
-      }))];
-      items.push({
-        icon: '⚠️', label: 'QA disputes need your review',
-        detail: `${pendingDisputes.length} pending: ${names.join(', ')}`,
-        sortKey: pendingDisputes.reduce((m, e) => (e.disputed_at || '') > m ? e.disputed_at : m, ''),
-      });
-    }
-  }
-
-  // 5. My disputes that were just resolved (approved/rejected/rejected-
-  // as-minor) that I haven't seen yet — clears the moment I open My QA
-  // Notes, same "acted on it, it clears" pattern as item #3 above.
-  const myResolvedDisputes = (ipsState.qaEntries || []).filter(e =>
-    e.employee_id === myId &&
-    ['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) &&
-    e.dispute_seen_by_employee === false
-  );
-  if (myResolvedDisputes.length) {
-    const outcomeLabel = (status) => status === 'approved' ? 'approved' : status === 'rejected_as_minor' ? 'downgraded to Minor' : 'rejected';
-    const summaries = myResolvedDisputes.map(e => outcomeLabel(e.dispute_status));
-    items.push({
-      icon: '✅', label: 'Your dispute was reviewed',
-      detail: `${myResolvedDisputes.length} ${myResolvedDisputes.length === 1 ? 'dispute was' : 'disputes were'} resolved (${summaries.join(', ')})`,
-      sortKey: myResolvedDisputes.reduce((m, e) => (e.dispute_reviewed_at || '') > m ? e.dispute_reviewed_at : m, ''),
+      icon: '📊', label: 'Your QA % for the month has been uploaded',
+      detail: ipsMonthLabel(ipsState.month),
+      sortKey: uploadedAt,
     });
   }
 
@@ -15180,9 +15094,7 @@ function renderPersonalAlertsFromCache() {
     badge.style.display = 'none';
   }
   const alertActions = {
-    'QA entries need your response': 'open-qa-notes',
-    'QA disputes need your review': 'open-qa-accuracy-tab',
-    'Your dispute was reviewed': 'open-qa-notes',
+    'Your QA % for the month has been uploaded': 'open-qa-notes',
   };
   list.innerHTML = items.length ? items.map(item => {
     const action = alertActions[item.label] || '';
@@ -15203,33 +15115,6 @@ function renderPersonalAlertsFromCache() {
   `;
   list.querySelectorAll('.pa-alert-item[data-action="open-qa-notes"]').forEach(el => {
     el.addEventListener('click', () => openMyQaEntriesModal());
-  });
-  list.querySelectorAll('.pa-alert-item[data-action="open-qa-accuracy-tab"]').forEach(el => {
-    el.addEventListener('click', () => {
-      // Jump straight to the OLDEST pending dispute, not just the
-      // general tab — finds it, switches to its Major/Minor sub-tab,
-      // and opens that specific employee's manage modal directly, so
-      // Kristina/Jeinna don't have to hunt through every row's badge.
-      const pending = (ipsState.qaEntries || [])
-        .filter(e => e.dispute_status === 'disputed')
-        .sort((a, b) => (a.disputed_at || '').localeCompare(b.disputed_at || ''));
-      const oldest = pending[0];
-      switchView('ips');
-      ipsState.tab = 'qa';
-      sessionStorage.setItem('registry_ips_tab', 'qa');
-      if (oldest) {
-        // The oldest dispute may belong to a month different from
-        // whatever the IPS tab currently has selected — jump the
-        // month too, or the manage modal would open showing the wrong
-        // month's (empty) entry list for that employee.
-        if (oldest.month && oldest.month !== ipsState.month) ipsState.month = oldest.month;
-        ipsState.qaTab = oldest.kind === 'minor' ? 'minor' : 'major';
-        renderIpsTables();
-        openIpsQaManageModal(oldest.employee_id);
-      } else {
-        renderIpsTables();
-      }
-    });
   });
 }
 
