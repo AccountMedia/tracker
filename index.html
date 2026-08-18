@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-qa-sync-paginated-fetch';
+const APP_VERSION = '2026-08-17-qa-sync-remove-diagnostics';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11436,8 +11436,6 @@ async function syncQaAccuracyFromReviewRecords() {
       .lt('updated_at', monthEnd);
     if (batchErr) { console.error('QA Accuracy sync (batch lookup) failed:', batchErr); return; }
     const eligibleBatchIds = (eligibleBatches || []).map(b => b.id);
-    console.log('[QA SYNC DIAG] monthStart:', monthStart, '| monthEnd:', monthEnd, '| eligibleBatchIds count:', eligibleBatchIds.length);
-    console.log('[QA SYNC DIAG] Katrena\'s known batch (201fb3fc-8c1b-449f-8137-6779cebfdba6) is eligible:', eligibleBatchIds.includes('201fb3fc-8c1b-449f-8137-6779cebfdba6'));
     if (!eligibleBatchIds.length) return;
 
     // Fetches in pages of 1000 (Supabase's REST API default row cap
@@ -11463,7 +11461,6 @@ async function syncQaAccuracyFromReviewRecords() {
       if (page.length < PAGE_SIZE) break; // last page — fewer rows than a full page means nothing more to fetch
       pageStart += PAGE_SIZE;
     }
-    console.log('[QA SYNC DIAG] Total review_records rows fetched across all pages:', data.length);
     if (!data || !data.length) return;
 
     const VALID_ACTIVITY = ['Recently Active', 'Active', 'Passive', 'Silent'];
@@ -11490,15 +11487,6 @@ async function syncQaAccuracyFromReviewRecords() {
       byReviewer.get(firstNameKey).push(row);
     });
 
-    // TEMPORARY diagnostic — traces exactly what happens to any row
-    // whose first/last name is Shatall/Mulira, end to end through this
-    // function. Safe to remove once the root cause is found; logs to
-    // console only, no behavior change.
-    const diagRows = data.filter(r => r.first_name === 'Shatall' && r.last_name === 'Mulira');
-    console.log('[QA SYNC DIAG] Shatall Mulira rows in fetched data:', diagRows.length, diagRows);
-    console.log('[QA SYNC DIAG] byReviewer has "katrena" key:', byReviewer.has('katrena'), '-> rows:', byReviewer.get('katrena'));
-    console.log('[QA SYNC DIAG] state.employees with display_name starting "Katrena":', state.employees.filter(e => e.display_name.toLowerCase().startsWith('katrena')));
-
     const toInsert = [];
     const toBackfill = []; // [{ id, patch }] — only genuinely-missing display fields (lead_name/linkedin_url/recent_activity), NEVER dispute fields — those are looked up live now, not stored
     const toMarkNoCallout = [];
@@ -11515,10 +11503,6 @@ async function syncQaAccuracyFromReviewRecords() {
       // preserves what it originally was in original_major_error/
       // original_minor_error.
       const flaggedRows = rows.filter(r => r.major_error || r.minor_error || r.original_major_error || r.original_minor_error);
-
-      if (firstNameKey === 'katrena') {
-        console.log('[QA SYNC DIAG] Processing katrena group. emp found:', emp ? emp.display_name : null, '| total rows:', rows.length, '| flaggedRows:', flaggedRows.length, flaggedRows);
-      }
 
       if (!flaggedRows.length) {
         if (!employeeIdsWithRealEntries.has(emp.id) && !employeeIdsAlreadyNoCallout.has(emp.id)) {
