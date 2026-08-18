@@ -1134,6 +1134,7 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
+  qaLiveSyncReady = false;
   stopIpsArchiveWatcher();
   hideLeaveNotifPanel();
   stopPriolistPolling();
@@ -1723,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-qa-sync-remove-diagnostics';
+const APP_VERSION = '2026-08-17-fix-qa-loading-race';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11595,6 +11596,7 @@ async function syncQaAccuracyFromReviewRecords() {
     // this lookup's VALUES without necessarily creating any new
     // insert/backfill operation — the screen still needs to reflect it.
     qaLiveDisputeLookup = freshDisputeLookup;
+    qaLiveSyncReady = true;
     if (toInsert.length) { await loadIpsData(); }
     renderIpsTables();
   } catch (err) {
@@ -11879,6 +11881,18 @@ function ipsQaEntriesFor(employeeId, monthIso, kind) {
 // by the time they're "past," with no live sync racing to update them,
 // so those genuinely fall back to whatever's already stored.
 let qaLiveDisputeLookup = new Map();
+// Tracks whether the live sync has completed AT LEAST ONCE this
+// session — false until the very first successful run. This exists
+// specifically to fix a real, reported glitch: QA% would sometimes
+// show a stale/wrong number for a brief moment on page load, then
+// silently snap to the correct one once the async sync finished — the
+// PAGE INITIALLY RENDERS BEFORE THE NETWORK FETCH COMPLETES, so the
+// first paint had no way of knowing the live data wasn't ready yet.
+// The display layer checks this flag and shows a loading indicator
+// instead of a possibly-wrong number during that brief window, rather
+// than showing something that might be about to change underneath the
+// viewer.
+let qaLiveSyncReady = false;
 function qaLiveDisputeStatusFor(entry) {
   const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   if (entry.month !== currentMonthIso) return entry.dispute_status || 'none'; // past month — the live lookup was never built for this, use the stored value
@@ -12426,6 +12440,12 @@ function renderIpsTables() {
 
   function buildQaSection() {
     const qaEditor = canManageIpsQa();
+    // The live dispute sync only ever applies to the CURRENT month —
+    // past months' QA% never depends on it, so the loading state below
+    // only matters when someone's actually viewing the current month.
+    const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+    const viewingCurrentMonth = ipsState.month === currentMonthIso;
+    const stillLoadingLiveData = viewingCurrentMonth && !qaLiveSyncReady;
     const rows = roster.map(emp => {
       const qaFrac = ipsQaFraction(emp.id, ipsState.month);
       const qa = qaFrac != null ? round2(qaFrac * 100) : '';
@@ -12436,15 +12456,27 @@ function renderIpsTables() {
       const qaColor = major > 0 ? 'var(--coral)' : qa === '' ? 'inherit' : (qa >= 95 ? '#2D6A9F' : 'var(--coral)');
       const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
       const pendingDisputeCount = allEntries.filter(e => e.dispute_status === 'disputed').length;
+      // While the live sync's first run this session hasn't completed
+      // yet, showing a real QA%/Major/Minor number here would be
+      // genuinely misleading — it could be built from a stale stored
+      // dispute_status that's about to change the instant the sync
+      // finishes (this was the exact cause of the reported "flickers
+      // to a different number on refresh" glitch). A plain loading
+      // indicator is honest about the fact that this isn't settled yet.
+      const qaCellContent = stillLoadingLiveData
+        ? `<span class="faint" style="font-size:11px;">loading…</span>`
+        : (qa !== '' ? qa + '%' : '—');
+      const majorCellContent = stillLoadingLiveData ? '—' : major;
+      const minorCellContent = stillLoadingLiveData ? '—' : minor;
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">
             ${escapeHtml(emp.display_name)}
             ${pendingDisputeCount > 0 ? `<span class="ips-dispute-badge" data-emp-id="${emp.id}" title="${pendingDisputeCount} pending dispute${pendingDisputeCount===1?'':''} — click to review" style="cursor:pointer; margin-left:6px; display:inline-flex; align-items:center; justify-content:center; min-width:17px; height:17px; padding:0 4px; border-radius:999px; background:var(--coral); color:#fff; font-size:10px; font-weight:700; vertical-align:middle;">${pendingDisputeCount}</span>` : ''}
           </td>
-          <td style="padding:8px; text-align:center; font-weight:700; color:${qaColor};">${qa !== '' ? qa + '%' : '—'}</td>
-          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${major}</td>
-          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${minor}</td>
+          <td style="padding:8px; text-align:center; font-weight:700; color:${stillLoadingLiveData ? 'var(--ink-faint)' : qaColor};">${qaCellContent}</td>
+          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${majorCellContent}</td>
+          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${minorCellContent}</td>
           <td style="padding:6px; text-align:center;">
             <button class="btn btn-ghost btn-sm ips-qa-manage-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 12px;">
               ${allEntries.length} ${allEntries.length === 1 ? 'entry' : 'entries'}${qaEditor ? ' — manage' : ' — view'}
