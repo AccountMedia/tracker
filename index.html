@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-qa-sync-batch-diagnostic';
+const APP_VERSION = '2026-08-17-qa-sync-paginated-fetch';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11440,11 +11440,30 @@ async function syncQaAccuracyFromReviewRecords() {
     console.log('[QA SYNC DIAG] Katrena\'s known batch (201fb3fc-8c1b-449f-8137-6779cebfdba6) is eligible:', eligibleBatchIds.includes('201fb3fc-8c1b-449f-8137-6779cebfdba6'));
     if (!eligibleBatchIds.length) return;
 
-    const { data, error } = await sbQaReview
-      .from('review_records')
-      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id, dispute_action, dispute_explanation, dispute_status, dispute_proof_urls, original_major_error, original_minor_error')
-      .in('batch_id', eligibleBatchIds);
-    if (error) { console.error('QA Accuracy sync (records fetch) failed:', error); return; }
+    // Fetches in pages of 1000 (Supabase's REST API default row cap
+    // per request) rather than trusting one unbounded request to
+    // return everything — with many eligible batches, a single request
+    // could silently truncate before every row is returned, dropping
+    // some entries (including dispute outcomes) without any error at
+    // all. This loop keeps requesting subsequent pages until a page
+    // comes back with fewer than the page size, confirming there's
+    // nothing left to fetch.
+    const PAGE_SIZE = 1000;
+    let data = [];
+    let pageStart = 0;
+    while (true) {
+      const { data: page, error: pageErr } = await sbQaReview
+        .from('review_records')
+        .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id, dispute_action, dispute_explanation, dispute_status, dispute_proof_urls, original_major_error, original_minor_error')
+        .in('batch_id', eligibleBatchIds)
+        .range(pageStart, pageStart + PAGE_SIZE - 1);
+      if (pageErr) { console.error('QA Accuracy sync (records fetch) failed:', pageErr); return; }
+      if (!page || !page.length) break;
+      data = data.concat(page);
+      if (page.length < PAGE_SIZE) break; // last page — fewer rows than a full page means nothing more to fetch
+      pageStart += PAGE_SIZE;
+    }
+    console.log('[QA SYNC DIAG] Total review_records rows fetched across all pages:', data.length);
     if (!data || !data.length) return;
 
     const VALID_ACTIVITY = ['Recently Active', 'Active', 'Passive', 'Silent'];
