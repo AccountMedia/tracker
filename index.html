@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-qa-report-revert-single-table';
+const APP_VERSION = '2026-08-14-qa-accuracy-live-sync';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11375,6 +11375,221 @@ function stopIpsPeerReviewRealtimeSync() {
   }
 }
 
+// ── QA Accuracy live sync from review_records ──────────────────────────
+// Replaces the old manual "Import from QA Review" button entirely —
+// this runs automatically and continuously, exactly like MD Task and
+// Peer Review already do. Scoped to the CURRENT calendar month only:
+// once a month passes, whatever was already imported for it stays
+// exactly as it is forever (never re-queried, never deleted by this
+// sync) — only the current month's data is ever actively watched and
+// updated.
+//
+// Dispute fields are mapped from review_records' own dispute columns
+// (confirmed against real data and explicit rules):
+//   - dispute_status = 'Approved'  -> ips_qa_entries.dispute_status = 'approved' (does NOT count against QA%)
+//   - dispute_status = 'Rejected'  -> 'none' (STILL counts — a rejected dispute doesn't remove the entry)
+//   - dispute_action = 'Concede'   -> 'none' (STILL counts — conceding doesn't remove it either)
+//   - neither set (no dispute filed) -> 'none' (counts, same as always)
+// dispute_explanation is copied directly. dispute_proof_urls (an array
+// of Supabase Storage object PATHS, not full URLs) is converted into
+// real public image URLs using the confirmed public "dispute-proofs"
+// bucket in this same project.
+//
+// Unlike the old button, THIS sync also actively UPDATES an existing
+// entry's dispute fields on every run (not just when first created) —
+// this is the explicit reason the manual button was replaced: an
+// employee's dispute can be filed/resolved in review_records AFTER
+// their entry was first imported, and this keeps that outcome
+// genuinely live rather than frozen at import time.
+function qaDisputeProofUrlsFor(rawPaths) {
+  if (!rawPaths) return null;
+  let paths = rawPaths;
+  if (typeof paths === 'string') {
+    try { paths = JSON.parse(paths); } catch { return null; } // stored as a JSON string in some rows — parse defensively rather than assume
+  }
+  if (!Array.isArray(paths) || !paths.length) return null;
+  return paths.map(p => `${QA_REVIEW_SUPABASE_URL}/storage/v1/object/public/dispute-proofs/${p}`);
+}
+
+function qaDisputeStatusFor(row) {
+  if (row.dispute_status === 'Approved') return 'approved'; // the ONE outcome that stops counting against QA%
+  return 'none'; // Rejected, Concede, or no dispute at all — all still count, per the confirmed rule
+}
+
+async function syncQaAccuracyFromReviewRecords() {
+  if (!sbQaReview) return;
+
+  try {
+    const now = new Date();
+    const monthIso = isoDate(new Date(now.getFullYear(), now.getMonth(), 1)); // current month only — never touches past months
+    const monthStart = `${monthIso}T00:00:00Z`;
+    const nextMonthDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const monthEnd = `${isoDate(nextMonthDate)}T00:00:00Z`;
+
+    const { data: eligibleBatches, error: batchErr } = await sbQaReview
+      .from('review_batches')
+      .select('id')
+      .or('qa_track.neq.PIP,qa_track.is.null')
+      .gte('updated_at', monthStart)
+      .lt('updated_at', monthEnd);
+    if (batchErr) { console.error('QA Accuracy sync (batch lookup) failed:', batchErr); return; }
+    const eligibleBatchIds = (eligibleBatches || []).map(b => b.id);
+    if (!eligibleBatchIds.length) return;
+
+    const { data, error } = await sbQaReview
+      .from('review_records')
+      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id, dispute_action, dispute_explanation, dispute_status, dispute_proof_urls')
+      .in('batch_id', eligibleBatchIds);
+    if (error) { console.error('QA Accuracy sync (records fetch) failed:', error); return; }
+    if (!data || !data.length) return;
+
+    const VALID_ACTIVITY = ['Recently Active', 'Active', 'Passive', 'Silent'];
+    const unmatchedNames = new Set();
+
+    const [{ data: existingEntries, error: existingErr }, { data: existingNoCallouts, error: noCalloutErr }] = await Promise.all([
+      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity, company, job_title, dispute_status, dispute_explanation').eq('month', monthIso),
+      sb.from('ips_qa_no_callouts').select('employee_id').eq('month', monthIso),
+    ]);
+    if (existingErr) { console.error('QA Accuracy sync (existing entries check) failed:', existingErr); return; }
+    if (noCalloutErr) { console.error('QA Accuracy sync (no-callout check) failed:', noCalloutErr); return; }
+    const employeeIdsWithRealEntries = new Set((existingEntries || []).map(e => e.employee_id));
+    const employeeIdsAlreadyNoCallout = new Set((existingNoCallouts || []).map(r => r.employee_id));
+
+    const byReviewer = new Map();
+    data.forEach(row => {
+      const m = (row.status_reason || '').match(/^(.*?)\s+Marked\s+/i);
+      const reviewerName = m ? m[1].trim() : null;
+      if (!reviewerName) return;
+      if (!byReviewer.has(reviewerName)) byReviewer.set(reviewerName, []);
+      byReviewer.get(reviewerName).push(row);
+    });
+
+    const toInsert = [];
+    const toUpdate = []; // [{ id, patch }] — dispute fields kept live on existing entries, unlike the old one-time import
+    const toMarkNoCallout = [];
+
+    byReviewer.forEach((rows, reviewerName) => {
+      const emp = state.employees.find(e => e.display_name === reviewerName);
+      if (!emp) { unmatchedNames.add(reviewerName); return; }
+
+      const flaggedRows = rows.filter(r => r.major_error || r.minor_error);
+
+      if (!flaggedRows.length) {
+        if (!employeeIdsWithRealEntries.has(emp.id) && !employeeIdsAlreadyNoCallout.has(emp.id)) {
+          toMarkNoCallout.push(emp.id);
+        }
+        return;
+      }
+
+      flaggedRows.forEach(row => {
+        const kind = row.major_error ? 'major' : 'minor';
+        const activity = VALID_ACTIVITY.includes(row.recent_activity) ? row.recent_activity : null;
+        const leadName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
+        const statusReason = row.review_notes || null;
+        const linkedinUrl = row.corrected_profile_url || row.profile_url || null;
+        const disputeStatus = qaDisputeStatusFor(row);
+        const disputeExplanation = row.dispute_explanation || null;
+        const disputeEvidenceUrls = qaDisputeProofUrlsFor(row.dispute_proof_urls);
+
+        const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const normalizedLeadName = normalizeText(leadName);
+        const normalizedCompany = normalizeText(row.company);
+        const normalizedJobTitle = normalizeText(row.job_title);
+
+        const existingMatch = (existingEntries || []).find(e => {
+          if (e.employee_id !== emp.id) return false;
+          const eNormalizedName = normalizeText(e.lead_name);
+          if (normalizedLeadName && eNormalizedName) return eNormalizedName === normalizedLeadName;
+          return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
+        });
+
+        if (existingMatch) {
+          const patch = {};
+          if (!existingMatch.lead_name && leadName) patch.lead_name = leadName;
+          if (!existingMatch.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
+          if (!existingMatch.recent_activity && activity) patch.recent_activity = activity;
+          // Dispute fields: kept LIVE, unlike the rest of the row —
+          // this is the whole point of replacing the manual button.
+          // Only writes when genuinely different, to avoid a pointless
+          // no-op update (and the resulting realtime echo) every time
+          // this sync runs.
+          if (existingMatch.dispute_status !== disputeStatus) patch.dispute_status = disputeStatus;
+          if ((existingMatch.dispute_explanation || null) !== disputeExplanation) patch.dispute_explanation = disputeExplanation;
+          patch.dispute_evidence_urls = disputeEvidenceUrls; // always set alongside explanation changes — always safe to re-write the same value when nothing changed
+          if (Object.keys(patch).length) toUpdate.push({ id: existingMatch.id, patch });
+          return;
+        }
+
+        toInsert.push({
+          employee_id: emp.id,
+          month: monthIso,
+          kind,
+          status_reason: statusReason,
+          lead_name: leadName,
+          job_title: row.job_title || null,
+          company: row.company || null,
+          domain: row.domain || null,
+          country: row.country || null,
+          recent_activity: activity,
+          linkedin_url: linkedinUrl,
+          dispute_status: disputeStatus,
+          dispute_explanation: disputeExplanation,
+          dispute_evidence_urls: disputeEvidenceUrls,
+        });
+      });
+    });
+
+    if (unmatchedNames.size) {
+      console.warn('QA Accuracy sync: could not match these reviewer names to any employee:', [...unmatchedNames].join(', '));
+    }
+
+    for (const { id, patch } of toUpdate) {
+      const { error: updateErr } = await sb.from('ips_qa_entries').update(patch).eq('id', id);
+      if (updateErr) console.error('QA Accuracy sync: update failed for entry', id, updateErr);
+    }
+
+    if (toInsert.length) {
+      const { error: insertErr } = await sb.from('ips_qa_entries').insert(toInsert);
+      if (insertErr) console.error('QA Accuracy sync: insert failed:', insertErr);
+    }
+
+    if (toMarkNoCallout.length) {
+      const { error: noCalloutInsertErr } = await sb.from('ips_qa_no_callouts').insert(
+        toMarkNoCallout.map(employeeId => ({ employee_id: employeeId, month: monthIso }))
+      );
+      if (noCalloutInsertErr) console.error('QA Accuracy sync: no-callout insert failed:', noCalloutInsertErr);
+    }
+
+    if (toUpdate.length || toInsert.length || toMarkNoCallout.length) {
+      await loadIpsData();
+      renderIpsTables();
+    }
+  } catch (err) {
+    console.error('QA Accuracy sync error:', err);
+  }
+}
+
+let _qaAccuracyChannel = null;
+function startQaAccuracyRealtimeSync() {
+  if (_qaAccuracyChannel || !sbQaReview) return;
+  try {
+    const debouncedSync = debounceRealtime(syncQaAccuracyFromReviewRecords, 400);
+    _qaAccuracyChannel = sbQaReview
+      .channel('rt:review_records_qa_accuracy')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'review_records' }, () => { debouncedSync(); })
+      .subscribe();
+    syncQaAccuracyFromReviewRecords();
+  } catch (err) {
+    console.error('QA Accuracy realtime subscribe failed:', err);
+  }
+}
+function stopQaAccuracyRealtimeSync() {
+  if (_qaAccuracyChannel) {
+    try { sbQaReview.removeChannel(_qaAccuracyChannel); } catch (err) { /* non-fatal */ }
+    _qaAccuracyChannel = null;
+  }
+}
+
 // ── Daily archive of MD Task / Peer Review, protecting against the ──
 // ── external source's own daily data deletion ────────────────────────
 // The source project (claim_records/review_batches) deletes its own
@@ -11522,11 +11737,12 @@ let _myQaEntriesLoaded = false;
 async function loadMyQaEntries(forceReload) {
   if (!state.profile || !state.profile.employee_id) return;
   if (_myQaEntriesLoaded && !forceReload) return;
+  const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); // current month only — past months' entries are no longer shown here
   const { data, error } = await sb
     .from('ips_qa_entries')
     .select('*')
     .eq('employee_id', state.profile.employee_id)
-    .order('month', { ascending: false })
+    .eq('month', currentMonthIso)
     .order('created_at', { ascending: true });
   if (error) {
     if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load my QA entries:', error);
@@ -11791,6 +12007,7 @@ function stopIpsRealtime() {
   unsubscribeRealtime('ips_qa_entries');
   stopIpsMdTaskRealtimeSync();
   stopIpsPeerReviewRealtimeSync();
+  stopQaAccuracyRealtimeSync();
 }
 
 function renderIps() {
@@ -12183,7 +12400,7 @@ function renderIpsTables() {
       ${isAdmin() ? `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
         <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px; font-weight:700; color:var(--teal);">${employeesWithResultsCount}/${roster.length} employees have results this month</p>
-        <button class="btn btn-ghost btn-sm" id="ips-qa-import-review-btn" style="flex-shrink:0; font-size:11.5px;">Import from QA Review</button><button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>
+        <button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>
       </div>
       ` : ''}
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
@@ -12422,6 +12639,7 @@ function renderIpsTables() {
   const active = ipsState.tab;
   startIpsMdTaskRealtimeSync(); // safe to call repeatedly — internally guarded against duplicate subscriptions
   startIpsPeerReviewRealtimeSync();
+  startQaAccuracyRealtimeSync();
 
   const body =
     active === 'daily' ? buildDailySection() :
@@ -12962,310 +13180,6 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 // 'approved' — everything else (never disputed, pending review,
 // rejected, rejected-as-minor, AND conceded) still counts and must
 // still show here.
-// Imports Major/Minor QA entries from the SEPARATE external QA-review
-// Supabase project (review_records table) into this app's own
-// ips_qa_entries table. Read-only against that other project — this
-// app never writes back to it.
-//
-// Row shape there: one row per candidate reviewed. major_error/
-// minor_error are booleans; only rows where one of those is TRUE
-// represent an actual call-out worth importing (most rows are clean
-// passes with both false). status_reason is misleadingly named — it's
-// actually "{Reviewer Name} Marked {Good/Unsure/Bad...}", so the
-// reviewer's name has to be extracted from the FRONT of that string to
-// know which employee this entry belongs to. review_notes holds the
-// real call-out explanation and becomes this app's status_reason —
-// the reviewer's name is deliberately stripped out of what actually
-// gets stored/displayed here, since the app already shows whose row
-// it is via the surrounding UI context.
-// Opens a small modal to pick which "reviewed on" date to pull in —
-// since different employees can be reviewed on different days, imports
-// are scoped to one specific date at a time. Re-selecting the same
-// date is safe and expected (e.g. more reviews came in later that
-// day) — duplicate protection happens per-entry inside the import
-// itself, not by locking out the whole date.
-function openQaImportDateModal() {
-  const todayIso = isoDate(new Date());
-  openModal('Import from QA Review', `
-    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">Pick the date the reviews were done on. Already-imported entries are skipped automatically — only new results are added.</p>
-    <form id="qa-import-date-form" style="display:flex; flex-direction:column; gap:14px;">
-      <div class="field">
-        <label for="qa-import-date-input">Reviewed on</label>
-        <input type="date" id="qa-import-date-input" value="${todayIso}" max="${todayIso}"
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-      </div>
-      <button type="submit" class="btn btn-primary" id="qa-import-date-submit-btn" style="justify-content:center;">Import</button>
-    </form>
-  `);
-  document.getElementById('qa-import-date-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const dateVal = document.getElementById('qa-import-date-input').value;
-    if (!dateVal) return;
-    const submitBtn = document.getElementById('qa-import-date-submit-btn');
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Checking...';
-    await importQaAccuracyFromReview(dateVal);
-    submitBtn.disabled = false;
-    submitBtn.textContent = 'Import';
-  });
-}
-
-// Imports Major/Minor QA entries, for ONE specific "reviewed on" date,
-// from the SEPARATE external QA-review Supabase project (review_records
-// table) into this app's own ips_qa_entries table. Read-only against
-// that other project — this app never writes back to it.
-//
-// Row shape there: one row per candidate reviewed. major_error/
-// minor_error are booleans; only rows where one of those is TRUE
-// represent an actual call-out worth importing (most rows are clean
-// passes with both false). status_reason is misleadingly named — it's
-// actually "{Reviewer Name} Marked {Good/Unsure/Bad...}", so the
-// reviewer's name has to be extracted from the FRONT of that string to
-// know which employee this entry belongs to. review_notes holds the
-// real call-out explanation and becomes this app's status_reason —
-// the reviewer's name is deliberately stripped out of what actually
-// gets stored/displayed here, since the app already shows whose row
-// it is via the surrounding UI context.
-async function importQaAccuracyFromReview(reviewDateIso) {
-  if (!sbQaReview) { showToast('QA Review connection is not configured.', true); return; }
-
-  try {
-    // updated_at (not uploaded_at, and not review_records' own
-    // created_at) is the real, actual review timestamp — same column
-    // already confirmed correct for the Peer Review sync earlier. The
-    // file's upload date and the reviewer's actual review date can
-    // genuinely differ (e.g. uploaded Aug 12, reviewed Aug 13), so
-    // bounding by updated_at is what makes "select Aug 13" correctly
-    // surface work actually done on Aug 13, regardless of when the
-    // underlying file was uploaded.
-    const startOfDay = `${reviewDateIso}T00:00:00Z`;
-    const nextDay = isoDate(new Date(new Date(reviewDateIso + 'T00:00:00Z').getTime() + 24 * 60 * 60 * 1000));
-    const endOfDay = `${nextDay}T00:00:00Z`;
-
-    // First, find which BATCHES (in the separate review_batches table)
-    // were actually reviewed (updated_at) on the selected date AND are
-    // NOT tagged qa_track = 'PIP' — review_records itself has no
-    // qa_track column of its own; that field genuinely lives on
-    // review_batches, linked via review_records.batch_id =
-    // review_batches.id (confirmed directly against the real data).
-    // Everything except PIP is included (not just MQR specifically),
-    // so this also correctly picks up any future track value without
-    // needing another code change. Batches reviewed on a different
-    // date are excluded here too, before any review_records rows are
-    // ever fetched.
-    const { data: eligibleBatches, error: batchErr } = await sbQaReview
-      .from('review_batches')
-      .select('id')
-      .or('qa_track.neq.PIP,qa_track.is.null') // SQL's NULL semantics mean a plain neq() alone would silently exclude a blank qa_track too — this explicitly keeps null in, matching the genuine "everything except PIP" intent
-      .gte('updated_at', startOfDay)
-      .lt('updated_at', endOfDay);
-    if (batchErr) {
-      console.error(batchErr);
-      showToast('Could not reach the QA Review database — check the connection.', true);
-      return;
-    }
-    const eligibleBatchIds = (eligibleBatches || []).map(b => b.id);
-    if (!eligibleBatchIds.length) {
-      showToast(`No non-PIP batches reviewed on ${reviewDateIso}.`, true);
-      return;
-    }
-
-    // Pulls EVERY review belonging to those specific MQR batches, not
-    // just the flagged ones — needed to correctly identify reviewers
-    // whose entire day was clean (for the automatic no-callout tagging
-    // below), not just to find the Major/Minor rows. No date filter is
-    // applied here — the batch lookup above already scoped this to the
-    // right date via each batch's own updated_at.
-    const { data, error } = await sbQaReview
-      .from('review_records')
-      .select('status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id')
-      .in('batch_id', eligibleBatchIds);
-
-    if (error) {
-      console.error(error);
-      showToast('Could not reach the QA Review database — check the connection.', true);
-      return;
-    }
-    if (!data || !data.length) {
-      showToast(`No non-PIP reviews found for ${reviewDateIso}.`, true);
-      return;
-    }
-
-    const VALID_ACTIVITY = ['Recently Active', 'Active', 'Passive', 'Silent'];
-    const now = new Date();
-    const monthIso = isoDate(new Date(now.getFullYear(), now.getMonth(), 1)); // genuinely TODAY's month, not whatever month the admin happens to be viewing
-    const unmatchedNames = new Set();
-
-    // Pull the CURRENT state of this month's entries once, up front —
-    // used both for per-entry duplicate detection and for deciding who
-    // already has a real Major/Minor (so they shouldn't ALSO get
-    // marked no-callout).
-    const [{ data: existingEntries, error: existingErr }, { data: existingNoCallouts, error: noCalloutErr }] = await Promise.all([
-      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity, company, job_title').eq('month', monthIso),
-      sb.from('ips_qa_no_callouts').select('employee_id').eq('month', monthIso),
-    ]);
-    if (existingErr) { console.error(existingErr); showToast('Could not check existing entries.', true); return; }
-    const employeeIdsWithRealEntries = new Set((existingEntries || []).map(e => e.employee_id));
-    const employeeIdsAlreadyNoCallout = new Set((existingNoCallouts || []).map(r => r.employee_id));
-
-    // Groups every row by the reviewer name extracted from status_reason,
-    // so we can tell per-reviewer whether EVERY one of their reviews
-    // that day was clean (no-callout candidate) or whether at least one
-    // had an issue (goes through the normal Major/Minor path instead).
-    const byReviewer = new Map();
-    data.forEach(row => {
-      const m = (row.status_reason || '').match(/^(.*?)\s+Marked\s+/i);
-      const reviewerName = m ? m[1].trim() : null;
-      if (!reviewerName) return;
-      if (!byReviewer.has(reviewerName)) byReviewer.set(reviewerName, []);
-      byReviewer.get(reviewerName).push(row);
-    });
-
-    const toInsert = [];
-    const toBackfill = []; // [{ id, patch }] for existing rows missing lead_name/linkedin_url/recent_activity
-    const toMarkNoCallout = []; // employee_ids reviewed clean today with no existing real entry or no-callout this month
-    let skippedDuplicateCount = 0;
-
-    byReviewer.forEach((rows, reviewerName) => {
-      const emp = state.employees.find(e => e.display_name === reviewerName);
-      if (!emp) { unmatchedNames.add(reviewerName); return; }
-
-      const flaggedRows = rows.filter(r => r.major_error || r.minor_error);
-
-      if (!flaggedRows.length) {
-        // Every review from this reviewer today was clean.
-        if (!employeeIdsWithRealEntries.has(emp.id) && !employeeIdsAlreadyNoCallout.has(emp.id)) {
-          toMarkNoCallout.push(emp.id);
-        }
-        return;
-      }
-
-      flaggedRows.forEach(row => {
-        const kind = row.major_error ? 'major' : 'minor';
-        const activity = VALID_ACTIVITY.includes(row.recent_activity) ? row.recent_activity : null;
-        const leadName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
-        const statusReason = row.review_notes || null;
-
-        // Per-ENTRY duplicate check — same employee, same lead. Names
-        // are compared with whitespace NORMALIZED on both sides (any
-        // run of tabs/multiple spaces collapsed to one space, then
-        // trimmed), since some existing rows have literal tab
-        // characters embedded in lead_name from an earlier bulk
-        // data-entry method (e.g. "Erik\tFitchett") — those look
-        // identical to a plain-space "Erik Fitchett" to a human, but
-        // are different strings to an exact match, which was silently
-        // causing this check to miss real matches and create
-        // duplicates instead of recognizing the existing row.
-        //
-        // A lead's name can also be genuinely blank at import time and
-        // filled in LATER by an edit on the source side (confirmed to
-        // happen in practice) — so matching has to work in BOTH
-        // directions: an existing blank-name row can match a NOW-named
-        // incoming row, and vice versa, as long as company+job_title
-        // agree and NEITHER side's name actively contradicts the
-        // other's (two different real names is never treated as a
-        // match, even with everything else identical).
-        const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        const normalizedLeadName = normalizeText(leadName);
-        const normalizedCompany = normalizeText(row.company);
-        const normalizedJobTitle = normalizeText(row.job_title);
-
-        const existingMatch = (existingEntries || []).find(e => {
-          if (e.employee_id !== emp.id) return false;
-          const eNormalizedName = normalizeText(e.lead_name);
-
-          // Both sides have a real name — must match exactly, full stop.
-          if (normalizedLeadName && eNormalizedName) {
-            return eNormalizedName === normalizedLeadName;
-          }
-
-          // At least one side is blank-named — fall back to
-          // company+job_title as the identifying pair, since a blank
-          // name on either side means the name alone can't settle it.
-          // (If BOTH sides are blank-named, this still correctly
-          // requires company+job_title to agree too — two different
-          // unnamed leads at different companies are never merged.)
-          return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
-        });
-
-        const linkedinUrl = row.corrected_profile_url || row.profile_url || null; // corrected_profile_url takes priority when present — declared here, before the branch below, so both the backfill path AND the fresh-insert path can see it
-
-        if (existingMatch) {
-          skippedDuplicateCount++;
-          // Backfill: if this existing row is missing lead_name/
-          // linkedin_url/recent_activity (e.g. imported before the
-          // linkedin_url column existed), fill in ONLY the missing
-          // fields — never touch dispute_status, kind, or anything
-          // else about a row that may already have an approved dispute.
-          const patch = {};
-          if (!existingMatch.lead_name && leadName) patch.lead_name = leadName;
-          if (!existingMatch.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
-          if (!existingMatch.recent_activity && activity) patch.recent_activity = activity;
-          if (Object.keys(patch).length) toBackfill.push({ id: existingMatch.id, patch });
-          return;
-        }
-
-        toInsert.push({
-          employee_id: emp.id,
-          month: monthIso,
-          kind,
-          status_reason: statusReason,
-          lead_name: leadName,
-          job_title: row.job_title || null,
-          company: row.company || null,
-          domain: row.domain || null,
-          country: row.country || null,
-          recent_activity: activity,
-          linkedin_url: linkedinUrl,
-        });
-      });
-    });
-
-    // Apply backfills first — these touch EXISTING rows, so doing them
-    // before any new inserts keeps the two operations cleanly separate
-    // in case one fails partway.
-    for (const { id, patch } of toBackfill) {
-      const { error: patchErr } = await sb.from('ips_qa_entries').update(patch).eq('id', id);
-      if (patchErr) console.error('Backfill failed for entry', id, patchErr);
-    }
-
-    if (toInsert.length) {
-      const { error: insertErr } = await sb.from('ips_qa_entries').insert(toInsert);
-      if (insertErr) {
-        console.error(insertErr);
-        showToast('Could not save the imported entries.', true);
-        return;
-      }
-    }
-
-    if (toMarkNoCallout.length) {
-      const { error: noCalloutInsertErr } = await sb.from('ips_qa_no_callouts').insert(
-        toMarkNoCallout.map(employeeId => ({ employee_id: employeeId, month: monthIso, reviewed_by: state.profile.display_name }))
-      );
-      if (noCalloutInsertErr) console.error('No-callout tagging failed:', noCalloutInsertErr);
-    }
-
-    const parts = [];
-    if (toInsert.length) parts.push(`${toInsert.length} new QA entr${toInsert.length === 1 ? 'y' : 'ies'}`);
-    if (toMarkNoCallout.length) parts.push(`${toMarkNoCallout.length} employee${toMarkNoCallout.length === 1 ? '' : 's'} marked no-callout (100%)`);
-    if (toBackfill.length) parts.push(`${toBackfill.length} existing entr${toBackfill.length === 1 ? 'y' : 'ies'} filled in with missing details`);
-    if (skippedDuplicateCount && !toBackfill.length) parts.push(`${skippedDuplicateCount} already present, skipped`);
-    const unmatchedNote = unmatchedNames.size ? ` (${unmatchedNames.size} unmatched reviewer name${unmatchedNames.size > 1 ? 's' : ''}: ${[...unmatchedNames].join(', ')})` : '';
-
-    if (!parts.length) {
-      showToast(`Nothing new to import for ${reviewDateIso} — already up to date.${unmatchedNote}`, true);
-    } else {
-      showToast(`${reviewDateIso}: ${parts.join(', ')}.${unmatchedNote}`);
-    }
-    closeModal();
-    await loadIpsData();
-    renderIpsTables();
-  } catch (err) {
-    console.error(err);
-    showToast('Something went wrong during import.', true);
-  }
-}
-
 function downloadIpsQaAccuracyReport() {
   const roster = ipsRoster();
   const monthLabel = ipsMonthLabel(ipsState.month);
@@ -13543,7 +13457,6 @@ function openIpsTabbedReport(monthLabel, sections) {
 
 function attachIpsHandlers() {
   document.getElementById('ips-qa-download-report-btn')?.addEventListener('click', downloadIpsQaAccuracyReport);
-  document.getElementById('ips-qa-import-review-btn')?.addEventListener('click', openQaImportDateModal);
   document.getElementById('ips-missed-outputs-toggle')?.addEventListener('click', () => {
     ipsState.missedOutputsExpanded = !ipsState.missedOutputsExpanded;
     renderIpsTables();
@@ -14605,8 +14518,9 @@ function renderMyQaEntriesModalBody() {
   // over month/date, so an older month's still-pending dispute doesn't
   // get buried under this month's already-resolved entries.
   const disputeTier = (status) => status === 'disputed' ? 0 : (status === 'conceded' || status === 'approved' || status === 'rejected') ? 2 : 1;
+  const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const mine = ipsState.qaEntries
-    .filter(e => e.employee_id === myId)
+    .filter(e => e.employee_id === myId && e.month === currentMonthIso)
     .sort((a, b) => disputeTier(a.dispute_status) - disputeTier(b.dispute_status)
       || (b.month || '').localeCompare(a.month || '')
       || (a.created_at || '').localeCompare(b.created_at || ''));
