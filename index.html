@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-qa-sync-bounded-parallel';
+const APP_VERSION = '2026-08-17-fix-priolist-md-peer-pagination';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2231,16 +2231,52 @@ async function computeMdOutputCountsSinceBoundary() {
   const boundaryTimestamp = new Date(Date.UTC(y, m - 1, d, 7, 0, 0));
   boundaryTimestamp.setUTCMinutes(boundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
 
-  const { data, error } = await sbQaReview
+  // Paginated fetch — Supabase's REST API caps any single request at
+  // 1000 rows by default. Without this, if claim_records for the
+  // current reset period exceeds that (a real, confirmed failure mode
+  // — the same class of bug already found and fixed for QA Accuracy),
+  // rows past the cap are silently dropped with no error at all,
+  // producing an artificially low count. IPS's own MD Task sync has a
+  // separate "never decrease" safeguard that happens to reject the bad
+  // write this would produce, which is why IPS could look correct
+  // while PrioList — which has no such safeguard — displayed the wrong,
+  // truncated number directly.
+  const PAGE_SIZE = 1000;
+  const { data: firstPage, count: totalCount, error: firstErr } = await sbQaReview
     .from('claim_records')
-    .select('completed_by, completed_at')
+    .select('completed_by, completed_at', { count: 'exact' })
     .gte('completed_at', boundaryTimestamp.toISOString())
     .not('completed_by', 'is', null)
-    .not('completed_at', 'is', null);
+    .not('completed_at', 'is', null)
+    .range(0, PAGE_SIZE - 1);
 
-  if (error) {
-    if (!/relation .* does not exist/i.test(error.message || '')) console.error('PrioList MD Output sync failed:', error);
+  if (firstErr) {
+    if (!/relation .* does not exist/i.test(firstErr.message || '')) console.error('PrioList MD Output sync failed:', firstErr);
     return null;
+  }
+  let data = firstPage || [];
+  const remainingPages = totalCount != null ? Math.ceil((totalCount - data.length) / PAGE_SIZE) : 0;
+  if (remainingPages > 0) {
+    const MAX_PARALLEL_PAGES = 10; // bounded, same safety cap used for the QA Accuracy sync — safe at realistic volumes, still protects against an excessive burst if volume ever grows dramatically
+    for (let batchStart = 1; batchStart <= remainingPages; batchStart += MAX_PARALLEL_PAGES) {
+      const batchEnd = Math.min(batchStart + MAX_PARALLEL_PAGES - 1, remainingPages);
+      const pagePromises = [];
+      for (let p = batchStart; p <= batchEnd; p++) {
+        const start = p * PAGE_SIZE;
+        pagePromises.push(
+          sbQaReview.from('claim_records').select('completed_by, completed_at')
+            .gte('completed_at', boundaryTimestamp.toISOString())
+            .not('completed_by', 'is', null)
+            .not('completed_at', 'is', null)
+            .range(start, start + PAGE_SIZE - 1)
+        );
+      }
+      const pageResults = await Promise.all(pagePromises);
+      for (const { data: page, error: pageErr } of pageResults) {
+        if (pageErr) { console.error('PrioList MD Output sync (parallel page) failed:', pageErr); return null; }
+        if (page) data = data.concat(page);
+      }
+    }
   }
 
   // Group by first name (with the same alias resolution as the IPS
@@ -2328,15 +2364,42 @@ async function computePeerReviewSumsSinceBoundary() {
   const boundaryTimestamp = new Date(Date.UTC(y, m - 1, d, 7, 0, 0));
   boundaryTimestamp.setUTCMinutes(boundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
 
-  const { data, error } = await sbQaReview
+  // Paginated fetch — see the identical, confirmed fix and reasoning in
+  // computeMdOutputCountsSinceBoundary above.
+  const PAGE_SIZE = 1000;
+  const { data: firstPage, count: totalCount, error: firstErr } = await sbQaReview
     .from('review_batches')
-    .select('claimed_by, total_records, updated_at')
+    .select('claimed_by, total_records, updated_at', { count: 'exact' })
     .gte('updated_at', boundaryTimestamp.toISOString())
-    .not('claimed_by', 'is', null);
+    .not('claimed_by', 'is', null)
+    .range(0, PAGE_SIZE - 1);
 
-  if (error) {
-    if (!/relation .* does not exist/i.test(error.message || '')) console.error('PrioList Peer Review sync failed:', error);
+  if (firstErr) {
+    if (!/relation .* does not exist/i.test(firstErr.message || '')) console.error('PrioList Peer Review sync failed:', firstErr);
     return null;
+  }
+  let data = firstPage || [];
+  const remainingPages = totalCount != null ? Math.ceil((totalCount - data.length) / PAGE_SIZE) : 0;
+  if (remainingPages > 0) {
+    const MAX_PARALLEL_PAGES = 10;
+    for (let batchStart = 1; batchStart <= remainingPages; batchStart += MAX_PARALLEL_PAGES) {
+      const batchEnd = Math.min(batchStart + MAX_PARALLEL_PAGES - 1, remainingPages);
+      const pagePromises = [];
+      for (let p = batchStart; p <= batchEnd; p++) {
+        const start = p * PAGE_SIZE;
+        pagePromises.push(
+          sbQaReview.from('review_batches').select('claimed_by, total_records, updated_at')
+            .gte('updated_at', boundaryTimestamp.toISOString())
+            .not('claimed_by', 'is', null)
+            .range(start, start + PAGE_SIZE - 1)
+        );
+      }
+      const pageResults = await Promise.all(pagePromises);
+      for (const { data: page, error: pageErr } of pageResults) {
+        if (pageErr) { console.error('PrioList Peer Review sync (parallel page) failed:', pageErr); return null; }
+        if (page) data = data.concat(page);
+      }
+    }
   }
 
   const sums = new Map();
@@ -13328,19 +13391,22 @@ function downloadIpsQaAccuracyReport() {
       return `(${entries.length}) ${reasons}`;
     };
 
-    return { name: emp.display_name, qa, major: cellFor('major'), minor: cellFor('minor') };
+    return { name: emp.display_name, qa, major: cellFor('major'), minor: cellFor('minor'), majorCount: stillCounting('major').length };
   });
 
   // Highest QA% first — ties keep roster order (stable sort)
   rows.sort((a, b) => b.qa - a.qa);
 
-  // Red font for the SCORE cell only (column index 1) when QA% is 95%
-  // or below — matches the same threshold already used on the live QA
-  // Accuracy tab. Keyed "rowIndex,colIndex" per openIpsTabbedReport's
+  // Red font for the SCORE cell (column index 1): ANY Major error
+  // present makes it red regardless of the percentage itself — this
+  // takes priority over everything else. With zero Majors, the score
+  // follows the existing blue-if-95%+/red-if-94%-or-below threshold,
+  // matching the exact same rule already used on the live QA Accuracy
+  // tab. Keyed "rowIndex,colIndex" per openIpsTabbedReport's
   // cellColors contract; only the percentage itself gets colored, not
   // the Major/Minor reason text next to it.
   const cellColors = new Map();
-  rows.forEach((r, i) => { if (r.qa <= 95) cellColors.set(`${i},1`, '#C0392B'); });
+  rows.forEach((r, i) => { if (r.majorCount > 0 || r.qa <= 94) cellColors.set(`${i},1`, '#C0392B'); });
 
   openIpsTabbedReport(monthLabel, [{
     title: 'QA Accuracy',
