@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-14-disable-qa-dispute-add-upload-alert';
+const APP_VERSION = '2026-08-14-qa-report-revert-single-table';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13294,31 +13294,15 @@ function downloadIpsQaAccuracyReport() {
   // or below — matches the same threshold already used on the live QA
   // Accuracy tab. Keyed "rowIndex,colIndex" per openIpsTabbedReport's
   // cellColors contract; only the percentage itself gets colored, not
-  // the Major/Minor reason text next to it. Shared across both blocks
-  // since both tables show the same score column at the same index.
+  // the Major/Minor reason text next to it.
   const cellColors = new Map();
   rows.forEach((r, i) => { if (r.qa <= 95) cellColors.set(`${i},1`, '#C0392B'); });
 
-  const scoreHeader = `${monthLabel.toUpperCase()} SCORE`;
-
   openIpsTabbedReport(monthLabel, [{
     title: 'QA Accuracy',
-    blocks: [
-      {
-        label: 'Major',
-        header: ['Employee Name', scoreHeader, 'MAJOR'],
-        rows: rows.map(r => [r.name, r.qa + '%', r.major]),
-        cellColors,
-        wrapText: true, // long reason text wraps within the cell instead of forcing the table wide — this is what keeps the two tables close together and readable, rather than one running far off to the side
-      },
-      {
-        label: 'Minor',
-        header: ['Employee Name', scoreHeader, 'MINOR'],
-        rows: rows.map(r => [r.name, r.qa + '%', r.minor]),
-        cellColors,
-        wrapText: true,
-      },
-    ],
+    header: ['Employee Name', `${monthLabel.toUpperCase()} SCORE`, 'MAJOR', 'MINOR'],
+    rows: rows.map(r => [r.name, r.qa + '%', r.major, r.minor]),
+    cellColors,
   }]);
 }
 
