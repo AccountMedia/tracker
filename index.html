@@ -1723,7 +1723,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-qa-live-dispute-lookup';
+const APP_VERSION = '2026-08-17-qa-sync-firstname-match';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11457,13 +11457,16 @@ async function syncQaAccuracyFromReviewRecords() {
     const employeeIdsWithRealEntries = new Set((existingEntries || []).map(e => e.employee_id));
     const employeeIdsAlreadyNoCallout = new Set((existingNoCallouts || []).map(r => r.employee_id));
 
-    const byReviewer = new Map();
+    const byReviewer = new Map(); // keyed by NORMALIZED FIRST NAME, not the full extracted name — the source data genuinely varies per-row (e.g. "Katrena S", "Katrena Salenga", "Katrena Saladaga" for the same person, confirmed against real data), so grouping by the full string would silently fragment one person's rows across multiple groups and fail to match the roster at all for any variant.
     data.forEach(row => {
       const m = (row.status_reason || '').match(/^(.*?)\s+Marked\s+/i);
-      const reviewerName = m ? m[1].trim() : null;
-      if (!reviewerName) return;
-      if (!byReviewer.has(reviewerName)) byReviewer.set(reviewerName, []);
-      byReviewer.get(reviewerName).push(row);
+      const fullReviewerName = m ? m[1].trim() : null;
+      if (!fullReviewerName) return;
+      const rawFirstName = fullReviewerName.split(/\s+/)[0];
+      if (!rawFirstName) return;
+      const firstNameKey = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase(); // same alias resolution already used by MD Task/Peer Review, for known one-off mismatches
+      if (!byReviewer.has(firstNameKey)) byReviewer.set(firstNameKey, []);
+      byReviewer.get(firstNameKey).push(row);
     });
 
     const toInsert = [];
@@ -11471,9 +11474,9 @@ async function syncQaAccuracyFromReviewRecords() {
     const toMarkNoCallout = [];
     const freshDisputeLookup = new Map(); // rebuilt from scratch on every run — the new live source of truth for dispute status, replacing the old "write it to the database and hope the sync caught every row" approach
 
-    byReviewer.forEach((rows, reviewerName) => {
-      const emp = state.employees.find(e => e.display_name === reviewerName);
-      if (!emp) { unmatchedNames.add(reviewerName); return; }
+    byReviewer.forEach((rows, firstNameKey) => {
+      const emp = state.employees.find(e => e.display_name.split(/\s+/)[0].toLowerCase() === firstNameKey);
+      if (!emp) { unmatchedNames.add(firstNameKey); return; }
 
       // A row counts as "flagged" if EITHER its current major_error/
       // minor_error is true, OR it was ORIGINALLY flagged before a
