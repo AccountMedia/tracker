@@ -1749,7 +1749,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-tabs-search';
+const APP_VERSION = '2026-08-18-lq-playbook-real-search-confirm';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9661,52 +9661,60 @@ function renderQaGuide() {
           <h2 style="font-size:16px; margin:0 0 4px;">Check a lead</h2>
           <p class="muted" style="font-size:12.5px; margin:0 0 16px;">Type in what you actually see on the profile. No need to judge or decide anything yet. The tool does the comparing for you.</p>
 
-          <form id="qa-guide-form" style="display:flex; flex-direction:column; gap:14px;">
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
-              <div class="field">
-                <label>Uploaded company name</label>
-                <input type="text" id="qa-g-ud-company" placeholder="e.g. Dematic" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-              </div>
-              <div class="field">
-                <label>Uploaded domain</label>
-                <input type="text" id="qa-g-ud-domain" placeholder="e.g. dematic.com" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-              </div>
-            </div>
-
-            <div style="display:grid; grid-template-columns:2fr 1fr; gap:12px;">
-              <div class="field">
-                <label>LinkedIn TOP (current) company name</label>
-                <input type="text" id="qa-g-top-company" placeholder="e.g. Dematic Corp" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-              </div>
-              <div class="field">
-                <label>Is it marked Present or Left?</label>
-                <select id="qa-g-top-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-                  <option value="present">Present</option>
-                  <option value="left">Left</option>
-                </select>
+          <form id="qa-guide-form" style="display:flex; flex-direction:column; gap:16px;">
+            <div>
+              <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:8px;">Uploaded</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                <div class="field">
+                  <label>Company Name</label>
+                  <input type="text" id="qa-g-ud-company" placeholder="e.g. Renault Deutschland" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                </div>
+                <div class="field">
+                  <label>Domain</label>
+                  <input type="text" id="qa-g-ud-domain" placeholder="e.g. renault.de" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                </div>
               </div>
             </div>
 
-            <div class="field">
-              <label>LinkedIn company page domain (from the LinkedIn company page itself)</label>
-              <input type="text" id="qa-g-li-domain" placeholder="e.g. dematic.com" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            <div style="padding-top:6px; border-top:1px solid var(--line);">
+              <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:8px;">LinkedIn (top / current)</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">
+                <div class="field">
+                  <label>Company Name</label>
+                  <input type="text" id="qa-g-top-company" placeholder="e.g. Renault Group" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                </div>
+                <div class="field">
+                  <label>Domain</label>
+                  <input type="text" id="qa-g-li-domain" placeholder="e.g. renaultgroup.com" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                </div>
+                <div class="field">
+                  <label>Status</label>
+                  <select id="qa-g-top-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                    <option value="present">Present</option>
+                    <option value="left">Left</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
-            <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; padding-top:6px; border-top:1px solid var(--line);">
-              <div class="field">
-                <label>Any OTHER experience matching the uploaded company? (optional)</label>
-                <input type="text" id="qa-g-older-company" placeholder="Leave blank if none" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-              </div>
-              <div class="field">
-                <label>Its domain</label>
-                <input type="text" id="qa-g-older-domain" placeholder="Optional" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-              </div>
-              <div class="field">
-                <label>Its status</label>
-                <select id="qa-g-older-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-                  <option value="present">Present</option>
-                  <option value="left">Left</option>
-                </select>
+            <div style="padding-top:6px; border-top:1px solid var(--line);">
+              <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:8px;">Previous LI Company (optional)</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">
+                <div class="field">
+                  <label>Company Name</label>
+                  <input type="text" id="qa-g-older-company" placeholder="Leave blank if none" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                </div>
+                <div class="field">
+                  <label>Domain</label>
+                  <input type="text" id="qa-g-older-domain" placeholder="Optional" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                </div>
+                <div class="field">
+                  <label>Status</label>
+                  <select id="qa-g-older-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                    <option value="present">Present</option>
+                    <option value="left">Left</option>
+                  </select>
+                </div>
               </div>
             </div>
 
@@ -9749,7 +9757,7 @@ function renderQaGuide() {
 
 // Tracks which tab is active and the current search term, so switching
 // tabs or re-rendering does not lose the person's place.
-const qaGuideState = { tab: 'check', searchTerm: '' };
+const qaGuideState = { tab: 'check', searchTerm: '', pending: null };
 
 function renderQaGuideRulesList() {
   const listEl = document.getElementById('qa-guide-rules-list');
@@ -9788,12 +9796,10 @@ function qaGuideRootWordsMatch(a, b) {
   return { match: shared.length > 0, shared };
 }
 
-// Extracts the meaningful, company-identifying part of a domain (for
+// Extracts the meaningful, company identifying part of a domain (for
 // example "steinertglobal" from "steinertglobal.com", or "steinert"
 // from "steinert.de") and checks whether two domains share that part,
-// including when one contains the other. This is what correctly finds
-// the real steinert.de / steinertglobal.com relationship from the
-// guidelines, and works the same way for any two domains entered.
+// including when one contains the other.
 function qaGuideDomainRoot(domain) {
   if (!domain) return '';
   let d = domain.toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
@@ -9803,16 +9809,32 @@ function qaGuideDomainRoot(domain) {
 function qaGuideDomainsRelated(a, b) {
   const ra = qaGuideDomainRoot(a), rb = qaGuideDomainRoot(b);
   if (!ra || !rb) return { related: false, ra, rb };
-  const related = ra === rb || ra.includes(rb) || rb.includes(ra);
+  // Only an EXACT match is asserted as related from text alone. One
+  // root containing the other (for example "renault" inside
+  // "renaultgroup") is NOT a reliable signal on its own: the
+  // guidelines' own Renault example shows this exact pattern is Bad
+  // Left, while the STEINERT example (steinert inside steinertglobal)
+  // is Good, because a real, verified redirect exists there. A
+  // browser cannot check for a redirect automatically, so this
+  // function never claims "related" from a partial text match. It
+  // always defers to the person to actually open both links and
+  // check for a redirect before deciding.
+  const related = ra === rb;
   return { related, ra, rb };
 }
 
-// The actual rule based evaluator. Only ever reasons from what is
-// genuinely knowable from plain text comparison: root words and
-// domain roots. Every answer is stated directly, either a real
-// verdict or an honest "needs closer review" when the entered details
-// genuinely do not point clearly one way, never a hedged "likely"
-// answer either way.
+
+// The actual rule based evaluator. STRICT per Rule 4: the TOP company
+// being Present and sharing a root word with the uploaded company is
+// NEVER enough by itself for Good Data. The uploaded domain and the
+// TOP company's own domain must ALSO be related. This is the exact
+// combination the guidelines require (root word + status + domain),
+// and it is what correctly produces Bad Left for the Renault example:
+// Renault Group is Present and shares the root word "renault" with
+// Renault Deutschland, but renaultgroup.com does not relate to the
+// uploaded renault.de, so this fails the domain check and is Bad Left,
+// even though "Renault Deutschland" also appears as a Left experience
+// with the matching domain, which only confirms it further.
 function evaluateQaGuideLead() {
   const udCompany = document.getElementById('qa-g-ud-company').value.trim();
   const udDomain = document.getElementById('qa-g-ud-domain').value.trim();
@@ -9825,48 +9847,127 @@ function evaluateQaGuideLead() {
 
   const { match: topRootMatches } = qaGuideRootWordsMatch(udCompany, topCompany);
   const { match: olderRootMatches } = olderCompany ? qaGuideRootWordsMatch(udCompany, olderCompany) : { match: false };
-  const udCompanyRoot = (qaGuideNormalizeCompany(udCompany).match(/[a-z0-9]+/g) || [])[0] || '';
-  const liDomainContainsUdRoot = udCompanyRoot && liDomain && liDomain.toLowerCase().includes(udCompanyRoot);
-  const { related: olderDomainRelatedToTop, ra: olderDomainRoot, rb: topDomainRoot } = qaGuideDomainsRelated(olderDomain, liDomain);
+  const { related: topDomainExactMatch, ra: topDomainRoot, rb: udDomainRoot } = qaGuideDomainsRelated(liDomain, udDomain);
+  const hasDomainInfo = !!(udDomain && liDomain);
 
-  const reasons = [];
-  let verdict, verdictColor;
+  // Stash everything the confirmation step needs, since finishing the
+  // verdict after a real Google check happens in a SEPARATE function
+  // call (triggered by the person clicking Yes/No), not inline here.
+  qaGuideState.pending = { udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, topRootMatches, olderRootMatches };
 
-  if (topStatus === 'present' && topRootMatches) {
-    verdict = 'GOOD DATA';
-    verdictColor = 'var(--green)';
-    reasons.push(`"${topCompany}" and "${udCompany}" share the same root word, and it is marked Present. This is the pattern the guidelines identify as Good Data (Rules 2 and 3). Confirm the domain checks below before finalizing.`);
-  } else if (topStatus === 'left' && topRootMatches) {
-    if (olderCompany && olderRootMatches && olderStatus === 'present') {
-      verdict = 'NEEDS CLOSER REVIEW';
-      verdictColor = 'var(--amber)';
-      reasons.push(`The TOP company matches the uploaded company but is marked Left, which normally points to Bad Left. But "${olderCompany}" also matches and is marked Present. Re-check that second experience directly against Rules 2 and 5 before deciding.`);
-    } else {
-      verdict = 'BAD LEFT';
-      verdictColor = 'var(--coral)';
-      reasons.push(`The TOP company matches the uploaded company's root word, but it is marked Left, and no other Present matching experience was entered. Rule 2: always start with the TOP/current company. This is Bad Left.`);
-    }
-  } else if (!topRootMatches) {
-    if (olderCompany && olderRootMatches && olderStatus === 'present') {
-      verdict = 'GOOD DATA';
-      verdictColor = 'var(--green)';
-      reasons.push(`The TOP company does not match the uploaded company, but "${olderCompany}" does and is marked Present. Rule 1: a matching, currently Present experience is Good Data even when it is not the TOP entry.`);
-    } else if (olderCompany && olderRootMatches && olderStatus === 'left') {
-      verdict = 'BAD LEFT';
-      verdictColor = 'var(--coral)';
-      reasons.push(`"${olderCompany}" matches the uploaded company, but it is marked Left, and the TOP company is unrelated. Rules 1 and 2: an exact/root match existing somewhere in the profile is not enough on its own. The TOP/current company is what matters most here, and it does not connect.`);
-    } else {
-      verdict = 'NEEDS CLOSER REVIEW';
-      verdictColor = 'var(--amber)';
-      reasons.push(`The TOP company does not share a root word with the uploaded company, and no other matching experience was entered. Double check the full profile for anything that might have been missed before concluding Bad Left.`);
-    }
-  } else {
-    verdict = 'NEEDS CLOSER REVIEW';
-    verdictColor = 'var(--amber)';
-    reasons.push(`Review the full profile evidence directly, and escalate if it is still unclear.`);
+  // Domains exactly match: genuinely confident, no manual check needed.
+  if (topStatus === 'present' && topRootMatches && hasDomainInfo && topDomainExactMatch) {
+    renderQaGuideVerdict('GOOD DATA', 'var(--green)', [
+      `"${topCompany}" and "${udCompany}" share the root word "${topDomainRoot}", it is marked Present, AND the domains exactly match. This is the full combination Rule 4 requires: root word, status, and domain together.`,
+    ], { udDomain, liDomain, olderDomain, topDomainExactMatch: true, olderDomainExactMatch: null });
+    return;
   }
 
-  reasons.push(`This reasoning is for this lead specifically. A similar looking lead later may have a different domain or status and reach a different, equally correct answer (Rule 8).`);
+  // Domains do NOT exactly match, but the name/status pattern otherwise
+  // looks like it could be Good Data (the exact ambiguous situation
+  // Rule 4 and Rule 5 are both about). This genuinely cannot be
+  // resolved from text alone — hand it to a real Google search and
+  // wait for the person's actual answer before finishing the verdict.
+  if (topStatus === 'present' && topRootMatches && hasDomainInfo && !topDomainExactMatch) {
+    renderQaGuideDomainConfirmStep(udCompany, udDomain, topCompany, liDomain);
+    return;
+  }
+
+  if (topStatus === 'present' && topRootMatches && !hasDomainInfo) {
+    renderQaGuideVerdict('NEEDS CLOSER REVIEW', 'var(--amber)', [
+      `"${topCompany}" is Present and shares a root word with "${udCompany}", but the domain fields are not filled in. Per Rule 4, the domain relationship is required before this can be called Good Data. Enter both domains to get a firm answer.`,
+    ], { udDomain, liDomain, olderDomain, topDomainExactMatch: null, olderDomainExactMatch: null });
+    return;
+  }
+
+  if (topStatus === 'left' && topRootMatches) {
+    if (olderCompany && olderRootMatches && olderStatus === 'present') {
+      renderQaGuideVerdict('NEEDS CLOSER REVIEW', 'var(--amber)', [
+        `The TOP company matches the uploaded company but is marked Left, which normally points to Bad Left. But "${olderCompany}" also matches and is marked Present. Re-check that second experience, including its domain, before deciding.`,
+      ], { udDomain, liDomain, olderDomain, topDomainExactMatch: null, olderDomainExactMatch: null });
+    } else {
+      renderQaGuideVerdict('BAD LEFT', 'var(--coral)', [
+        `The TOP company matches the uploaded company's root word, but it is marked Left, and no other Present matching experience was entered. Rule 2: always start with the TOP/current company. This is Bad Left.`,
+      ], { udDomain, liDomain, olderDomain, topDomainExactMatch: null, olderDomainExactMatch: null });
+    }
+    return;
+  }
+
+  if (!topRootMatches) {
+    if (olderCompany && olderRootMatches && olderStatus === 'present') {
+      renderQaGuideVerdict('GOOD DATA', 'var(--green)', [
+        `The TOP company does not match the uploaded company, but "${olderCompany}" does and is marked Present. Rule 1: a matching, currently Present experience is Good Data even when it is not the TOP entry.`,
+      ], { udDomain, liDomain, olderDomain, topDomainExactMatch: null, olderDomainExactMatch: null });
+    } else if (olderCompany && olderRootMatches && olderStatus === 'left') {
+      renderQaGuideVerdict('BAD LEFT', 'var(--coral)', [
+        `"${olderCompany}" matches the uploaded company, but it is marked Left, and the TOP company is unrelated. Rules 1 and 2: an exact/root match existing somewhere in the profile is not enough on its own. The TOP/current company is what matters most here, and it does not connect.`,
+      ], { udDomain, liDomain, olderDomain, topDomainExactMatch: null, olderDomainExactMatch: null });
+    } else {
+      renderQaGuideVerdict('NEEDS CLOSER REVIEW', 'var(--amber)', [
+        `The TOP company does not share a root word with the uploaded company, and no other matching experience was entered. Double check the full profile for anything that might have been missed before concluding Bad Left.`,
+      ], { udDomain, liDomain, olderDomain, topDomainExactMatch: null, olderDomainExactMatch: null });
+    }
+    return;
+  }
+
+  renderQaGuideVerdict('NEEDS CLOSER REVIEW', 'var(--amber)', [
+    `Review the full profile evidence directly, and escalate if it is still unclear.`,
+  ], { udDomain, liDomain, olderDomain, topDomainExactMatch: null, olderDomainExactMatch: null });
+}
+
+// Shows the honest "cannot determine from text alone" step: a real,
+// precise Google search link (opens in a new tab, never navigates
+// this page away), and a direct Yes/No asking what the person
+// actually found there. This is the genuine alternative to guessing,
+// within the real constraint that this app cannot read Google results
+// itself and must stay free (no paid research API).
+function renderQaGuideDomainConfirmStep(udCompany, udDomain, topCompany, liDomain) {
+  const query = encodeURIComponent(`is ${udDomain} related to ${liDomain}`);
+  document.getElementById('qa-guide-result').innerHTML = `
+    <div style="padding:16px; border-radius:10px; background:var(--amber-wash); border:1px solid var(--amber);">
+      <div style="font-size:14px; font-weight:800; color:var(--amber); margin-bottom:10px;">One thing to confirm before deciding</div>
+      <p style="font-size:12.5px; margin:0 0 10px; color:var(--ink-soft); line-height:1.5;">"${escapeHtml(topCompany)}" shares a root word with "${escapeHtml(udCompany)}" and is marked Present, but "${escapeHtml(udDomain)}" and "${escapeHtml(liDomain)}" are not the exact same domain. Per Rule 4, this cannot be called Good Data on the name and status alone. This is exactly the Renault vs STEINERT situation: it could go either way, and the real answer depends on whether these domains are genuinely connected (for example, one redirects to the other).</p>
+      <p style="font-size:12.5px; margin:0 0 14px; color:var(--ink-soft); line-height:1.5;">Search it, check the result, then answer below.</p>
+      <a href="https://www.google.com/search?q=${query}" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm" style="margin-bottom:14px;">Search "${escapeHtml(udDomain)}" and "${escapeHtml(liDomain)}"</a>
+      <div style="display:flex; gap:8px;">
+        <button type="button" class="btn btn-sm" id="qa-g-domain-yes" style="flex:1; justify-content:center; background:var(--green); color:#fff;">Yes, they are related</button>
+        <button type="button" class="btn btn-sm" id="qa-g-domain-no" style="flex:1; justify-content:center; background:var(--coral); color:#fff;">No, they are not related</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('qa-g-domain-yes').addEventListener('click', () => finishQaGuideDomainConfirm(true));
+  document.getElementById('qa-g-domain-no').addEventListener('click', () => finishQaGuideDomainConfirm(false));
+}
+
+// Completes the verdict once the person has reported back what the
+// real search actually showed. This is where Rule 4's logic is
+// finally, correctly applied, using a genuine answer instead of a
+// guess.
+function finishQaGuideDomainConfirm(domainsConfirmedRelated) {
+  const p = qaGuideState.pending;
+  if (!p) return;
+  if (domainsConfirmedRelated) {
+    renderQaGuideVerdict('GOOD DATA', 'var(--green)', [
+      `"${p.topCompany}" and "${p.udCompany}" share the root word, it is marked Present, and you confirmed the domains are genuinely related (the STEINERT pattern from Rule 5). This is Good Data.`,
+    ], { udDomain: p.udDomain, liDomain: p.liDomain, olderDomain: p.olderDomain, topDomainExactMatch: true, olderDomainExactMatch: null });
+  } else {
+    const reasons = [
+      `"${p.topCompany}" is Present and shares a root word with "${p.udCompany}", but you confirmed the domains are not genuinely related. This is exactly the Renault pattern from Rule 4: a shared root word and a Present status are not enough by themselves when the domain does not connect. This is Bad Left.`,
+    ];
+    if (p.olderCompany && p.olderRootMatches && p.olderStatus === 'left') {
+      reasons.push(`This is reinforced by "${p.olderCompany}" appearing as a Left experience, matching the Renault Deutschland pattern in the guidelines.`);
+    }
+    renderQaGuideVerdict('BAD LEFT', 'var(--coral)', reasons, { udDomain: p.udDomain, liDomain: p.liDomain, olderDomain: p.olderDomain, topDomainExactMatch: false, olderDomainExactMatch: null });
+  }
+}
+
+// Renders the final verdict box and the 4 checks list, shared by both
+// the immediate path (exact domain match, or a case that never needed
+// the domain check at all) and the confirmed path (after the person
+// answers the Yes/No above).
+function renderQaGuideVerdict(verdict, verdictColor, reasonLines, domainInfo) {
+  const p = qaGuideState.pending || {};
+  const reasons = [...reasonLines, `This reasoning is for this lead specifically. A similar looking lead later may have a different domain or status and reach a different, equally correct answer (Rule 8).`];
 
   const checkRow = (label, autoResultHtml, linkHtml) => `
     <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line-soft);">
@@ -9880,42 +9981,34 @@ function evaluateQaGuideLead() {
 
   const check1 = checkRow(
     '1. Uploaded company and TOP company',
-    topRootMatches ? `<span style="color:var(--green); font-weight:600;">Related. They share the root word "${escapeHtml(udCompanyRoot)}"</span>` : `<span style="color:var(--coral); font-weight:600;">Not related. No shared root word found</span>`,
+    p.topRootMatches ? `<span style="color:var(--green); font-weight:600;">Related. Shared root word</span>` : `<span style="color:var(--coral); font-weight:600;">Not related. No shared root word found</span>`,
     ''
   );
   const check2 = checkRow(
-    '2. Uploaded domain and TOP company',
-    udDomain ? `Comparing "${escapeHtml(udDomain)}". Open it to confirm whether it redirects to or matches the TOP company's own site.` : `<span class="faint">Enter an uploaded domain above to check this.</span>`,
-    udDomain ? `<a href="https://${escapeHtml(udDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px;">Open</a>` : ''
+    '2. Uploaded domain and TOP company domain',
+    domainInfo.topDomainExactMatch === true ? `<span style="color:var(--green); font-weight:600;">Confirmed related</span>` :
+    domainInfo.topDomainExactMatch === false ? `<span style="color:var(--coral); font-weight:600;">Confirmed not related</span>` :
+    `<span class="faint">Enter both domains above to check this.</span>`,
+    (domainInfo.udDomain || domainInfo.liDomain) ? `
+      ${domainInfo.udDomain ? `<a href="https://${escapeHtml(domainInfo.udDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px;">Open ${escapeHtml(domainInfo.udDomain)}</a>` : ''}
+      ${domainInfo.liDomain ? `<a href="https://${escapeHtml(domainInfo.liDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px; margin-left:4px;">Open ${escapeHtml(domainInfo.liDomain)}</a>` : ''}
+    ` : ''
   );
   const check3 = checkRow(
-    '3. LinkedIn domain and uploaded company',
-    liDomain
-      ? (liDomainContainsUdRoot
-          ? `<span style="color:var(--green); font-weight:600;">Related. "${escapeHtml(udCompanyRoot)}" appears in this domain</span>`
-          : `<span style="color:var(--amber); font-weight:600;">Name not found in the domain text. Open it to check further; it may still be related without the name appearing literally.</span>`)
-      : `<span class="faint">Enter the LinkedIn company page's domain above to check this.</span>`,
-    liDomain ? `<a href="https://${escapeHtml(liDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px;">Open</a>` : ''
-  );
-  const check4 = checkRow(
-    '4. Other listed experience and uploaded company',
-    olderCompany
-      ? (olderRootMatches
-          ? `<span style="color:var(--green); font-weight:600;">Related. "${escapeHtml(olderCompany)}" shares the root word</span>`
-          : `<span style="color:var(--coral); font-weight:600;">Not related. "${escapeHtml(olderCompany)}" does not share a root word</span>`)
+    '3. Other listed experience and uploaded company',
+    p.olderCompany
+      ? (p.olderRootMatches
+          ? `<span style="color:var(--green); font-weight:600;">Related. "${escapeHtml(p.olderCompany)}" shares the root word</span>`
+          : `<span style="color:var(--coral); font-weight:600;">Not related. "${escapeHtml(p.olderCompany)}" does not share a root word</span>`)
       : `<span class="faint">No other experience entered.</span>`,
     ''
   );
-  const check5 = checkRow(
-    '5. Other experience domain and TOP company domain',
-    olderDomain && liDomain
-      ? (olderDomainRelatedToTop
-          ? `<span style="color:var(--green); font-weight:600;">Related. "${escapeHtml(olderDomainRoot)}" connects to "${escapeHtml(topDomainRoot)}"</span>`
-          : `<span style="color:var(--amber); font-weight:600;">Not clearly related by domain text. Open both to check for a redirect before deciding.</span>`)
-      : `<span class="faint">Enter both the other experience's domain and the LinkedIn company page domain above to check this.</span>`,
-    (olderDomain || liDomain) ? `
-      ${olderDomain ? `<a href="https://${escapeHtml(olderDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px;">Open ${escapeHtml(olderDomain)}</a>` : ''}
-      ${liDomain ? `<a href="https://${escapeHtml(liDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px; margin-left:4px;">Open ${escapeHtml(liDomain)}</a>` : ''}
+  const check4 = checkRow(
+    '4. Other experience domain and TOP company domain',
+    domainInfo.olderDomain && domainInfo.liDomain ? `<span class="faint">Open both below to check for a redirect.</span>` : `<span class="faint">Enter both the other experience's domain and the TOP company domain above to check this.</span>`,
+    (domainInfo.olderDomain || domainInfo.liDomain) ? `
+      ${domainInfo.olderDomain ? `<a href="https://${escapeHtml(domainInfo.olderDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px;">Open ${escapeHtml(domainInfo.olderDomain)}</a>` : ''}
+      ${domainInfo.liDomain ? `<a href="https://${escapeHtml(domainInfo.liDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11px; margin-left:4px;">Open ${escapeHtml(domainInfo.liDomain)}</a>` : ''}
     ` : ''
   );
 
@@ -9925,10 +10018,17 @@ function evaluateQaGuideLead() {
       ${reasons.map(r => `<p style="font-size:12.5px; margin:0 0 8px; color:var(--ink-soft); line-height:1.5;">${r}</p>`).join('')}
       <div style="margin-top:12px; padding:4px 12px; background:#fff; border-radius:8px;">
         <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-top:8px;">The checks</div>
-        ${check1}${check2}${check3}${check4}${check5}
+        ${check1}${check2}${check3}${check4}
       </div>
     </div>
   `;
+}
+
+
+// Small helper used only inside one reasons.push() string above, to
+// safely reference the uploaded company's own root word for display.
+function udCompanyRootFallback(udCompany) {
+  return (qaGuideNormalizeCompany(udCompany).match(/[a-z0-9]+/g) || [])[0] || udCompany;
 }
 
 function renderTeamFundsView() {
