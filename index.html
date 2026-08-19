@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-17-fix-priolist-md-peer-pagination';
+const APP_VERSION = '2026-08-18-md-source-completion-log';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2212,10 +2212,10 @@ function currentPriolistResetBoundary() {
   return boundaryPh.toISOString().slice(0, 10);
 }
 
-// ── PrioList MD Output real-time sync from claim_records ──────────────
+// ── PrioList MD Output real-time sync from completion_log ──────────────
 // Unlike IPS's MD Task (a per-date historical figure), PrioList shows
 // ONE live number per employee for the current reset period — so this
-// counts only claim_records rows completed since the CURRENT reset
+// counts only completion_log rows completed since the CURRENT reset
 // boundary (the same 8am cutoff PrioList's own daily reset already
 // uses, via currentPriolistResetBoundary — using a different boundary
 // here would make this number drift out of sync with when the rest of
@@ -2232,21 +2232,23 @@ async function computeMdOutputCountsSinceBoundary() {
   boundaryTimestamp.setUTCMinutes(boundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
 
   // Paginated fetch — Supabase's REST API caps any single request at
-  // 1000 rows by default. Without this, if claim_records for the
-  // current reset period exceeds that (a real, confirmed failure mode
-  // — the same class of bug already found and fixed for QA Accuracy),
-  // rows past the cap are silently dropped with no error at all,
-  // producing an artificially low count. IPS's own MD Task sync has a
-  // separate "never decrease" safeguard that happens to reject the bad
-  // write this would produce, which is why IPS could look correct
-  // while PrioList — which has no such safeguard — displayed the wrong,
-  // truncated number directly.
+  // 1000 rows by default. Without this, if completion_log for the
+  // current reset period exceeds that, rows past the cap are silently
+  // dropped with no error at all, producing an artificially low count.
+  //
+  // Reads from completion_log, NOT claim_records — confirmed directly
+  // against real data that claim_records is genuinely missing rows
+  // (verified case: Francisco on Aug 18 had 20 rows in claim_records
+  // but the true, correct count — matching a separately-trusted
+  // dashboard — was 30, all 30 of which exist in completion_log).
+  // completion_log's relevant columns are agent_name (not
+  // completed_by) and completed_at (same name as before).
   const PAGE_SIZE = 1000;
   const { data: firstPage, count: totalCount, error: firstErr } = await sbQaReview
-    .from('claim_records')
-    .select('completed_by, completed_at', { count: 'exact' })
+    .from('completion_log')
+    .select('agent_name, completed_at', { count: 'exact' })
     .gte('completed_at', boundaryTimestamp.toISOString())
-    .not('completed_by', 'is', null)
+    .not('agent_name', 'is', null)
     .not('completed_at', 'is', null)
     .range(0, PAGE_SIZE - 1);
 
@@ -2264,9 +2266,9 @@ async function computeMdOutputCountsSinceBoundary() {
       for (let p = batchStart; p <= batchEnd; p++) {
         const start = p * PAGE_SIZE;
         pagePromises.push(
-          sbQaReview.from('claim_records').select('completed_by, completed_at')
+          sbQaReview.from('completion_log').select('agent_name, completed_at')
             .gte('completed_at', boundaryTimestamp.toISOString())
-            .not('completed_by', 'is', null)
+            .not('agent_name', 'is', null)
             .not('completed_at', 'is', null)
             .range(start, start + PAGE_SIZE - 1)
         );
@@ -2285,7 +2287,7 @@ async function computeMdOutputCountsSinceBoundary() {
   // reset period.
   const counts = new Map();
   (data || []).forEach(row => {
-    const rawFirstName = (row.completed_by || '').trim().split(/\s+/)[0];
+    const rawFirstName = (row.agent_name || '').trim().split(/\s+/)[0];
     if (!rawFirstName) return;
     const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
     counts.set(firstName, (counts.get(firstName) || 0) + 1);
@@ -2323,7 +2325,7 @@ async function syncPriolistMdOutputFromClaimRecords() {
   // automatically — no separate reload/render call needed here.
 }
 
-// Genuinely real-time: subscribes directly to claim_records in the
+// Genuinely real-time: subscribes directly to completion_log in the
 // SECOND Supabase project. The shared subscribeRealtime() helper is
 // hardcoded to the primary project's client (sb), so this uses
 // sbQaReview's own .channel() call instead — every insert/update fires
@@ -2334,8 +2336,8 @@ function startPriolistMdOutputRealtimeSync() {
   try {
     const debouncedSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 400);
     _priolistMdOutputChannel = sbQaReview
-      .channel('rt:claim_records_md_output')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'claim_records' }, () => { debouncedSync(); })
+      .channel('rt:completion_log_md_output')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => { debouncedSync(); })
       .subscribe();
     syncPriolistMdOutputFromClaimRecords(); // also run once immediately, so the number is correct the moment PrioList opens, not just after the next live change
   } catch (err) {
@@ -11233,25 +11235,25 @@ async function loadIpsData() {
   }
 }
 
-// One-off name overrides: when claim_records' "completed_by" uses a
+// One-off name overrides: when the source table's agent name field uses a
 // name that doesn't match an employee's actual first name in this app
 // (e.g. a middle name or nickname), map it here explicitly rather than
 // guessing — confirmed this is a narrow, known exception (Jeinna is
 // recorded as "Louise" there, her middle name), not a general pattern,
 // so an explicit list is the safer fix. Key = the name AS IT APPEARS
-// in claim_records (lowercase); value = the roster first name it
+// in the source data (lowercase); value = the roster first name it
 // should actually match against.
 const MD_TASK_NAME_ALIASES = {
-  'louise': 'jeinna', // Jeinna Louise Perez — claim_records uses her middle name
+  'louise': 'jeinna', // Jeinna Louise Perez — the source data uses her middle name
 };
 
-// ── MD Task auto-sync from claim_records (external QA-review project) ──
-// Runs LIVE — a realtime subscription on claim_records (in the second
+// ── MD Task auto-sync from completion_log (external QA-review project) ──
+// Runs LIVE — a realtime subscription on completion_log (in the second
 // Supabase project) re-triggers this the instant a claim is inserted
 // or updated, not just once when the Daily Entry tab happens to open.
 // Pulls every claim completed on or after August 5, 2026 (the day this
 // feature went live; earlier dates are never touched, regardless of
-// what claim_records contains for them), groups by the FIRST NAME
+// what completion_log contains for them), groups by the FIRST NAME
 // extracted from "completed_by" and by the date extracted from
 // "completed_at", matches each name against the employee roster by
 // first name, and REPLACES that employee's md_value for that date with
@@ -11306,7 +11308,7 @@ async function syncMdTaskFromClaimRecords() {
       // — avoids an unnecessary write (and the resulting realtime
       // echo/re-render) on every trigger when nothing actually changed.
       if (existing && existing.md_value === count) return;
-      // Safeguard: claim_records only ever gets NEW rows added during
+      // Safeguard: completion_log only ever gets NEW rows added during
       // the day (nothing is ever deleted), so a freshly-computed count
       // for TODAY should never legitimately be LOWER than what's
       // already saved. If it is, this run is working from stale or
@@ -11316,7 +11318,7 @@ async function syncMdTaskFromClaimRecords() {
         console.warn(`MD Task sync: computed ${count} for ${emp.display_name}, but ${existing.md_value} is already saved for today — skipping this write since a same-day decrease should be impossible.`);
         return;
       }
-      updates.push({ employee_id: emp.id, entry_date: todayWorkDay, md_value: count, updated_by: 'claim_records sync', updated_at: new Date().toISOString() });
+      updates.push({ employee_id: emp.id, entry_date: todayWorkDay, md_value: count, updated_by: 'completion_log sync', updated_at: new Date().toISOString() });
     });
 
     if (unmatchedNames.size) {
@@ -11340,7 +11342,7 @@ async function syncMdTaskFromClaimRecords() {
   }
 }
 
-// Genuinely real-time: subscribes directly to claim_records in the
+// Genuinely real-time: subscribes directly to completion_log in the
 // SECOND Supabase project (same channel pattern as PrioList's MD
 // Output sync) — every insert/update fires a fresh count-and-sync
 // rather than waiting for the Daily Entry tab to be reopened.
@@ -11350,8 +11352,8 @@ function startIpsMdTaskRealtimeSync() {
   try {
     const debouncedSync = debounceRealtime(syncMdTaskFromClaimRecords, 400);
     _ipsMdTaskChannel = sbQaReview
-      .channel('rt:claim_records_md_task')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'claim_records' }, () => { debouncedSync(); })
+      .channel('rt:completion_log_md_task')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => { debouncedSync(); })
       .subscribe();
     syncMdTaskFromClaimRecords(); // also run once immediately, so Daily Entry is correct the moment it's opened, not just after the next live change
   } catch (err) {
