@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-qa-callouts-plain-text';
+const APP_VERSION = '2026-08-18-reduce-realtime-egress';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2330,25 +2330,54 @@ async function syncPriolistMdOutputFromClaimRecords() {
 // hardcoded to the primary project's client (sb), so this uses
 // sbQaReview's own .channel() call instead — every insert/update fires
 // a fresh count-and-sync rather than waiting for a page reload.
-let _priolistMdOutputChannel = null;
-function startPriolistMdOutputRealtimeSync() {
-  if (_priolistMdOutputChannel || !sbQaReview) return; // already subscribed, or second project not configured
+// Shared by BOTH PrioList's MD Output and IPS's MD Task — previously
+// these were TWO SEPARATE realtime subscriptions on the exact same
+// completion_log table, meaning every single insert/update there was
+// broadcast and received TWICE per browser tab, purely to trigger two
+// different sync functions that both needed to react to the same
+// change. Merged into one live connection that triggers both,
+// directly cutting this specific source of Realtime egress in half —
+// a real, confirmed cost driver behind a genuine egress spike.
+let _completionLogChannel = null;
+function startCompletionLogRealtimeSync() {
+  if (_completionLogChannel || !sbQaReview) return; // already subscribed, or second project not configured
   try {
-    const debouncedSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 400);
-    _priolistMdOutputChannel = sbQaReview
-      .channel('rt:completion_log_md_output')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => { debouncedSync(); })
+    const debouncedPriolistSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 400);
+    const debouncedIpsSync = debounceRealtime(syncMdTaskFromClaimRecords, 400);
+    _completionLogChannel = sbQaReview
+      .channel('rt:completion_log_shared')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => {
+        debouncedPriolistSync();
+        debouncedIpsSync();
+      })
       .subscribe();
-    syncPriolistMdOutputFromClaimRecords(); // also run once immediately, so the number is correct the moment PrioList opens, not just after the next live change
+    // Run both once immediately, so whichever section is actually open
+    // right now shows the correct number without waiting for the next
+    // live change — same behavior as before, just from one connection.
+    syncPriolistMdOutputFromClaimRecords();
+    syncMdTaskFromClaimRecords();
   } catch (err) {
-    console.error('PrioList MD Output realtime subscribe failed:', err);
+    console.error('completion_log realtime subscribe failed:', err);
   }
 }
-function stopPriolistMdOutputRealtimeSync() {
-  if (_priolistMdOutputChannel) {
-    try { sbQaReview.removeChannel(_priolistMdOutputChannel); } catch (err) { /* non-fatal */ }
-    _priolistMdOutputChannel = null;
+function stopCompletionLogRealtimeSync() {
+  if (_completionLogChannel) {
+    try { sbQaReview.removeChannel(_completionLogChannel); } catch (err) { /* non-fatal */ }
+    _completionLogChannel = null;
   }
+}
+
+function startPriolistMdOutputRealtimeSync() {
+  startCompletionLogRealtimeSync(); // thin wrapper — every existing call site keeps working unchanged
+}
+function stopPriolistMdOutputRealtimeSync() {
+  // Deliberately a no-op now — this used to tear down PrioList's own
+  // dedicated channel, but that's been merged into the single shared
+  // completion_log subscription (see startCompletionLogRealtimeSync
+  // above), which IPS's MD Task may still need live even if PrioList's
+  // view is the one closing. The shared channel is only genuinely torn
+  // down on logout (see stopCompletionLogRealtimeSync's call site
+  // there), not from either individual section's own stop function.
 }
 
 // ── PrioList Peer Review real-time sync from review_batches ───────────
@@ -2438,25 +2467,53 @@ async function syncPriolistPeerReviewFromReviewBatches() {
   await Promise.all(updates.map(u => sb.from('priolist_entries').update({ peer_review: u.peer_review }).eq('id', u.id)));
 }
 
-let _priolistPeerReviewChannel = null;
-function startPriolistPeerReviewRealtimeSync() {
-  if (_priolistPeerReviewChannel || !sbQaReview) return;
+// Shared by PrioList's Peer Review, IPS's Peer Review, AND QA
+// Accuracy's live sync — three features now triggered from ONE
+// subscription. QA Accuracy previously had its OWN separate
+// subscription directly on review_records, which receives roughly one
+// insert per lead reviewed (confirmed from real data: over a thousand
+// rows in a single month) — a genuinely high-volume table to watch at
+// the row level, and a real, confirmed driver of a Realtime egress
+// spike. review_batches updates far less often (once per batch, not
+// once per record), and its updated_at is confirmed — from real cases
+// traced this session, including a dispute-approval scenario — to
+// change whenever a batch's underlying records change, making it a
+// reliable, much cheaper trigger for the same sync.
+let _reviewBatchesChannel = null;
+function startReviewBatchesRealtimeSync() {
+  if (_reviewBatchesChannel || !sbQaReview) return;
   try {
-    const debouncedSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 400);
-    _priolistPeerReviewChannel = sbQaReview
-      .channel('rt:review_batches_peer_review')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => { debouncedSync(); })
+    const debouncedPriolistSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 400);
+    const debouncedIpsSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 400);
+    const debouncedQaAccuracySync = debounceRealtime(syncQaAccuracyFromReviewRecords, 400);
+    _reviewBatchesChannel = sbQaReview
+      .channel('rt:review_batches_shared')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => {
+        debouncedPriolistSync();
+        debouncedIpsSync();
+        debouncedQaAccuracySync();
+      })
       .subscribe();
     syncPriolistPeerReviewFromReviewBatches();
+    syncIpsPeerReviewFromReviewBatches();
   } catch (err) {
-    console.error('PrioList Peer Review realtime subscribe failed:', err);
+    console.error('review_batches realtime subscribe failed:', err);
   }
 }
-function stopPriolistPeerReviewRealtimeSync() {
-  if (_priolistPeerReviewChannel) {
-    try { sbQaReview.removeChannel(_priolistPeerReviewChannel); } catch (err) { /* non-fatal */ }
-    _priolistPeerReviewChannel = null;
+function stopReviewBatchesRealtimeSync() {
+  if (_reviewBatchesChannel) {
+    try { sbQaReview.removeChannel(_reviewBatchesChannel); } catch (err) { /* non-fatal */ }
+    _reviewBatchesChannel = null;
   }
+}
+
+function startPriolistPeerReviewRealtimeSync() {
+  startReviewBatchesRealtimeSync(); // thin wrapper — every existing call site keeps working unchanged
+}
+function stopPriolistPeerReviewRealtimeSync() {
+  // Deliberately a no-op — see stopCompletionLogRealtimeSync's identical
+  // reasoning. Torn down only on logout, not from either individual
+  // section's own stop function.
 }
 
 async function applyDailyPriolistReset() {
@@ -11362,25 +11419,13 @@ async function syncMdTaskFromClaimRecords() {
 // SECOND Supabase project (same channel pattern as PrioList's MD
 // Output sync) — every insert/update fires a fresh count-and-sync
 // rather than waiting for the Daily Entry tab to be reopened.
-let _ipsMdTaskChannel = null;
 function startIpsMdTaskRealtimeSync() {
-  if (_ipsMdTaskChannel || !sbQaReview) return; // already subscribed, or second project not configured
-  try {
-    const debouncedSync = debounceRealtime(syncMdTaskFromClaimRecords, 400);
-    _ipsMdTaskChannel = sbQaReview
-      .channel('rt:completion_log_md_task')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => { debouncedSync(); })
-      .subscribe();
-    syncMdTaskFromClaimRecords(); // also run once immediately, so Daily Entry is correct the moment it's opened, not just after the next live change
-  } catch (err) {
-    console.error('IPS MD Task realtime subscribe failed:', err);
-  }
+  startCompletionLogRealtimeSync(); // thin wrapper — the actual shared subscription lives with PrioList's version above; every existing call site keeps working unchanged
 }
 function stopIpsMdTaskRealtimeSync() {
-  if (_ipsMdTaskChannel) {
-    try { sbQaReview.removeChannel(_ipsMdTaskChannel); } catch (err) { /* non-fatal */ }
-    _ipsMdTaskChannel = null;
-  }
+  // Deliberately a no-op — see stopPriolistMdOutputRealtimeSync's
+  // identical comment for the full reasoning. The shared channel is
+  // only genuinely torn down on logout.
 }
 
 // ── Peer Review auto-sync from review_batches (IPS Daily Entry) ───────
@@ -11456,25 +11501,12 @@ async function syncIpsPeerReviewFromReviewBatches() {
   }
 }
 
-let _ipsPeerReviewChannel = null;
 function startIpsPeerReviewRealtimeSync() {
-  if (_ipsPeerReviewChannel || !sbQaReview) return;
-  try {
-    const debouncedSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 400);
-    _ipsPeerReviewChannel = sbQaReview
-      .channel('rt:review_batches_ips_peer_review')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => { debouncedSync(); })
-      .subscribe();
-    syncIpsPeerReviewFromReviewBatches();
-  } catch (err) {
-    console.error('IPS Peer Review realtime subscribe failed:', err);
-  }
+  startReviewBatchesRealtimeSync(); // thin wrapper — the actual shared subscription lives with PrioList's version above; every existing call site keeps working unchanged
 }
 function stopIpsPeerReviewRealtimeSync() {
-  if (_ipsPeerReviewChannel) {
-    try { sbQaReview.removeChannel(_ipsPeerReviewChannel); } catch (err) { /* non-fatal */ }
-    _ipsPeerReviewChannel = null;
-  }
+  // Deliberately a no-op — see stopReviewBatchesRealtimeSync's identical
+  // reasoning. Torn down only on logout.
 }
 
 // ── QA Accuracy live sync from review_records ──────────────────────────
@@ -11741,25 +11773,19 @@ async function syncQaAccuracyFromReviewRecords() {
   }
 }
 
-let _qaAccuracyChannel = null;
+// Live-updating for QA Accuracy is now handled by the shared
+// review_batches channel (see startReviewBatchesRealtimeSync above) —
+// this function only fires the INITIAL sync, so the numbers are
+// correct the moment QA Accuracy is opened, without needing its own
+// separate, high-volume subscription directly on review_records.
+let _qaAccuracyInitialSyncDone = false;
 function startQaAccuracyRealtimeSync() {
-  if (_qaAccuracyChannel || !sbQaReview) return;
-  try {
-    const debouncedSync = debounceRealtime(syncQaAccuracyFromReviewRecords, 400);
-    _qaAccuracyChannel = sbQaReview
-      .channel('rt:review_records_qa_accuracy')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'review_records' }, () => { debouncedSync(); })
-      .subscribe();
-    syncQaAccuracyFromReviewRecords();
-  } catch (err) {
-    console.error('QA Accuracy realtime subscribe failed:', err);
-  }
+  if (_qaAccuracyInitialSyncDone || !sbQaReview) return;
+  _qaAccuracyInitialSyncDone = true;
+  syncQaAccuracyFromReviewRecords();
 }
 function stopQaAccuracyRealtimeSync() {
-  if (_qaAccuracyChannel) {
-    try { sbQaReview.removeChannel(_qaAccuracyChannel); } catch (err) { /* non-fatal */ }
-    _qaAccuracyChannel = null;
-  }
+  _qaAccuracyInitialSyncDone = false; // re-arm so the next login/session gets a genuine fresh initial sync, not a stale "already done" flag
 }
 
 // ── Daily archive of MD Task / Peer Review, protecting against the ──
