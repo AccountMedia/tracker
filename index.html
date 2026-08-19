@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-callouts-blue-no-underline';
+const APP_VERSION = '2026-08-18-qa-simplify-columns';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12629,8 +12629,6 @@ function renderIpsTables() {
       const qaCellContent = stillLoadingLiveData
         ? `<span class="faint" style="font-size:11px;">loading…</span>`
         : (qa !== '' ? qa + '%' : '—');
-      const majorCellContent = stillLoadingLiveData ? '—' : major;
-      const minorCellContent = stillLoadingLiveData ? '—' : minor;
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">
@@ -12638,19 +12636,21 @@ function renderIpsTables() {
             ${pendingDisputeCount > 0 ? `<span class="ips-dispute-badge" data-emp-id="${emp.id}" title="${pendingDisputeCount} pending dispute${pendingDisputeCount===1?'':''} — click to review" style="cursor:pointer; margin-left:6px; display:inline-flex; align-items:center; justify-content:center; min-width:17px; height:17px; padding:0 4px; border-radius:999px; background:var(--coral); color:#fff; font-size:10px; font-weight:700; vertical-align:middle;">${pendingDisputeCount}</span>` : ''}
           </td>
           <td style="padding:8px; text-align:center; font-weight:700; color:${stillLoadingLiveData ? 'var(--ink-faint)' : qaColor};">${qaCellContent}</td>
-          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${majorCellContent}</td>
-          <td style="padding:8px; text-align:center; color:var(--ink-soft);">${minorCellContent}</td>
           <td style="padding:6px 10px; text-align:center;">
             ${stillLoadingLiveData ? `<span class="faint" style="font-size:13px;">–</span>` : (() => {
               // Concise call-out summary — "1 major", "2 majors, 1 minor",
-              // etc., each kind pluralized independently. A single en
-              // dash (–, not an em dash — which can visually resemble
-              // an equal sign) when there are genuinely zero call-outs.
+              // etc., each kind pluralized independently AND colored
+              // independently (Major in red, Minor in blue) — matching
+              // the same red-for-Major convention already used
+              // elsewhere in QA Accuracy (the QA% cell, the download
+              // report). A single en dash (–, not an em dash — which
+              // can visually resemble an equal sign) when there are
+              // genuinely zero call-outs.
               const parts = [];
-              if (major > 0) parts.push(`${major} major${major === 1 ? '' : 's'}`);
-              if (minor > 0) parts.push(`${minor} minor${minor === 1 ? '' : 's'}`);
-              const summary = parts.length ? parts.join(', ') : '–';
-              return `<span class="ips-qa-manage-btn" data-emp-id="${emp.id}" style="cursor:pointer; color:#2D6A9F; font-size:13px;">${summary}</span>`;
+              if (major > 0) parts.push(`<span style="color:var(--coral);">${major} major${major === 1 ? '' : 's'}</span>`);
+              if (minor > 0) parts.push(`<span style="color:#2D6A9F;">${minor} minor${minor === 1 ? '' : 's'}</span>`);
+              const summary = parts.length ? parts.join(', ') : '<span style="color:#2D6A9F;">–</span>';
+              return `<span class="ips-qa-manage-btn" data-emp-id="${emp.id}" style="cursor:pointer; font-size:13px;">${summary}</span>`;
             })()}
           </td>
         </tr>
@@ -12670,7 +12670,7 @@ function renderIpsTables() {
       ` : ''}
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Call-outs</th>
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Call-outs</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
