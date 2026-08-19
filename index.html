@@ -1767,7 +1767,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-reorder-results';
+const APP_VERSION = '2026-08-18-lq-playbook-narrow-table';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10107,7 +10107,7 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
       <div style="font-size:18px; font-weight:800; color:${verdictColor};">${escapeHtml(verdict)}</div>
     </div>
     <div style="padding:4px 12px; background:var(--panel); border-left:1px solid ${verdictColor}55; border-right:1px solid ${verdictColor}55; overflow-x:auto;">
-      <table style="width:100%; border-collapse:collapse;">
+      <table style="width:100%; max-width:700px; border-collapse:collapse;">
         <thead>
           <tr>
             <th style="padding:6px 10px; text-align:left; font-size:10.5px; color:var(--ink-faint); text-transform:uppercase;"></th>
