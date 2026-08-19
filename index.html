@@ -1749,7 +1749,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-gemini-3-6';
+const APP_VERSION = '2026-08-18-lq-playbook-fix-status-logic';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9672,10 +9672,11 @@ function renderQaGuide() {
           ` : ''}
 
           <form id="qa-guide-form" style="display:flex; flex-direction:column; gap:0;">
-            <div style="display:grid; grid-template-columns:140px 1fr 1fr; gap:12px; align-items:end; margin-bottom:12px;">
+            <div style="display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:12px; align-items:end; margin-bottom:12px;">
               <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-bottom:9px;">Uploaded</div>
               <div class="field"><label>Company Name</label><input type="text" id="qa-g-ud-company" placeholder="e.g. Renault Deutschland" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
               <div class="field"><label>Domain</label><input type="text" id="qa-g-ud-domain" placeholder="e.g. renault.de" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
+              <div></div>
             </div>
 
             <div style="display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:12px; align-items:end; margin-bottom:12px; padding-top:12px; border-top:1px solid var(--line);">
@@ -9880,19 +9881,40 @@ Respond with ONLY this JSON shape, no other text:
 // relationship) now reflects a genuine, searched answer.
 function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers }) {
   const q1 = answers.q1 === true, q2 = answers.q2 === true, q3 = answers.q3 === true;
-  const q4 = answers.q4, q5 = answers.q5;
+  const q4 = answers.q4 === true, q5 = answers.q5 === true;
+  const hasOlder = !!(olderCompany || olderDomain);
+
+  // Per Rule 4, a genuine TOP connection requires the NAME match (q1)
+  // together with a confirmed DOMAIN connection (q2 or q3) — a single
+  // weak signal alone is not enough, matching the guideline's own
+  // explicit combination requirement (root word + domain together).
+  const topConnected = q1 && (q2 || q3);
+  // Whether the previous/older experience is genuinely the SAME
+  // situation as the uploaded company: matches by name or domain, AND
+  // is marked Left. This is precisely the Renault worked example:
+  // a previous experience that matches the uploaded company/domain
+  // exactly, but has already ended.
+  const olderMatchesUdAndLeft = hasOlder && (q4 || q5) && olderStatus === 'left';
+  const olderMatchesUdAndPresent = hasOlder && (q4 || q5) && olderStatus === 'present';
 
   const reasons = [];
   let verdict, verdictColor;
 
-  const topConnected = q1 || q2 || q3;
-
-  if (topStatus === 'present' && topConnected) {
+  if (topStatus === 'present' && topConnected && olderMatchesUdAndLeft) {
+    // The exact Renault pattern: TOP looks connected, but the
+    // uploaded company itself shows up as a genuinely matching,
+    // already-ended experience elsewhere in the profile. Per Rule 4,
+    // this combination is Bad Left, not automatically Good, even
+    // though the TOP company is related.
+    verdict = 'BAD LEFT';
+    verdictColor = 'var(--coral)';
+    reasons.push(`This is the Renault pattern from Rule 4. "${topCompany}" is Present and related to "${udCompany}", but "${olderCompany || udCompany}" (matching the uploaded company and domain) shows up as a LEFT experience. A related, Present TOP company is NOT enough by itself when the uploaded company itself is shown as already ended. This is Bad Left.`);
+  } else if (topStatus === 'present' && topConnected) {
     verdict = 'GOOD DATA';
     verdictColor = 'var(--green)';
-    reasons.push(`"${topCompany}" is Present and confirmed connected to "${udCompany}" (Rules 2 and 3). ${answers.q1_note || answers.q2_note || answers.q3_note || ''}`);
+    reasons.push(`"${topCompany}" is Present and confirmed connected to "${udCompany}" by both name and domain (Rules 2 and 3). ${answers.q1_note || answers.q2_note || answers.q3_note || ''}`);
   } else if (topStatus === 'left' && topConnected) {
-    if (olderCompany && q4 === true && olderStatus === 'present') {
+    if (olderMatchesUdAndPresent) {
       verdict = 'NEEDS CLOSER REVIEW';
       verdictColor = 'var(--amber)';
       reasons.push(`The TOP company is confirmed connected to "${udCompany}" but is marked Left. "${olderCompany}" is also confirmed connected and marked Present. Re-check that second experience before deciding.`);
@@ -9902,11 +9924,11 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
       reasons.push(`The TOP company is confirmed connected to "${udCompany}", but it is marked Left, and no other Present connected experience was confirmed. Rule 2: always start with the TOP/current company. This is Bad Left.`);
     }
   } else if (!topConnected) {
-    if (olderCompany && q4 === true && olderStatus === 'present') {
+    if (olderMatchesUdAndPresent) {
       verdict = 'GOOD DATA';
       verdictColor = 'var(--green)';
       reasons.push(`The TOP company is not confirmed connected to "${udCompany}", but "${olderCompany}" is confirmed connected and marked Present. Rule 1: a confirmed, currently Present connection is Good Data even when it is not the TOP entry.`);
-    } else if (olderCompany && q4 === true && olderStatus === 'left') {
+    } else if (olderMatchesUdAndLeft) {
       verdict = 'BAD LEFT';
       verdictColor = 'var(--coral)';
       reasons.push(`"${olderCompany}" is confirmed connected to "${udCompany}", but it is marked Left, and the TOP company is not connected. Rules 1 and 2: the TOP/current company is what matters most, and it does not connect here.`);
