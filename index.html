@@ -1749,7 +1749,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-fix-retired-model';
+const APP_VERSION = '2026-08-18-lq-playbook-show-real-error';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9859,8 +9859,14 @@ Respond with ONLY this JSON shape, no other text:
     let friendly = 'Could not reach the search service. Please try again.';
     if (msg.includes('NO_KEY')) friendly = 'Set up a free search key first (button above).';
     else if (msg.includes('API_ERROR:400')) friendly = 'The search key looks invalid. Try setting it up again.';
+    else if (msg.includes('API_ERROR:403')) friendly = 'The search key was rejected (403). It may be restricted or not yet active.';
+    else if (msg.includes('API_ERROR:404')) friendly = 'The search model was not found (404). It may have been renamed or retired.';
     else if (msg.includes('API_ERROR:429')) friendly = 'The free search limit was reached for now. Try again in a bit.';
-    resultEl.innerHTML = `<div style="padding:14px; border-radius:8px; background:var(--coral-wash); color:var(--coral); font-size:12.5px; font-weight:600;">${escapeHtml(friendly)}</div>`;
+    console.error('LQ Playbook search error:', err);
+    resultEl.innerHTML = `
+      <div style="padding:14px; border-radius:8px; background:var(--coral-wash); color:var(--coral); font-size:12.5px; font-weight:600;">${escapeHtml(friendly)}</div>
+      <div style="padding:10px 14px; margin-top:6px; border-radius:8px; background:#fff; font-size:11px; color:var(--ink-faint); font-family:monospace; word-break:break-all;">${escapeHtml(msg)}</div>
+    `;
     return;
   }
 
