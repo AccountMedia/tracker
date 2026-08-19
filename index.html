@@ -431,6 +431,7 @@
       <a class="nav-item" data-view="ot-filing" id="nav-ot-filing"><span class="dot"></span>OT Hours Filing<span id="nav-ot-filing-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="ips" id="nav-ips"><span class="dot"></span>IPS (Individual Performance Score)<span id="nav-ips-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
+      <a class="nav-item" data-view="qa-guide" id="nav-qa-guide"><span class="dot"></span>LQ Playbook</a>
     </nav>
     <div class="sidebar-foot">
       Signed in as <strong id="current-user-label">—</strong>
@@ -571,6 +572,17 @@
         <div id="team-funds-actions"></div>
       </div>
       <div id="team-funds-content"></div>
+    </section>
+
+    <section class="view" id="view-qa-guide">
+      <div class="page-head">
+        <div>
+          <span class="eyebrow">PH Team</span>
+          <h1>LQ Playbook</h1>
+          <p class="lede">Enter the real details of a specific lead and check your reasoning against the actual company-matching rules — not a memorized answer from a past sample, your own analysis of THIS lead.</p>
+        </div>
+      </div>
+      <div id="qa-guide-content"></div>
     </section>
 
     <section class="view" id="view-ips">
@@ -1223,6 +1235,11 @@ function initNav() {
     employeeManagementNavItem.style.display = canManageEmployees() ? '' : 'none';
   }
 
+  const qaGuideNavItem = document.getElementById('nav-qa-guide');
+  if (qaGuideNavItem) {
+    qaGuideNavItem.style.display = (state.profile && state.profile.display_name === 'Jeinna Louise Perez') ? '' : 'none';
+  }
+
 
 
   const hashSlug = (window.location.hash || '').replace(/^#/, '');
@@ -1296,6 +1313,13 @@ function switchView(viewName) {
     viewName = 'dashboard';
   }
 
+  // Exclusive to Jeinna, per explicit requirement — anyone else trying
+  // to reach this (a stale saved session, a pasted URL hash, or a
+  // direct switchView call) is silently redirected to the dashboard.
+  if (viewName === 'qa-guide' && (!state.profile || state.profile.display_name !== 'Jeinna Louise Perez')) {
+    viewName = 'dashboard';
+  }
+
   // PrioList's visibility is a live, app-wide toggle Jeinna controls
   // (see state.priolistVisible / app_settings.priolist_visible) — when
   // off, everyone EXCEPT JEINNA redirects here instead of opening the
@@ -1328,6 +1352,7 @@ function switchView(viewName) {
   if (viewName === 'ot-filing') renderOtFiling();
   if (viewName === 'team-funds') renderTeamFunds();
   if (viewName === 'ips') renderIps();
+  if (viewName === 'qa-guide') renderQaGuide();
 
   if (viewName === 'priolist') startPriolistPolling();
   else stopPriolistPolling();
@@ -1724,7 +1749,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-qa-widen-click-target';
+const APP_VERSION = '2026-08-18-lq-playbook-jeinna-only';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9574,6 +9599,211 @@ async function openLinkedInAccountsPanel() {
   }
   renderLinkedinAccountsList();
   wireLinkedinAccountsHandlers();
+}
+
+// =====================================================================
+// QA DECISION GUIDE — interactive company-matching rule checker
+// =====================================================================
+// Deliberately NOT a step-by-step wizard — every real case genuinely
+// branches differently (an exact name match can still be Bad Left; a
+// related company can still be Good; Corp/LLC doesn't automatically
+// mean a different company), so this collects the actual facts of ONE
+// specific lead all at once and applies the real rules together,
+// rather than walking someone through a rigid linear sequence that
+// doesn't match how these decisions genuinely work.
+//
+// The output is a REASONED recommendation, not a bare verdict — it
+// names which rule(s) drove the answer, since the whole point (per the
+// guidelines' own Rule 8) is to understand the reasoning for THIS
+// lead, not memorize an answer from a past sample.
+
+const QA_GUIDE_RULES = [
+  { n: 1, title: 'Exact company-name match in an older experience ≠ automatically Bad Left', body: 'Finding a 1:1 company-name match somewhere in the older LinkedIn experience history does not automatically mean Bad Left. The real question is whether the TOP/current company is actually the same company/entity as the uploaded company — not simply whether an exact text match exists somewhere in the profile.' },
+  { n: 2, title: 'Always check the TOP/current company first', body: 'Start with the top/current LinkedIn company and compare it against the uploaded company/domain: company name/root word, LinkedIn company page, domain, and whether it\'s the same company or only a related one. Don\'t stop investigating just because an exact name shows up in an older experience.' },
+  { n: 3, title: 'Corp / LLC / Inc. does not automatically mean a different company', body: 'A legal-suffix difference (e.g. "Dematic" vs "Dematic Corp") doesn\'t by itself mean two different companies. If the LinkedIn page represents the same company, the domain matches, and other evidence supports the connection, they can still be the same company. Don\'t require the name to be 100% text-identical.' },
+  { n: 4, title: 'Related company ≠ automatically Good', body: 'A shared/root company name alone is not enough. Weigh the combination of: company root word, job status (present/left), company relationship, LinkedIn company page, and domain. (Renault example: Renault Deutschland — matches the uploaded company/domain — showing as LEFT, while the top/current "Renault Group" has an entirely different domain → Bad Left, despite being related companies.)' },
+  { n: 5, title: 'Related companies can still be Good when BOTH are present and the domain connection is confirmed', body: 'When the top/current company and another LinkedIn experience are BOTH present, share a root word, and the domain connection is confirmed (even via a redirect — e.g. steinert.de redirecting to steinertglobal.com) — this supports Good Data, even with a different-looking company name or domain on the surface.' },
+  { n: 6, title: 'Logo = supporting evidence only', body: 'A matching logo can help support a decision, but never decide based on the logo alone. Company relationship + domain/redirect + LinkedIn company page + a supporting logo together make for stronger evidence than any one signal alone.' },
+  { n: 7, title: 'Job Title should not be the primary company-matching basis', body: 'Don\'t decide the company match simply based on where a matching Job Title happens to appear. The real question is always whether the LinkedIn company represented by the profile matches the uploaded company — Job Title is still relevant to lead validation, but shouldn\'t override the company evidence.' },
+  { n: 8, title: 'Don\'t memorize the answer — understand the reasoning, and don\'t universalize one sample', body: 'A previous callout being Bad Left does not mean a similar-looking new lead is automatically Bad Left too. For every new lead: review the actual evidence, analyze the specific situation, understand WHY past examples were marked Good/Bad, and apply the full process to the lead in front of you. If it\'s genuinely unclear, escalate rather than guessing from memory.' },
+];
+
+function renderQaGuide() {
+  const el = document.getElementById('qa-guide-content');
+  if (!el) return;
+  if (!state.profile || state.profile.display_name !== 'Jeinna Louise Perez') { el.innerHTML = ''; return; }
+
+  el.innerHTML = `
+    <div style="max-width:820px;">
+      <div style="background:var(--panel); border-radius:12px; padding:20px; margin-bottom:20px;">
+        <h2 style="font-size:16px; margin:0 0 4px;">Check a lead</h2>
+        
+        <p class="muted" style="font-size:12.5px; margin:0 0 16px;">Just type in what you actually SEE on the profile — no need to judge or decide anything yet. The tool does the comparing for you.</p>
+
+        <form id="qa-guide-form" style="display:flex; flex-direction:column; gap:14px;">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+            <div class="field">
+              <label>Uploaded company name</label>
+              <input type="text" id="qa-g-ud-company" placeholder="e.g. Dematic" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            </div>
+            <div class="field">
+              <label>Uploaded domain</label>
+              <input type="text" id="qa-g-ud-domain" placeholder="e.g. dematic.com" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:12px;">
+            <div class="field">
+              <label>LinkedIn TOP (current) company name</label>
+              <input type="text" id="qa-g-top-company" placeholder="e.g. Dematic Corp" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            </div>
+            <div class="field">
+              <label>Is it marked Present or Left?</label>
+              <select id="qa-g-top-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                <option value="present">Present</option>
+                <option value="left">Left</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:12px; padding-top:6px; border-top:1px solid var(--line);">
+            <div class="field">
+              <label>Any OTHER experience matching the uploaded company? (optional)</label>
+              <input type="text" id="qa-g-older-company" placeholder="Leave blank if none" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+            </div>
+            <div class="field">
+              <label>Its status</label>
+              <select id="qa-g-older-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                <option value="present">Present</option>
+                <option value="left">Left</option>
+              </select>
+            </div>
+          </div>
+
+          <button type="submit" class="btn btn-primary" style="justify-content:center;">Check this lead</button>
+        </form>
+
+        <div id="qa-guide-result" style="margin-top:16px;"></div>
+      </div>
+
+      <div style="background:var(--panel); border-radius:12px; padding:20px;">
+        <h2 style="font-size:16px; margin:0 0 4px;">The rules, in plain terms</h2>
+        <p class="muted" style="font-size:12px; margin:0 0 14px;">Read these whenever you want the full reasoning behind a rule, not just the tool's verdict.</p>
+        ${QA_GUIDE_RULES.map(r => `
+          <div style="padding:12px 0; border-bottom:1px solid var(--line-soft);">
+            <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${r.n}. ${escapeHtml(r.title)}</div>
+            <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">${escapeHtml(r.body)}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('qa-guide-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    evaluateQaGuideLead();
+  });
+}
+
+// Strips common legal suffixes (Corp, LLC, GmbH, Group, etc.) and
+// compares the remaining significant words — this is what lets
+// "Dematic" vs "Dematic Corp" and "STEINERT GmbH" vs "Steinert Unisort
+// GmbH" correctly detect a shared root word automatically, instead of
+// asking the person to judge that themselves. Tested against every
+// real company-name example in the guidelines before shipping.
+function qaGuideNormalizeCompany(name) {
+  if (!name) return '';
+  let n = name.toLowerCase().trim();
+  const suffixes = [' corporation', ' corp', ' company', ' co., ltd.', ' co ltd', ' llc', ' inc.', ' inc', ' gmbh', ' group', ' ltd', ' plc', ' ag', ' sa', ' nv', ' bv'];
+  for (const suf of suffixes) {
+    if (n.endsWith(suf)) { n = n.slice(0, -suf.length).trim(); break; }
+  }
+  return n;
+}
+function qaGuideRootWordsMatch(a, b) {
+  const stop = new Set(['the', 'of', 'and', 'group', 'business', 'technology']);
+  const wordsA = new Set((qaGuideNormalizeCompany(a).match(/[a-z0-9]+/g) || []).filter(w => !stop.has(w)));
+  const wordsB = new Set((qaGuideNormalizeCompany(b).match(/[a-z0-9]+/g) || []).filter(w => !stop.has(w)));
+  const shared = [...wordsA].filter(w => wordsB.has(w));
+  return { match: shared.length > 0, shared };
+}
+
+// The actual rule-based evaluator — only ever reasons from what's
+// genuinely knowable from plain text comparison (root words, present/
+// left status). The domain relationship can't be reliably checked
+// automatically from the browser (a real redirect check needs a live
+// network request this app can't safely make on your behalf), so the
+// tool is explicitly honest about that and always hands the domain
+// check back to the person with a direct link, rather than guessing.
+function evaluateQaGuideLead() {
+  const udCompany = document.getElementById('qa-g-ud-company').value.trim();
+  const udDomain = document.getElementById('qa-g-ud-domain').value.trim();
+  const topCompany = document.getElementById('qa-g-top-company').value.trim();
+  const topStatus = document.getElementById('qa-g-top-status').value;
+  const olderCompany = document.getElementById('qa-g-older-company').value.trim();
+  const olderStatus = document.getElementById('qa-g-older-status').value;
+
+  const { match: topRootMatches } = qaGuideRootWordsMatch(udCompany, topCompany);
+  const { match: olderRootMatches } = olderCompany ? qaGuideRootWordsMatch(udCompany, olderCompany) : { match: false };
+
+  const reasons = [];
+  let verdict, verdictColor;
+
+  if (topStatus === 'present' && topRootMatches) {
+    verdict = 'LIKELY GOOD DATA — confirm the domain below';
+    verdictColor = 'var(--green)';
+    reasons.push(`"${topCompany}" and "${udCompany}" share the same root word, and it's marked Present — this is the strongest pattern for Good Data (Rules 2 & 3). The one thing left to confirm is the domain relationship below — check it before finalizing.`);
+  } else if (topStatus === 'left' && topRootMatches) {
+    if (olderCompany && olderRootMatches && olderStatus === 'present') {
+      verdict = 'NEEDS CLOSER REVIEW';
+      verdictColor = 'var(--amber)';
+      reasons.push(`The TOP company matches the uploaded company but is marked Left — normally a sign of Bad Left. But you've also entered "${olderCompany}", which matches AND is Present. Re-check that second experience carefully (Rules 2 & 5) before deciding — don't default to Bad Left just because the TOP entry alone looks that way.`);
+    } else {
+      verdict = 'LIKELY BAD LEFT';
+      verdictColor = 'var(--coral)';
+      reasons.push(`The TOP company matches the uploaded company's root word, but it's marked Left, and no other Present matching experience was entered. Rule 2: always start with the TOP/current company — this is a strong signal toward Bad Left.`);
+    }
+  } else if (!topRootMatches) {
+    if (olderCompany && olderRootMatches && olderStatus === 'present') {
+      verdict = 'LIKELY GOOD DATA';
+      verdictColor = 'var(--green)';
+      reasons.push(`The TOP company doesn't match the uploaded company, but "${olderCompany}" does AND is marked Present. Rule 1: a matching, currently-Present experience can still be Good Data even when it's not the TOP entry.`);
+    } else if (olderCompany && olderRootMatches && olderStatus === 'left') {
+      verdict = 'LIKELY BAD LEFT';
+      verdictColor = 'var(--coral)';
+      reasons.push(`"${olderCompany}" matches the uploaded company, but it's marked Left, and the TOP company is unrelated. Rules 1 & 2: an exact/root match existing SOMEWHERE in the profile isn't enough on its own — the TOP/current company is what matters most, and it doesn't connect here.`);
+    } else {
+      verdict = 'NEEDS CLOSER REVIEW';
+      verdictColor = 'var(--amber)';
+      reasons.push(`The TOP company doesn't share a root word with the uploaded company, and no other matching experience was entered. Double-check the full profile for anything that might have been missed before concluding Bad Left.`);
+    }
+  } else {
+    verdict = 'NEEDS CLOSER REVIEW';
+    verdictColor = 'var(--amber)';
+    reasons.push(`Review the full profile evidence directly, and escalate if it's still unclear.`);
+  }
+
+  reasons.push(`Reminder: this reasoning is for THIS lead specifically — a similar-looking one later may have a different domain or status and could reach a different, equally correct answer (Rule 8).`);
+
+  const searchQuery = encodeURIComponent(`${udCompany} ${topCompany} company relationship`);
+
+  document.getElementById('qa-guide-result').innerHTML = `
+    <div style="padding:16px; border-radius:10px; background:${verdictColor}18; border:1px solid ${verdictColor}55;">
+      <div style="font-size:15px; font-weight:800; color:${verdictColor}; margin-bottom:10px;">${escapeHtml(verdict)}</div>
+      ${reasons.map(r => `<p style="font-size:12.5px; margin:0 0 8px; color:var(--ink-soft); line-height:1.5;">${r}</p>`).join('')}
+      ${udDomain ? `
+        <div style="margin-top:12px; padding:10px 12px; background:#fff; border-radius:8px;">
+          <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; margin-bottom:6px;">Domain check — confirm this yourself</div>
+          <div style="font-size:12.5px;">Uploaded domain: <strong>${escapeHtml(udDomain)}</strong></div>
+          <div style="font-size:11.5px; color:var(--ink-soft); margin-top:2px;">Open it directly — if it redirects somewhere else (like steinert.de → steinertglobal.com), that redirect target is what actually matters for the domain check.</div>
+        </div>
+      ` : ''}
+      <div style="display:flex; gap:8px; margin-top:12px; flex-wrap:wrap;">
+        ${udDomain ? `<a href="https://${escapeHtml(udDomain)}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11.5px;">🌐 Open ${escapeHtml(udDomain)}</a>` : ''}
+        ${udCompany && topCompany ? `<a href="https://www.google.com/search?q=${searchQuery}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm" style="font-size:11.5px;">🔍 Search "${escapeHtml(udCompany)}" vs "${escapeHtml(topCompany)}"</a>` : ''}
+      </div>
+    </div>
+  `;
 }
 
 function renderTeamFundsView() {
