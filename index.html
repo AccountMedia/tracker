@@ -1767,7 +1767,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-narrow-table';
+const APP_VERSION = '2026-08-18-lq-playbook-domain-only-trigger';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10024,14 +10024,14 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
   // here — the AI is explicitly instructed to answer true for those —
   // EXCEPT joint ventures, which are excluded even if otherwise related.
   const topConnected = q1 && (q2 || q3) && !isJointVenture;
-  // The Renault-pattern trigger requires the previous experience to be
-  // EXACTLY, visually identical to the uploaded company — both the
-  // company name (q7) AND the domain (q6) — not just "related." A
-  // merely related previous company (e.g. "General Electric" for an
-  // uploaded "Ge Grid Solutions") does NOT trigger this on its own;
-  // only a genuine, literal duplicate of the uploaded record showing
-  // up as Left does.
-  const olderIsExactUdDuplicate = hasOlder && q6 && q7;
+  // The Renault-pattern trigger fires on an EXACT domain match (q6)
+  // between the uploaded company and the previous LinkedIn experience
+  // — the company NAME is explicitly not part of this check, per
+  // requirement. A previous experience can be named completely
+  // differently (e.g. "General Electric" vs uploaded "Ge Grid
+  // Solutions") and still trigger this, as long as its domain is
+  // genuinely, visually identical to the uploaded domain.
+  const olderIsExactUdDuplicate = hasOlder && q6;
   const olderMatchesUdAndLeft = olderIsExactUdDuplicate && olderStatus === 'left';
   const olderMatchesUdAndPresent = olderIsExactUdDuplicate && olderStatus === 'present';
 
