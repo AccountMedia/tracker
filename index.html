@@ -1768,7 +1768,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-eye-toggle-autoselect';
+const APP_VERSION = '2026-08-18-lq-playbook-major-rebuild';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9768,6 +9768,7 @@ function renderQaGuide() {
               <div class="field"><label>Domain</label><input type="text" id="qa-g-li-domain" onclick="this.select()" placeholder="e.g. renaultgroup.com" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
               <div class="field"><label>Status</label>
                 <select id="qa-g-top-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                  <option value="" selected>-</option>
                   <option value="present">Present</option>
                   <option value="left">Left</option>
                 </select>
@@ -9780,6 +9781,7 @@ function renderQaGuide() {
               <div class="field"><label>Domain</label><input type="text" id="qa-g-older-domain" onclick="this.select()" placeholder="Optional" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
               <div class="field"><label>Status</label>
                 <select id="qa-g-older-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+                  <option value="" selected>-</option>
                   <option value="present">Present</option>
                   <option value="left">Left</option>
                 </select>
@@ -9870,7 +9872,7 @@ function renderQaGuideRulesList() {
 
   listEl.innerHTML = filtered.length ? filtered.map(r => `
     <div style="padding:12px 0; border-bottom:1px solid var(--line-soft);">
-      <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${r.n}. ${escapeHtml(r.title)}</div>
+      <div style="font-weight:700; font-size:13px; margin-bottom:4px;">${escapeHtml(r.title)}</div>
       <div style="font-size:12.5px; color:var(--ink-soft); line-height:1.5;">${escapeHtml(r.body)}</div>
     </div>
   `).join('') : `<p class="muted" style="font-size:13px; margin:0;">No rules match "${escapeHtml(qaGuideState.searchTerm)}". Try a different keyword.</p>`;
@@ -9884,7 +9886,7 @@ function renderQaGuideRulesList() {
 async function qaGuideAskGemini(prompt) {
   const key = localStorage.getItem('qa_guide_gemini_key');
   if (!key) throw new Error('NO_KEY');
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`, {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -9912,6 +9914,18 @@ async function runQaGuideChecks() {
   const olderDomain = document.getElementById('qa-g-older-domain').value.trim();
   const olderStatus = document.getElementById('qa-g-older-status').value;
 
+  // Clear the fields right away, per explicit request — the entered
+  // details are already captured above, so nothing is lost. Status
+  // dropdowns reset to the new default "-" placeholder.
+  ['qa-g-ud-company', 'qa-g-ud-domain', 'qa-g-top-company', 'qa-g-li-domain', 'qa-g-older-company', 'qa-g-older-domain'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  ['qa-g-top-status', 'qa-g-older-status'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+
   const resultEl = document.getElementById('qa-guide-result');
   const key = localStorage.getItem('qa_guide_gemini_key');
   if (!key) {
@@ -9922,21 +9936,22 @@ async function runQaGuideChecks() {
   resultEl.innerHTML = `<div style="padding:14px; text-align:center; color:var(--ink-faint); font-size:12.5px;">Checking...</div>`;
 
   // The 5 comparisons that genuinely need real-world research (asked to
-  // the AI, which can search the web). Check #6 (uploaded domain vs
-  // previous LI domain) is a plain, exact text comparison instead —
-  // it's specifically about whether the two domains are visually
-  // identical, not a "same company" judgment call, so it's computed
-  // directly rather than asked, making it instant and always reliable.
-  const prompt = `You are checking whether pairs of companies/domains represent the same real-world company or a genuine related company (parent, subsidiary, rebrand, or regional division), as opposed to being unrelated companies that merely share a similar-looking name. Search the web if needed to confirm your answer with real, current information. Answer these 5 questions. For each, answer true only if you are reasonably confident they are the SAME company or a GENUINELY related company (not just a coincidental name similarity), and false otherwise. If a field is blank, answer null for that question.
+  // the AI, which can search the web). Checks #6 and #7 (exact domain
+  // and exact name identity) are plain text comparisons instead — both
+  // are specifically about visual identity, not a "same company"
+  // judgment call, so they're computed directly rather than asked,
+  // making them instant and always reliable.
+  const prompt = `You are checking whether pairs of companies/domains represent the same real-world corporate group, as opposed to being unrelated companies that merely share a similar-looking name. Treat any related entity as the SAME company for this purpose — this includes subsidiaries, parent companies, sister companies, and umbrella/holding groups. The one exception: a joint venture between two otherwise-unrelated companies is NOT treated as the same company, even if one of its parent companies is related. Search the web if needed to confirm your answer with real, current information. Answer these questions. For each, answer true only if you are reasonably confident they are the SAME company or a genuinely related entity as defined above, and false otherwise. If a field is blank, answer null for that question.
 
-1. Uploaded Company Name ("${udCompany}") and LinkedIn top/current company name ("${topCompany}") — same company?
-2. Uploaded Domain ("${udDomain}") and LinkedIn top/current company name ("${topCompany}") — same company?
-3. LinkedIn top/current domain ("${liDomain}") and Uploaded Company Name ("${udCompany}") — same company?
-4. Previous LinkedIn Company ("${olderCompany || 'not provided'}") and Uploaded Company Name ("${udCompany}") — same company?
-5. Previous LinkedIn Domain ("${olderDomain || 'not provided'}") and LinkedIn top/current domain ("${liDomain}") — same company?
+1. Uploaded Company Name ("${udCompany}") and LinkedIn top/current company name ("${topCompany}") — same company or related entity?
+2. Uploaded Domain ("${udDomain}") and LinkedIn top/current company name ("${topCompany}") — same company or related entity?
+3. LinkedIn top/current domain ("${liDomain}") and Uploaded Company Name ("${udCompany}") — same company or related entity?
+4. Previous LinkedIn Company ("${olderCompany || 'not provided'}") and Uploaded Company Name ("${udCompany}") — same company or related entity?
+5. Previous LinkedIn Domain ("${olderDomain || 'not provided'}") and LinkedIn top/current domain ("${liDomain}") — same company or related entity?
+6. Is the LinkedIn top/current company ("${topCompany}") specifically a JOINT VENTURE (not simply a subsidiary, parent, or sister company) relative to the uploaded company ("${udCompany}")?
 
 Respond with ONLY this JSON shape, no other text:
-{"q1": true or false, "q1_note": "one short sentence why", "q2": true or false, "q2_note": "one short sentence why", "q3": true or false, "q3_note": "one short sentence why", "q4": true or false or null, "q4_note": "one short sentence why", "q5": true or false or null, "q5_note": "one short sentence why"}`;
+{"q1": true or false, "q1_note": "one short sentence why", "q2": true or false, "q2_note": "one short sentence why", "q3": true or false, "q3_note": "one short sentence why", "q4": true or false or null, "q4_note": "one short sentence why", "q5": true or false or null, "q5_note": "one short sentence why", "jointVenture": true or false}`;
 
   let answers;
   try {
@@ -9965,8 +9980,16 @@ Respond with ONLY this JSON shape, no other text:
   // rather than just a similarly-named but genuinely different one.
   const normalizeDomainForCompare = (d) => (d || '').toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '');
   const q6 = !!(udDomain && olderDomain) && normalizeDomainForCompare(udDomain) === normalizeDomainForCompare(olderDomain);
+  // Check #7: is the uploaded company NAME visually/exactly the same
+  // as the Previous LI Company's name (ignoring case and extra
+  // whitespace only — a genuine, literal name match, not merely a
+  // shared root word)? Required alongside q6 before the Renault
+  // pattern applies, per the explicit instruction that BOTH name and
+  // domain must be exactly identical, not just related.
+  const normalizeCompanyForExactCompare = (c) => (c || '').toLowerCase().trim().replace(/\s+/g, ' ');
+  const q7 = !!(udCompany && olderCompany) && normalizeCompanyForExactCompare(udCompany) === normalizeCompanyForExactCompare(olderCompany);
 
-  finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6 });
+  finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6, q7 });
 }
 
 // Applies the actual guideline rules (2, 3, 4, 5) using the REAL
@@ -9974,27 +9997,28 @@ Respond with ONLY this JSON shape, no other text:
 // finally makes the Renault case correctly resolve to Bad Left and the
 // STEINERT case correctly resolve to Good Data, since q2 (domain
 // relationship) now reflects a genuine, searched answer.
-function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6 }) {
+function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6, q7 }) {
   const q1 = answers.q1 === true, q2 = answers.q2 === true, q3 = answers.q3 === true;
-  const q4 = answers.q4 === true, q5 = answers.q5 === true;
+  const isJointVenture = answers.jointVenture === true;
   const hasOlder = !!(olderCompany || olderDomain);
 
   // Per Rule 4, a genuine TOP connection requires the NAME match (q1)
   // together with a confirmed DOMAIN connection (q2 or q3) — a single
-  // weak signal alone is not enough, matching the guideline's own
-  // explicit combination requirement (root word + domain together).
-  const topConnected = q1 && (q2 || q3);
-  // Whether the previous/older experience is genuinely the SAME
-  // situation as the uploaded company: matches by name (q4), by
-  // relation to the TOP domain (q5), OR by an EXACT domain match to
-  // the uploaded domain (q6 — the strongest possible signal, since an
-  // identical domain means this is literally the same record, not
-  // just a similarly-named company), AND is marked Left. This is
-  // precisely the Renault worked example: a previous experience that
-  // matches the uploaded company/domain exactly, but has already
-  // ended.
-  const olderMatchesUdAndLeft = hasOlder && (q4 || q5 || q6) && olderStatus === 'left';
-  const olderMatchesUdAndPresent = hasOlder && (q4 || q5 || q6) && olderStatus === 'present';
+  // weak signal alone is not enough. Related entities (subsidiary,
+  // parent, sister company, umbrella group) count as the SAME company
+  // here — the AI is explicitly instructed to answer true for those —
+  // EXCEPT joint ventures, which are excluded even if otherwise related.
+  const topConnected = q1 && (q2 || q3) && !isJointVenture;
+  // The Renault-pattern trigger requires the previous experience to be
+  // EXACTLY, visually identical to the uploaded company — both the
+  // company name (q7) AND the domain (q6) — not just "related." A
+  // merely related previous company (e.g. "General Electric" for an
+  // uploaded "Ge Grid Solutions") does NOT trigger this on its own;
+  // only a genuine, literal duplicate of the uploaded record showing
+  // up as Left does.
+  const olderIsExactUdDuplicate = hasOlder && q6 && q7;
+  const olderMatchesUdAndLeft = olderIsExactUdDuplicate && olderStatus === 'left';
+  const olderMatchesUdAndPresent = olderIsExactUdDuplicate && olderStatus === 'present';
 
   const reasons = [];
   let verdict, verdictColor;
@@ -10054,18 +10078,45 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
     </div>
   `;
 
+  const summaryRow = (group, name, domain, status) => `
+    <tr>
+      <td style="padding:6px 10px; font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; white-space:nowrap; vertical-align:top;">${group}</td>
+      <td style="padding:6px 10px; font-size:12px;">${escapeHtml(name || '—')}</td>
+      <td style="padding:6px 10px; font-size:12px;">${escapeHtml(domain || '—')}</td>
+      <td style="padding:6px 10px; font-size:12px;">${status ? escapeHtml(status.charAt(0).toUpperCase() + status.slice(1)) : '—'}</td>
+    </tr>
+  `;
+
   document.getElementById('qa-guide-result').innerHTML = `
+    <div style="margin-bottom:12px; padding:4px 12px; background:var(--panel); border-radius:8px; overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr>
+            <th style="padding:6px 10px; text-align:left; font-size:10.5px; color:var(--ink-faint); text-transform:uppercase;"></th>
+            <th style="padding:6px 10px; text-align:left; font-size:10.5px; color:var(--ink-faint); text-transform:uppercase;">Company Name</th>
+            <th style="padding:6px 10px; text-align:left; font-size:10.5px; color:var(--ink-faint); text-transform:uppercase;">Domain</th>
+            <th style="padding:6px 10px; text-align:left; font-size:10.5px; color:var(--ink-faint); text-transform:uppercase;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${summaryRow('Uploaded', udCompany, udDomain, null)}
+          ${summaryRow('LinkedIn (top/current)', topCompany, liDomain, topStatus)}
+          ${summaryRow('Previous LI Company', olderCompany, olderDomain, olderStatus)}
+        </tbody>
+      </table>
+    </div>
     <div style="padding:16px; border-radius:10px; background:${verdictColor}18; border:1px solid ${verdictColor}55;">
       <div style="font-size:15px; font-weight:800; color:${verdictColor}; margin-bottom:10px;">${escapeHtml(verdict)}</div>
       ${reasons.map(r => `<p style="font-size:12.5px; margin:0 0 8px; color:var(--ink-soft); line-height:1.5;">${escapeHtml(r)}</p>`).join('')}
       <div style="margin-top:12px; padding:4px 12px; background:#fff; border-radius:8px;">
-        <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-top:8px;">The 6 checks</div>
+        <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-top:8px;">The checks</div>
         ${checkRow('1. Uploaded company name and LinkedIn company name — same company?', answers.q1, answers.q1_note)}
         ${checkRow('2. Uploaded domain and LinkedIn company name — same company?', answers.q2, answers.q2_note)}
         ${checkRow('3. LinkedIn domain and uploaded company name — same company?', answers.q3, answers.q3_note)}
         ${checkRow('4. Previous LinkedIn company and uploaded company name — same company?', answers.q4, answers.q4_note)}
         ${checkRow('5. Previous LinkedIn domain and LinkedIn (top/current) domain — same company?', answers.q5, answers.q5_note)}
         ${checkRow('6. Uploaded domain and Previous LinkedIn domain — visually identical?', q6, q6 ? 'These domains are exactly the same.' : (udDomain && olderDomain ? 'These domains are not the same.' : 'Enter both domains above to check this.'))}
+        ${checkRow('7. Uploaded company name and Previous LinkedIn company name — visually identical?', q7, q7 ? 'These names are exactly the same.' : (udCompany && olderCompany ? 'These names are not the same.' : 'Enter both names above to check this.'))}
       </div>
     </div>
   `;
