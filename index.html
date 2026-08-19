@@ -1767,7 +1767,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-require-status';
+const APP_VERSION = '2026-08-20-lq-playbook-exact-top-domain';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10017,8 +10017,18 @@ Respond with ONLY this JSON shape, no other text:
   // domain must be exactly identical, not just related.
   const normalizeCompanyForExactCompare = (c) => (c || '').toLowerCase().trim().replace(/\s+/g, ' ');
   const q7 = !!(udCompany && olderCompany) && normalizeCompanyForExactCompare(udCompany) === normalizeCompanyForExactCompare(olderCompany);
+  // Check #8: is the uploaded domain visually/exactly the same as the
+  // LinkedIn top/current domain? This is stronger evidence than the
+  // AI's "related" check (q2/q3) — an EXACT domain match with the TOP
+  // company means it's genuinely the same entity, not just related,
+  // and takes priority over a same-domain-but-Left older experience
+  // (the GE Vernova / "Ge Grid Solutions" case): the company kept its
+  // domain across a rename, and the CURRENT listing at that domain is
+  // Present — that's the deciding fact, not what an old, since-renamed
+  // listing shows.
+  const q8 = !!(udDomain && liDomain) && normalizeDomainForCompare(udDomain) === normalizeDomainForCompare(liDomain);
 
-  finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6, q7 });
+  finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6, q7, q8 });
 }
 
 // Applies the actual guideline rules (2, 3, 4, 5) using the REAL
@@ -10026,7 +10036,7 @@ Respond with ONLY this JSON shape, no other text:
 // finally makes the Renault case correctly resolve to Bad Left and the
 // STEINERT case correctly resolve to Good Data, since q2 (domain
 // relationship) now reflects a genuine, searched answer.
-function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6, q7 }) {
+function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6, q7, q8 }) {
   const q1 = answers.q1 === true, q2 = answers.q2 === true, q3 = answers.q3 === true;
   const isJointVenture = answers.jointVenture === true;
   const hasOlder = !!(olderCompany || olderDomain);
@@ -10052,7 +10062,18 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
   const reasons = [];
   let verdict, verdictColor;
 
-  if (topStatus === 'present' && topConnected && olderMatchesUdAndLeft) {
+  if (topStatus === 'present' && q8) {
+    // Exact domain match with the TOP/current company overrides the
+    // Renault-pattern check below entirely — this isn't merely
+    // "related" (the topConnected check), it's the same entity by
+    // domain, and it's Present right now. A same-domain Left older
+    // experience just means the company kept its domain through a
+    // rename or restructure; it doesn't undo a confirmed exact-domain
+    // Present match at the top.
+    verdict = 'GOOD DATA';
+    verdictColor = 'var(--green)';
+    reasons.push(`"${topCompany}" is Present and its domain (${liDomain}) is an EXACT match for the uploaded domain (${udDomain}) — this is the same company, not merely related. ${olderMatchesUdAndLeft ? `"${olderCompany}" showing as Left elsewhere is expected if the company changed names but kept the same domain — it doesn't override a confirmed exact-domain Present match at the top.` : ''}`);
+  } else if (topStatus === 'present' && topConnected && olderMatchesUdAndLeft) {
     // The exact Renault pattern: TOP looks connected, but the
     // uploaded company itself shows up as a genuinely matching,
     // already-ended experience elsewhere in the profile. Per Rule 4,
