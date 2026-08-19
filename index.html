@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-fix-stuck-loading-qacontent';
+const APP_VERSION = '2026-08-18-qa-widen-click-target';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12638,12 +12638,8 @@ function renderIpsTables() {
             ${pendingDisputeCount > 0 ? `<span class="ips-dispute-badge" data-emp-id="${emp.id}" title="${pendingDisputeCount} pending dispute${pendingDisputeCount===1?'':''} — click to review" style="cursor:pointer; margin-left:6px; display:inline-flex; align-items:center; justify-content:center; min-width:17px; height:17px; padding:0 4px; border-radius:999px; background:var(--coral); color:#fff; font-size:10px; font-weight:700; vertical-align:middle;">${pendingDisputeCount}</span>` : ''}
           </td>
           <td style="padding:8px; text-align:center; font-weight:700; color:${stillLoadingLiveData ? 'var(--ink-faint)' : qaColor};">${qaCellContent}</td>
-          <td style="padding:8px; text-align:center;">
-            <span class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="major" style="cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${majorCellContent}</span>
-          </td>
-          <td style="padding:8px; text-align:center;">
-            <span class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="minor" style="cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${minorCellContent}</span>
-          </td>
+          <td class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="major" style="padding:8px; text-align:center; cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${majorCellContent}</td>
+          <td class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="minor" style="padding:8px; text-align:center; cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${minorCellContent}</td>
         </tr>
       `;
     }).join('');
