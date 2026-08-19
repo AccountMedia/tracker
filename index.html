@@ -1749,7 +1749,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-show-real-error';
+const APP_VERSION = '2026-08-18-lq-playbook-gemini-3-6';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9800,7 +9800,7 @@ function renderQaGuideRulesList() {
 async function qaGuideAskGemini(prompt) {
   const key = localStorage.getItem('qa_guide_gemini_key');
   if (!key) throw new Error('NO_KEY');
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`, {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(key)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
