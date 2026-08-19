@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-qa-major-minor-direct-click';
+const APP_VERSION = '2026-08-18-fix-stuck-loading-qacontent';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12626,6 +12626,9 @@ function renderIpsTables() {
       // finishes (this was the exact cause of the reported "flickers
       // to a different number on refresh" glitch). A plain loading
       // indicator is honest about the fact that this isn't settled yet.
+      const qaCellContent = stillLoadingLiveData
+        ? `<span class="faint" style="font-size:11px;">loading…</span>`
+        : (qa !== '' ? qa + '%' : '—');
       const majorCellContent = stillLoadingLiveData ? '–' : major;
       const minorCellContent = stillLoadingLiveData ? '–' : minor;
       return `
