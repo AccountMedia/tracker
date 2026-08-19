@@ -578,7 +578,7 @@
       <div class="page-head">
         <div>
           <span class="eyebrow">PH Team</span>
-          <h1>LQ Playbook</h1>
+          <h1 style="display:flex; align-items:center; gap:6px;">LQ Playbook <span id="lq-playbook-eye"></span></h1>
           <p class="lede">Enter the real details of a specific lead and check your reasoning against the actual company-matching rules — not a memorized answer from a past sample, your own analysis of THIS lead.</p>
         </div>
       </div>
@@ -680,6 +680,7 @@ const state = {
   payrollPeriodMonth: new Date().getMonth() + 1, // 1-12
   priolistEntries: [],    // PrioList rows
   priolistVisible: true,  // live app-wide toggle (app_settings.priolist_visible) — controlled by Jeinna; defaults true until loaded so nothing flips unexpectedly during the brief pre-load window
+  lqPlaybookVisible: false,  // live app-wide toggle (app_settings.lq_playbook_visible) — controlled by Jeinna; defaults FALSE (hidden from everyone else) until she explicitly turns it on, per explicit requirement — the opposite default from PrioList
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   chatUnread: 0, // unread Team Chat messages since the panel was last opened — only accumulates while the panel is closed
   chatReactions: {}, // message_id -> array of reaction rows, kept in sync via realtime
@@ -1237,7 +1238,8 @@ function initNav() {
 
   const qaGuideNavItem = document.getElementById('nav-qa-guide');
   if (qaGuideNavItem) {
-    qaGuideNavItem.style.display = (state.profile && state.profile.display_name === 'Jeinna Louise Perez') ? '' : 'none';
+    const isJeinna = state.profile && state.profile.display_name === 'Jeinna Louise Perez';
+    qaGuideNavItem.style.display = (isJeinna || state.lqPlaybookVisible) ? '' : 'none';
   }
 
 
@@ -1314,10 +1316,11 @@ function switchView(viewName) {
     viewName = 'dashboard';
   }
 
-  // Exclusive to Jeinna, per explicit requirement — anyone else trying
-  // to reach this (a stale saved session, a pasted URL hash, or a
-  // direct switchView call) is silently redirected to the dashboard.
-  if (viewName === 'qa-guide' && (!state.profile || state.profile.display_name !== 'Jeinna Louise Perez')) {
+  // Jeinna always has access; everyone else is gated by the live
+  // lqPlaybookVisible toggle (app_settings.lq_playbook_visible) —
+  // exactly the same pattern as PrioList's own visibility toggle below.
+  // Defaults to hidden until Jeinna explicitly turns it on.
+  if (viewName === 'qa-guide' && (!state.profile || state.profile.display_name !== 'Jeinna Louise Perez') && !state.lqPlaybookVisible) {
     viewName = 'dashboard';
   }
 
@@ -1617,6 +1620,21 @@ function startNavBadgePolling() {
     if (state.currentView === 'priolist') renderPrioList();
   });
 
+  // Same mechanism as above, for LQ Playbook's own visibility toggle —
+  // needs to be current before someone tries to reach it, not just
+  // while already sitting on that tab.
+  subscribeRealtime('app_settings_lq_playbook', 'app_settings', (payload) => {
+    const row = payload.new || payload.old;
+    if (row.key !== 'lq_playbook_visible') return;
+    state.lqPlaybookVisible = row.value === true || row.value === 'true';
+    const navItem = document.getElementById('nav-qa-guide');
+    if (navItem) {
+      const isJeinna = state.profile && state.profile.display_name === 'Jeinna Louise Perez';
+      navItem.style.display = (isJeinna || state.lqPlaybookVisible) ? '' : 'none';
+    }
+    if (state.currentView === 'qa-guide') renderQaGuide();
+  });
+
   const rerenderBadge = debounceRealtime(() => {
     if (!state.profile || !(isAdmin() || state.profile.role === 'ips')) return;
     updateLeaveNavBadge();
@@ -1750,7 +1768,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-add-check-6';
+const APP_VERSION = '2026-08-18-lq-playbook-eye-toggle-autoselect';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1857,7 +1875,7 @@ async function loadAllData() {
   // these, then paint the screen immediately: refresh feels ~4x faster
   // because the page no longer waits for all 9 tables (plus the
   // year-end holiday generator) before showing anything.
-  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPriolistVisibility()]);
+  await Promise.all([loadEmployees(), loadLeaveEntries(), loadPriolistVisibility(), loadLqPlaybookVisibility()]);
   state.coreDataLoaded = true;
   renderCurrentView();
   updateLeaveNavBadge();
@@ -2581,6 +2599,17 @@ async function loadPriolistVisibility() {
   const { data, error } = await sb.from('app_settings').select('value').eq('key', 'priolist_visible').maybeSingle();
   if (error || !data) { state.priolistVisible = true; return; }
   state.priolistVisible = data.value === true || data.value === 'true';
+}
+
+// Same mechanism as loadPriolistVisibility, but the opposite safe
+// default: degrades to visible=FALSE if the table/row doesn't exist
+// yet, since LQ Playbook should stay hidden from everyone else by
+// default until Jeinna explicitly turns it on — a missing setup step
+// should never accidentally expose it.
+async function loadLqPlaybookVisibility() {
+  const { data, error } = await sb.from('app_settings').select('value').eq('key', 'lq_playbook_visible').maybeSingle();
+  if (error || !data) { state.lqPlaybookVisible = false; return; }
+  state.lqPlaybookVisible = data.value === true || data.value === 'true';
 }
 
 async function loadLeaveEntries() {
@@ -5920,6 +5949,57 @@ async function togglePriolistVisibility() {
   state.priolistVisible = newValue;
   showToast(newValue ? 'PrioList is now visible for everyone.' : 'PrioList is now hidden — everyone else will be redirected.');
   renderPrioList();
+}
+
+// Same pattern as renderPriolistEyeIcon above, for LQ Playbook's own
+// visibility toggle.
+function renderLqPlaybookEyeIcon() {
+  const slot = document.getElementById('lq-playbook-eye');
+  if (!slot) return;
+  if (state.profile?.display_name !== 'Jeinna Louise Perez') { slot.innerHTML = ''; return; }
+  const visible = state.lqPlaybookVisible;
+  slot.innerHTML = `
+    <button id="btn-lq-playbook-eye" title="${visible ? 'Hide LQ Playbook for everyone' : 'Show LQ Playbook for everyone'}" style="
+      position:relative; background:none; border:none; padding:4px 6px; cursor:pointer;
+      color:var(--ink-faint); display:flex; align-items:center; border-radius:8px;
+      transition:color 0.12s, background 0.12s;"
+      onmouseenter="this.style.color='var(--teal)';this.style.background='var(--line-soft)'"
+      onmouseleave="this.style.color='var(--ink-faint)';this.style.background='none'">
+      ${visible ? `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/>
+          <circle cx="12" cy="12" r="3"/>
+        </svg>
+      ` : `
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+          <path d="M6.61 6.61C3.35 8.36 1 12 1 12s4 8 11 8a9.26 9.26 0 0 0 5.39-1.61"/>
+          <line x1="1" y1="1" x2="23" y2="23"/>
+        </svg>
+      `}
+    </button>
+  `;
+  document.getElementById('btn-lq-playbook-eye')?.addEventListener('click', toggleLqPlaybookVisibility);
+}
+
+async function toggleLqPlaybookVisibility() {
+  if (state.profile?.display_name !== 'Jeinna Louise Perez') { showToast('Only Jeinna can control this.', true); return; }
+  const newValue = !state.lqPlaybookVisible;
+  const { error } = await sb.from('app_settings').upsert({
+    key: 'lq_playbook_visible', value: newValue, updated_by: state.profile.display_name, updated_at: new Date().toISOString(),
+  }, { onConflict: 'key' });
+  if (error) {
+    console.error(error);
+    showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run app_settings_priolist_toggle.sql in Supabase (same table, no extra setup needed).' : 'Could not update this.', true);
+    return;
+  }
+  state.lqPlaybookVisible = newValue;
+  showToast(newValue ? 'LQ Playbook is now visible for everyone.' : 'LQ Playbook is now hidden — everyone else will be redirected.');
+  const navItem = document.getElementById('nav-qa-guide');
+  if (navItem) navItem.style.display = ''; // Jeinna herself always sees the nav item regardless of the toggle
+  renderQaGuide();
 }
 
 function attachPriolistHandlers() {
@@ -9632,7 +9712,9 @@ const QA_GUIDE_RULES = [
 function renderQaGuide() {
   const el = document.getElementById('qa-guide-content');
   if (!el) return;
-  if (!state.profile || state.profile.display_name !== 'Jeinna Louise Perez') { el.innerHTML = ''; return; }
+  const isJeinna = state.profile && state.profile.display_name === 'Jeinna Louise Perez';
+  renderLqPlaybookEyeIcon();
+  if (!isJeinna && !state.lqPlaybookVisible) { el.innerHTML = ''; return; }
 
   const activeTab = qaGuideState.tab === 'rules' ? 'rules' : 'check';
   const hasKey = !!localStorage.getItem('qa_guide_gemini_key');
@@ -9675,15 +9757,15 @@ function renderQaGuide() {
           <form id="qa-guide-form" style="display:flex; flex-direction:column; gap:0;">
             <div style="display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:12px; align-items:end; margin-bottom:12px;">
               <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-bottom:9px;">Uploaded</div>
-              <div class="field"><label>Company Name</label><input type="text" id="qa-g-ud-company" placeholder="e.g. Renault Deutschland" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
-              <div class="field"><label>Domain</label><input type="text" id="qa-g-ud-domain" placeholder="e.g. renault.de" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
+              <div class="field"><label>Company Name</label><input type="text" id="qa-g-ud-company" onclick="this.select()" placeholder="e.g. Renault Deutschland" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
+              <div class="field"><label>Domain</label><input type="text" id="qa-g-ud-domain" onclick="this.select()" placeholder="e.g. renault.de" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
               <div></div>
             </div>
 
             <div style="display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:12px; align-items:end; margin-bottom:12px; padding-top:12px; border-top:1px solid var(--line);">
               <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-bottom:9px;">LinkedIn<br>(top / current)</div>
-              <div class="field"><label>Company Name</label><input type="text" id="qa-g-top-company" placeholder="e.g. Renault Group" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
-              <div class="field"><label>Domain</label><input type="text" id="qa-g-li-domain" placeholder="e.g. renaultgroup.com" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
+              <div class="field"><label>Company Name</label><input type="text" id="qa-g-top-company" onclick="this.select()" placeholder="e.g. Renault Group" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
+              <div class="field"><label>Domain</label><input type="text" id="qa-g-li-domain" onclick="this.select()" placeholder="e.g. renaultgroup.com" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
               <div class="field"><label>Status</label>
                 <select id="qa-g-top-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
                   <option value="present">Present</option>
@@ -9694,8 +9776,8 @@ function renderQaGuide() {
 
             <div style="display:grid; grid-template-columns:140px 1fr 1fr 1fr; gap:12px; align-items:end; padding-top:12px; border-top:1px solid var(--line);">
               <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-bottom:9px;">Previous LI<br>Company</div>
-              <div class="field"><label>Company Name</label><input type="text" id="qa-g-older-company" placeholder="Leave blank if none" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
-              <div class="field"><label>Domain</label><input type="text" id="qa-g-older-domain" placeholder="Optional" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
+              <div class="field"><label>Company Name</label><input type="text" id="qa-g-older-company" onclick="this.select()" placeholder="Leave blank if none" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
+              <div class="field"><label>Domain</label><input type="text" id="qa-g-older-domain" onclick="this.select()" placeholder="Optional" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;"></div>
               <div class="field"><label>Status</label>
                 <select id="qa-g-older-status" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
                   <option value="present">Present</option>
