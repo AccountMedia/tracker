@@ -1750,7 +1750,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-persist-refresh';
+const APP_VERSION = '2026-08-18-lq-playbook-add-check-6';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9839,9 +9839,12 @@ async function runQaGuideChecks() {
 
   resultEl.innerHTML = `<div style="padding:14px; text-align:center; color:var(--ink-faint); font-size:12.5px;">Checking...</div>`;
 
-  // The 5 exact comparisons requested, worded precisely as specified,
-  // asked together in one request. Each answer is a genuine yes/no
-  // from a real search-capable model, not a guess from plain text.
+  // The 5 comparisons that genuinely need real-world research (asked to
+  // the AI, which can search the web). Check #6 (uploaded domain vs
+  // previous LI domain) is a plain, exact text comparison instead —
+  // it's specifically about whether the two domains are visually
+  // identical, not a "same company" judgment call, so it's computed
+  // directly rather than asked, making it instant and always reliable.
   const prompt = `You are checking whether pairs of companies/domains represent the same real-world company or a genuine related company (parent, subsidiary, rebrand, or regional division), as opposed to being unrelated companies that merely share a similar-looking name. Search the web if needed to confirm your answer with real, current information. Answer these 5 questions. For each, answer true only if you are reasonably confident they are the SAME company or a GENUINELY related company (not just a coincidental name similarity), and false otherwise. If a field is blank, answer null for that question.
 
 1. Uploaded Company Name ("${udCompany}") and LinkedIn top/current company name ("${topCompany}") — same company?
@@ -9872,7 +9875,16 @@ Respond with ONLY this JSON shape, no other text:
     return;
   }
 
-  finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers });
+  // Check #6: is the uploaded domain visually/exactly the same as the
+  // Previous LI Company's domain (after stripping cosmetic differences
+  // like http/https, www, and a trailing slash)? This is what actually
+  // determines whether the previous experience's Left status is the
+  // Renault pattern — the SAME record showing up as already ended —
+  // rather than just a similarly-named but genuinely different one.
+  const normalizeDomainForCompare = (d) => (d || '').toLowerCase().trim().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '');
+  const q6 = !!(udDomain && olderDomain) && normalizeDomainForCompare(udDomain) === normalizeDomainForCompare(olderDomain);
+
+  finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6 });
 }
 
 // Applies the actual guideline rules (2, 3, 4, 5) using the REAL
@@ -9880,7 +9892,7 @@ Respond with ONLY this JSON shape, no other text:
 // finally makes the Renault case correctly resolve to Bad Left and the
 // STEINERT case correctly resolve to Good Data, since q2 (domain
 // relationship) now reflects a genuine, searched answer.
-function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers }) {
+function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, liDomain, olderCompany, olderDomain, olderStatus, answers, q6 }) {
   const q1 = answers.q1 === true, q2 = answers.q2 === true, q3 = answers.q3 === true;
   const q4 = answers.q4 === true, q5 = answers.q5 === true;
   const hasOlder = !!(olderCompany || olderDomain);
@@ -9891,12 +9903,16 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
   // explicit combination requirement (root word + domain together).
   const topConnected = q1 && (q2 || q3);
   // Whether the previous/older experience is genuinely the SAME
-  // situation as the uploaded company: matches by name or domain, AND
-  // is marked Left. This is precisely the Renault worked example:
-  // a previous experience that matches the uploaded company/domain
-  // exactly, but has already ended.
-  const olderMatchesUdAndLeft = hasOlder && (q4 || q5) && olderStatus === 'left';
-  const olderMatchesUdAndPresent = hasOlder && (q4 || q5) && olderStatus === 'present';
+  // situation as the uploaded company: matches by name (q4), by
+  // relation to the TOP domain (q5), OR by an EXACT domain match to
+  // the uploaded domain (q6 — the strongest possible signal, since an
+  // identical domain means this is literally the same record, not
+  // just a similarly-named company), AND is marked Left. This is
+  // precisely the Renault worked example: a previous experience that
+  // matches the uploaded company/domain exactly, but has already
+  // ended.
+  const olderMatchesUdAndLeft = hasOlder && (q4 || q5 || q6) && olderStatus === 'left';
+  const olderMatchesUdAndPresent = hasOlder && (q4 || q5 || q6) && olderStatus === 'present';
 
   const reasons = [];
   let verdict, verdictColor;
@@ -9961,12 +9977,13 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
       <div style="font-size:15px; font-weight:800; color:${verdictColor}; margin-bottom:10px;">${escapeHtml(verdict)}</div>
       ${reasons.map(r => `<p style="font-size:12.5px; margin:0 0 8px; color:var(--ink-soft); line-height:1.5;">${escapeHtml(r)}</p>`).join('')}
       <div style="margin-top:12px; padding:4px 12px; background:#fff; border-radius:8px;">
-        <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-top:8px;">The 5 checks</div>
+        <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-top:8px;">The 6 checks</div>
         ${checkRow('1. Uploaded company name and LinkedIn company name — same company?', answers.q1, answers.q1_note)}
         ${checkRow('2. Uploaded domain and LinkedIn company name — same company?', answers.q2, answers.q2_note)}
         ${checkRow('3. LinkedIn domain and uploaded company name — same company?', answers.q3, answers.q3_note)}
         ${checkRow('4. Previous LinkedIn company and uploaded company name — same company?', answers.q4, answers.q4_note)}
         ${checkRow('5. Previous LinkedIn domain and LinkedIn (top/current) domain — same company?', answers.q5, answers.q5_note)}
+        ${checkRow('6. Uploaded domain and Previous LinkedIn domain — visually identical?', q6, q6 ? 'These domains are exactly the same.' : (udDomain && olderDomain ? 'These domains are not the same.' : 'Enter both domains above to check this.'))}
       </div>
     </div>
   `;
