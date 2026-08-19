@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-qa-simplify-columns';
+const APP_VERSION = '2026-08-18-qa-callouts-open-to-all';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13779,19 +13779,18 @@ function attachIpsHandlers() {
     btn.addEventListener('click', () => {
       const empId = btn.dataset.empId;
       const isOwnRow = empId === state.profile.employee_id;
-      if (isOwnRow || canManageIpsQa()) {
-        // "Is this MY OWN row" is checked first and wins: an admin/IPS/QA
-        // account clicking their OWN name still gets the same Concede/
-        // Dispute/Edit-dispute experience as any other employee — having
-        // elevated permissions shouldn't make someone unable to review
-        // and dispute an entry filed against themselves. Clicking
-        // someone ELSE's row (as an admin/IPS/QA) still opens the full
-        // manage editor, exactly as before.
-        if (isOwnRow) openMyQaEntriesModal();
-        else openIpsQaManageModal(empId);
-      } else {
-        showToast('You can only view your own QA entries.', true);
-      }
+      // Genuinely open to everyone now — any employee can click ANY
+      // row's Call-outs, not just their own (previously, a non-admin
+      // clicking someone else's row was blocked entirely). Clicking
+      // your OWN row still goes through openMyQaEntriesModal() exactly
+      // as before (correctly scoped to the current month, and clears
+      // the "dispute reviewed" alert badge). Clicking someone ELSE's
+      // row opens openIpsQaManageModal(), which already computes admin
+      // permissions internally and correctly shows a read-only view
+      // (no Edit/Delete/Concede/Dispute) for anyone who isn't an
+      // admin/IPS/QA-role account.
+      if (isOwnRow) openMyQaEntriesModal();
+      else openIpsQaManageModal(empId);
     });
   });
   document.querySelectorAll('.ips-dispute-badge').forEach(badge => {
