@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-md-source-completion-log';
+const APP_VERSION = '2026-08-18-md-task-live-diagnostic';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5756,7 +5756,7 @@ function renderPrioList() {
         <span>Rank</span>
         <span>Name</span>
         <span>Peer Review</span>
-        <span>MD Output</span>
+        <span>MD Task</span>
         <span>Leads</span>
         <span>Total</span>
         <span>Status / File</span>
@@ -5892,7 +5892,7 @@ function closeAllStatusFileColorMenusOnOutsideClick() {
 async function savePriolistOutput(entryId) {
   const entry = state.priolistEntries.find(e => e.id === entryId);
   if (!entry || entry.employee_id !== state.profile.employee_id) {
-    showToast('You can only edit your own MD Output and Leads.', true);
+    showToast('You can only edit your own Leads.', true);
     renderPrioList();
     return;
   }
@@ -5939,7 +5939,7 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
 
 async function resetAllPriolistOutput() {
   if (!isAdmin()) { showToast('Only admins can reset the PrioList.', true); return; }
-  if (!confirm('Reset everyone\'s PrioList? Peer Review, MD Output, Leads, Total, Status, File color, and Note will all be cleared. This cannot be undone.')) return;
+  if (!confirm('Reset everyone\'s PrioList? Peer Review, MD Task, Leads, Total, Status, File color, and Note will all be cleared. This cannot be undone.')) return;
 
   const today = isoDate(new Date());
   const { error } = await sb
@@ -11282,6 +11282,7 @@ function workDayForTimestamp(isoTimestamp) {
 }
 
 async function syncMdTaskFromClaimRecords() {
+  console.log('[MD TASK SYNC] Function called. sbQaReview configured:', !!sbQaReview);
   if (!sbQaReview) return;
 
   try {
@@ -11294,9 +11295,11 @@ async function syncMdTaskFromClaimRecords() {
     // stays exactly as it is, permanently, unless someone with
     // permission (Jeinna) manually edits it.
     const counts = await computeMdOutputCountsSinceBoundary();
+    console.log('[MD TASK SYNC] counts computed:', counts, '| francisco value:', counts ? counts.get('francisco') : 'N/A (counts was null)');
     if (!counts) return;
 
     const todayWorkDay = currentPriolistResetBoundary(); // the SAME boundary date PrioList itself is currently using
+    console.log('[MD TASK SYNC] todayWorkDay:', todayWorkDay);
 
     const updates = [];
     const unmatchedNames = new Set();
