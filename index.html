@@ -1767,7 +1767,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-domain-only-trigger';
+const APP_VERSION = '2026-08-18-lq-playbook-require-status';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9805,6 +9805,20 @@ function renderQaGuide() {
   if (activeTab === 'check') {
     document.getElementById('qa-guide-form').addEventListener('submit', (e) => {
       e.preventDefault();
+      const topStatusVal = document.getElementById('qa-g-top-status').value;
+      const olderCompanyVal = document.getElementById('qa-g-older-company').value.trim();
+      const olderDomainVal = document.getElementById('qa-g-older-domain').value.trim();
+      const olderStatusVal = document.getElementById('qa-g-older-status').value;
+      if (!topStatusVal) {
+        showToast('Please select Present or Left for the LinkedIn (top/current) Status before checking.', true);
+        document.getElementById('qa-g-top-status').focus();
+        return;
+      }
+      if ((olderCompanyVal || olderDomainVal) && !olderStatusVal) {
+        showToast('Please select Present or Left for the Previous LI Company Status before checking.', true);
+        document.getElementById('qa-g-older-status').focus();
+        return;
+      }
       runQaGuideChecks();
     });
     document.getElementById('qa-guide-key-btn').addEventListener('click', openQaGuideKeyModal);
