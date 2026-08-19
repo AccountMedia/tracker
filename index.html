@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-qa-callouts-open-to-all';
+const APP_VERSION = '2026-08-18-qa-major-minor-direct-click';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12626,9 +12626,8 @@ function renderIpsTables() {
       // finishes (this was the exact cause of the reported "flickers
       // to a different number on refresh" glitch). A plain loading
       // indicator is honest about the fact that this isn't settled yet.
-      const qaCellContent = stillLoadingLiveData
-        ? `<span class="faint" style="font-size:11px;">loading…</span>`
-        : (qa !== '' ? qa + '%' : '—');
+      const majorCellContent = stillLoadingLiveData ? '–' : major;
+      const minorCellContent = stillLoadingLiveData ? '–' : minor;
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
           <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">
@@ -12636,22 +12635,11 @@ function renderIpsTables() {
             ${pendingDisputeCount > 0 ? `<span class="ips-dispute-badge" data-emp-id="${emp.id}" title="${pendingDisputeCount} pending dispute${pendingDisputeCount===1?'':''} — click to review" style="cursor:pointer; margin-left:6px; display:inline-flex; align-items:center; justify-content:center; min-width:17px; height:17px; padding:0 4px; border-radius:999px; background:var(--coral); color:#fff; font-size:10px; font-weight:700; vertical-align:middle;">${pendingDisputeCount}</span>` : ''}
           </td>
           <td style="padding:8px; text-align:center; font-weight:700; color:${stillLoadingLiveData ? 'var(--ink-faint)' : qaColor};">${qaCellContent}</td>
-          <td style="padding:6px 10px; text-align:center;">
-            ${stillLoadingLiveData ? `<span class="faint" style="font-size:13px;">–</span>` : (() => {
-              // Concise call-out summary — "1 major", "2 majors, 1 minor",
-              // etc., each kind pluralized independently AND colored
-              // independently (Major in red, Minor in blue) — matching
-              // the same red-for-Major convention already used
-              // elsewhere in QA Accuracy (the QA% cell, the download
-              // report). A single en dash (–, not an em dash — which
-              // can visually resemble an equal sign) when there are
-              // genuinely zero call-outs.
-              const parts = [];
-              if (major > 0) parts.push(`<span style="color:var(--coral);">${major} major${major === 1 ? '' : 's'}</span>`);
-              if (minor > 0) parts.push(`<span style="color:#2D6A9F;">${minor} minor${minor === 1 ? '' : 's'}</span>`);
-              const summary = parts.length ? parts.join(', ') : '<span style="color:#2D6A9F;">–</span>';
-              return `<span class="ips-qa-manage-btn" data-emp-id="${emp.id}" style="cursor:pointer; font-size:13px;">${summary}</span>`;
-            })()}
+          <td style="padding:8px; text-align:center;">
+            <span class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="major" style="cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${majorCellContent}</span>
+          </td>
+          <td style="padding:8px; text-align:center;">
+            <span class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="minor" style="cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${minorCellContent}</span>
           </td>
         </tr>
       `;
@@ -12670,7 +12658,7 @@ function renderIpsTables() {
       ` : ''}
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Call-outs</th>
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
@@ -13780,17 +13768,21 @@ function attachIpsHandlers() {
       const empId = btn.dataset.empId;
       const isOwnRow = empId === state.profile.employee_id;
       // Genuinely open to everyone now — any employee can click ANY
-      // row's Call-outs, not just their own (previously, a non-admin
-      // clicking someone else's row was blocked entirely). Clicking
-      // your OWN row still goes through openMyQaEntriesModal() exactly
-      // as before (correctly scoped to the current month, and clears
-      // the "dispute reviewed" alert badge). Clicking someone ELSE's
-      // row opens openIpsQaManageModal(), which already computes admin
-      // permissions internally and correctly shows a read-only view
-      // (no Edit/Delete/Concede/Dispute) for anyone who isn't an
-      // admin/IPS/QA-role account.
-      if (isOwnRow) openMyQaEntriesModal();
-      else openIpsQaManageModal(empId);
+      // row's Major/Minor numbers, not just their own (previously, a
+      // non-admin clicking someone else's row was blocked entirely).
+      // Clicking your OWN row's number still goes through
+      // openMyQaEntriesModal() exactly as before (correctly scoped to
+      // the current month, and clears the "dispute reviewed" alert
+      // badge). Clicking someone ELSE's opens openIpsQaManageModal(),
+      // which already computes admin permissions internally and
+      // correctly shows a read-only view (no Edit/Delete/Concede/
+      // Dispute) for anyone who isn't an admin/IPS/QA-role account.
+      // Either way, the specific kind clicked (major/minor) is passed
+      // through so the modal opens directly to that list — there's no
+      // tab switcher inside the modal to pick it after the fact.
+      const kind = btn.dataset.qaKind === 'minor' ? 'minor' : 'major';
+      if (isOwnRow) openMyQaEntriesModal(kind);
+      else openIpsQaManageModal(empId, kind);
     });
   });
   document.querySelectorAll('.ips-dispute-badge').forEach(badge => {
@@ -14141,13 +14133,13 @@ const IPS_RECENT_ACTIVITY_OPTIONS = ['Recently Active', 'Active', 'Passive', 'Si
 // viewers and the entry's own employee can still open it — though the
 // employee's own dispute flow lives in a separate, dedicated modal;
 // see openMyQaEntriesModal).
-function openIpsQaManageModal(employeeId) {
+function openIpsQaManageModal(employeeId, kind) {
   const emp = state.employees.find(e => e.id === employeeId);
   const admin = canManageIpsQa();
-  renderIpsQaManageModalBody(employeeId, emp, admin);
+  renderIpsQaManageModalBody(employeeId, emp, admin, kind);
 }
 
-function renderIpsQaManageModalBody(employeeId, emp, admin) {
+function renderIpsQaManageModalBody(employeeId, emp, admin, kind) {
   const entries = ipsQaEntriesFor(employeeId, ipsState.month);
   // Three-tier sort applied within each Major/Minor group, so whatever
   // needs the admin's attention floats to the top automatically:
@@ -14163,7 +14155,11 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
   const minorEntries = sortedEntries.filter(e => e.kind === 'minor');
   const disputed = entries.filter(e => e.dispute_status === 'disputed');
   const hasNoCallout = ipsQaHasNoCallout(employeeId, ipsState.month);
-  const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
+  // Locked to whichever kind was actually clicked to open this modal —
+  // no tab switcher inside anymore, per the explicit requirement.
+  // Falls back to 'major' only if genuinely nothing was specified
+  // (e.g. some other, older call site that hasn't been updated).
+  const activeTab = kind === 'minor' ? 'minor' : 'major';
   const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
 
   function entryCard(e) {
@@ -14241,17 +14237,6 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
     `;
   }
 
-  const tabBtn = (kind, label, count) => `
-    <button type="button" class="ips-qa-subtab-btn" data-tab="${kind}" style="
-      flex:1; padding:9px 10px; font-size:12.5px; font-weight:600; font-family:inherit; cursor:pointer;
-      border:none; background:none;
-      border-bottom:${activeTab === kind ? `3px solid ${kind === 'major' ? 'var(--coral)' : 'var(--amber)'}` : '3px solid transparent'};
-      color:${activeTab === kind ? (kind === 'major' ? 'var(--coral)' : 'var(--amber)') : 'var(--ink-faint)'};
-      margin-bottom:-2px;">
-      ${label} (${count})
-    </button>
-  `;
-
   const bodyHtml = `
     ${disputed.length ? `<p class="muted" style="font-size:12px; margin:0 0 12px; color:var(--coral); font-weight:600;">⚠ ${disputed.length} pending dispute${disputed.length===1?'':'s'} below need${disputed.length===1?'s':''} a decision.</p>` : ''}
     ${hasNoCallout ? `
@@ -14268,16 +14253,15 @@ function renderIpsQaManageModalBody(employeeId, emp, admin) {
       </div>
     ` : ''}
     ${entries.length ? `
-      <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin-bottom:14px;">
-        ${tabBtn('major', 'Major', majorEntries.length)}
-        ${tabBtn('minor', 'Minor', minorEntries.length)}
+      <div style="margin-bottom:14px; padding-bottom:8px; border-bottom:2px solid var(--line);">
+        <span style="font-size:12.5px; font-weight:700; color:${activeTab === 'major' ? 'var(--coral)' : 'var(--amber)'};">${activeTab === 'major' ? 'Major' : 'Minor'} (${activeEntries.length})</span>
       </div>
       ${activeEntries.length ? activeEntries.map(entryCard).join('') : `<p class="muted" style="font-size:13px; margin:0;">No ${activeTab === 'major' ? 'Major' : 'Minor'} entries for this month.</p>`}
     ` : hasNoCallout ? '' : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for this month.</p>`}
   `;
 
   openModal(`QA entries — ${emp ? emp.display_name : ''}`, bodyHtml, { width: '900px' });
-  attachIpsQaManageModalHandlers(employeeId, emp, admin);
+  attachIpsQaManageModalHandlers(employeeId, emp, admin, activeTab);
 }
 
 // Closes every open "more actions" (⋮) menu on QA entry cards — kept
@@ -14288,25 +14272,19 @@ function closeAllIpsQaEntryMenus() {
   document.querySelectorAll('.ips-qa-entry-menu').forEach(m => { m.style.display = 'none'; });
 }
 
-function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
-  document.getElementById('ips-qa-add-major-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'major', null));
-  document.getElementById('ips-qa-add-minor-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'minor', null));
-  document.getElementById('ips-qa-no-callout-btn')?.addEventListener('click', () => markIpsQaNoCallout(employeeId, emp));
-  document.getElementById('ips-qa-clear-no-callout-btn')?.addEventListener('click', () => clearIpsQaNoCallout(employeeId, emp));
-  document.querySelectorAll('.ips-qa-subtab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      ipsState.qaTab = btn.dataset.tab;
-      openIpsQaManageModal(employeeId);
-    });
-  });
+function attachIpsQaManageModalHandlers(employeeId, emp, admin, kind) {
+  document.getElementById('ips-qa-add-major-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'major', null, kind));
+  document.getElementById('ips-qa-add-minor-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'minor', null, kind));
+  document.getElementById('ips-qa-no-callout-btn')?.addEventListener('click', () => markIpsQaNoCallout(employeeId, emp, kind));
+  document.getElementById('ips-qa-clear-no-callout-btn')?.addEventListener('click', () => clearIpsQaNoCallout(employeeId, emp, kind));
   document.querySelectorAll('.ips-qa-edit-entry-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const entry = ipsState.qaEntries.find(e => e.id === btn.dataset.id);
-      if (entry) openIpsQaEntryFormModal(employeeId, entry.kind, entry);
+      if (entry) openIpsQaEntryFormModal(employeeId, entry.kind, entry, kind);
     });
   });
   document.querySelectorAll('.ips-qa-delete-entry-btn').forEach(btn => {
-    btn.addEventListener('click', () => deleteIpsQaEntry(btn.dataset.id, employeeId, emp, admin));
+    btn.addEventListener('click', () => deleteIpsQaEntry(btn.dataset.id, employeeId, emp, admin, kind));
   });
   // Three-dot "more actions" menu (Edit/Delete) — one toggle per entry.
   // Opening one closes any other that's already open; clicking anywhere
@@ -14339,7 +14317,7 @@ function attachIpsQaManageModalHandlers(employeeId, emp, admin) {
 // (adding a real entry later should replace this state, not coexist
 // with it — see markIpsQaNoCallout's own guard and openIpsQaEntryFormModal's
 // cleanup of any existing no-callout record on save).
-async function markIpsQaNoCallout(employeeId, emp) {
+async function markIpsQaNoCallout(employeeId, emp, kind) {
   if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can do this.', true); return; }
   const { error } = await sb.from('ips_qa_no_callouts').insert({
     employee_id: employeeId, month: ipsState.month, reviewed_by: state.profile.display_name,
@@ -14352,21 +14330,21 @@ async function markIpsQaNoCallout(employeeId, emp) {
   showToast(`${emp ? emp.display_name : 'Employee'} marked reviewed — QA% is now 100%.`);
   await loadIpsData();
   renderIpsTables();
-  openIpsQaManageModal(employeeId);
+  openIpsQaManageModal(employeeId, kind);
 }
 
-async function clearIpsQaNoCallout(employeeId, emp) {
+async function clearIpsQaNoCallout(employeeId, emp, kind) {
   if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can do this.', true); return; }
   const { error } = await sb.from('ips_qa_no_callouts').delete().eq('employee_id', employeeId).eq('month', ipsState.month);
   if (error) { showToast('Could not undo.', true); return; }
   showToast('No call-out cleared — QA% is blank again until reviewed.');
   await loadIpsData();
   renderIpsTables();
-  openIpsQaManageModal(employeeId);
+  openIpsQaManageModal(employeeId, kind);
 }
 
 // Add/Edit form for a single QA entry — all 8 admin-input fields.
-function openIpsQaEntryFormModal(employeeId, kind, existing) {
+function openIpsQaEntryFormModal(employeeId, kind, existing, returnToTab) {
   const emp = state.employees.find(e => e.id === employeeId);
   const activityOptions = IPS_RECENT_ACTIVITY_OPTIONS.map(o => `<option value="${o}" ${existing?.recent_activity === o ? 'selected' : ''}>${o}</option>`).join('');
   openModal(`${existing ? 'Edit' : 'Add'} ${kind === 'major' ? 'Major' : 'Minor'} entry — ${emp ? emp.display_name : ''}`, `
@@ -14464,11 +14442,11 @@ function openIpsQaEntryFormModal(employeeId, kind, existing) {
     await loadIpsData();
     renderIpsTables();
     const emp = state.employees.find(x => x.id === employeeId);
-    openIpsQaManageModal(employeeId); // reopen the manage list showing the new/updated entry
+    openIpsQaManageModal(employeeId, returnToTab || kind); // reopen the manage list, correctly returning to whichever tab was being viewed
   });
 }
 
-async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
+async function deleteIpsQaEntry(entryId, employeeId, emp, admin, kind) {
   if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can delete entries.', true); return; }
   const { data: current, error: fetchErr } = await sb.from('ips_qa_entries').select('dispute_status').eq('id', entryId).maybeSingle();
   if (fetchErr || !current) { showToast('Could not verify this entry — please try again.', true); return; }
@@ -14476,7 +14454,7 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
     showToast('This entry has been resolved and can no longer be deleted.', true);
     await loadIpsData();
     renderIpsTables();
-    openIpsQaManageModal(employeeId);
+    openIpsQaManageModal(employeeId, kind);
     return;
   }
   if (!confirm('Delete this entry? This permanently removes it and recalculates QA%. This cannot be undone.')) return;
@@ -14485,7 +14463,7 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
   showToast('Entry deleted — QA% recalculated.');
   await loadIpsData();
   renderIpsTables();
-  openIpsQaManageModal(employeeId);
+  openIpsQaManageModal(employeeId, kind);
 }
 
 // =====================================================================
@@ -14496,12 +14474,12 @@ async function deleteIpsQaEntry(entryId, employeeId, emp, admin) {
 // currently has selected — see loadMyQaEntries). For each entry that
 // hasn't been decided yet, the employee can Concede (accept it as-is,
 // no further action) or Dispute (requires a written explanation).
-async function openMyQaEntriesModal() {
+async function openMyQaEntriesModal(kind) {
   if (!state.profile || !state.profile.employee_id) return;
   openModal('My QA Notes', '<div class="loading-row">Loading...</div>', { width: '900px' });
   await loadMyQaEntries();
   await markMyResolvedDisputesAsSeen();
-  renderMyQaEntriesModalBody();
+  renderMyQaEntriesModalBody(kind);
 }
 
 // Clears the "Your dispute was reviewed" My Alerts item the moment the
@@ -14526,7 +14504,7 @@ async function markMyResolvedDisputesAsSeen() {
   renderPersonalAlertsFromCache();
 }
 
-function renderMyQaEntriesModalBody() {
+function renderMyQaEntriesModalBody(kind) {
   const myId = state.profile.employee_id;
   // Same 3-tier priority as the admin view: pending disputes first
   // (need my attention least — wait, they need admin's attention, but
@@ -14543,7 +14521,9 @@ function renderMyQaEntriesModalBody() {
       || (a.created_at || '').localeCompare(b.created_at || ''));
   const majorEntries = mine.filter(e => e.kind === 'major');
   const minorEntries = mine.filter(e => e.kind === 'minor');
-  const activeTab = ipsState.qaTab === 'minor' ? 'minor' : 'major';
+  // Locked to whichever kind was actually clicked — no tab switcher
+  // inside anymore, per the explicit requirement.
+  const activeTab = kind === 'minor' ? 'minor' : 'major';
   const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
 
   function entryCard(e) {
@@ -14600,32 +14580,14 @@ function renderMyQaEntriesModalBody() {
     `;
   }
 
-  const tabBtn = (kind, label, count) => `
-    <button type="button" class="ips-qa-subtab-btn" data-tab="${kind}" style="
-      flex:1; padding:9px 10px; font-size:12.5px; font-weight:600; font-family:inherit; cursor:pointer;
-      border:none; background:none;
-      border-bottom:${activeTab === kind ? `3px solid ${kind === 'major' ? 'var(--coral)' : 'var(--amber)'}` : '3px solid transparent'};
-      color:${activeTab === kind ? (kind === 'major' ? 'var(--coral)' : 'var(--amber)') : 'var(--ink-faint)'};
-      margin-bottom:-2px;">
-      ${label} (${count})
-    </button>
-  `;
-
   const bodyHtml = mine.length ? `
-    <div style="display:flex; gap:0; border-bottom:2px solid var(--line); margin-bottom:14px;">
-      ${tabBtn('major', 'Major', majorEntries.length)}
-      ${tabBtn('minor', 'Minor', minorEntries.length)}
+    <div style="margin-bottom:14px; padding-bottom:8px; border-bottom:2px solid var(--line);">
+      <span style="font-size:12.5px; font-weight:700; color:${activeTab === 'major' ? 'var(--coral)' : 'var(--amber)'};">${activeTab === 'major' ? 'Major' : 'Minor'} (${activeEntries.length})</span>
     </div>
     ${activeEntries.length ? activeEntries.map(entryCard).join('') : `<p class="muted" style="font-size:13px; margin:0;">No ${activeTab === 'major' ? 'Major' : 'Minor'} entries recorded.</p>`}
   ` : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for you yet.</p>`;
 
   openModal('My QA Notes', bodyHtml, { width: '900px' });
-  document.querySelectorAll('.ips-qa-subtab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      ipsState.qaTab = btn.dataset.tab;
-      renderMyQaEntriesModalBody();
-    });
-  });
 }
 
 async function concedeMyQaEntry(entryId) {
