@@ -1244,7 +1244,7 @@ function initNav() {
 
   const hashSlug = (window.location.hash || '').replace(/^#/, '');
   const savedView = sessionStorage.getItem('registry_active_view');
-  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips'];
+  const validViews = ['dashboard', 'account-hub', 'payroll-confirmation', 'priolist', 'li-restriction', 'ot-filing', 'team-funds', 'ips', 'qa-guide'];
   // Redirect any saved view that has moved into Account Hub
   const hubViews = ['leave-tracker', 'employee-management'];
   // A URL hash (someone opened/pasted a direct link) takes priority
@@ -1277,13 +1277,14 @@ const VIEW_TO_HASH = {
   'ot-filing': 'ot-hours-filing',
   'team-funds': 'team-funds',
   'ips': 'ips',
+  'qa-guide': 'lq-playbook',
 };
 // account-hub's own sub-tabs get their own distinct hash slugs
 const ACCOUNT_HUB_TAB_TO_HASH = {
   'leave-tracker': 'leave-tracker',
   'employee-management': 'employee-management',
 };
-const HASH_TO_VIEW = { 'dashboard': 'dashboard', 'payroll-confirmation': 'payroll-confirmation', 'priolist': 'priolist', 'li-restriction-report': 'li-restriction', 'ot-hours-filing': 'ot-filing', 'team-funds': 'team-funds', 'ips': 'ips', 'leave-tracker': 'account-hub', 'employee-management': 'account-hub' };
+const HASH_TO_VIEW = { 'dashboard': 'dashboard', 'payroll-confirmation': 'payroll-confirmation', 'priolist': 'priolist', 'li-restriction-report': 'li-restriction', 'ot-hours-filing': 'ot-filing', 'team-funds': 'team-funds', 'ips': 'ips', 'leave-tracker': 'account-hub', 'employee-management': 'account-hub', 'lq-playbook': 'qa-guide' };
 const HASH_TO_ACCOUNT_HUB_TAB = { 'leave-tracker': 'leave-tracker', 'employee-management': 'employee-management' };
 
 // Writes the current view (and, for Account Hub, its active sub-tab)
@@ -1749,7 +1750,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-lq-playbook-fix-status-logic';
+const APP_VERSION = '2026-08-18-lq-playbook-persist-refresh';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
