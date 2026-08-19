@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-md-task-live-diagnostic';
+const APP_VERSION = '2026-08-18-qa-callouts-plain-text';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -11282,7 +11282,6 @@ function workDayForTimestamp(isoTimestamp) {
 }
 
 async function syncMdTaskFromClaimRecords() {
-  console.log('[MD TASK SYNC] Function called. sbQaReview configured:', !!sbQaReview);
   if (!sbQaReview) return;
 
   try {
@@ -11295,30 +11294,44 @@ async function syncMdTaskFromClaimRecords() {
     // stays exactly as it is, permanently, unless someone with
     // permission (Jeinna) manually edits it.
     const counts = await computeMdOutputCountsSinceBoundary();
-    console.log('[MD TASK SYNC] counts computed:', counts, '| francisco value:', counts ? counts.get('francisco') : 'N/A (counts was null)');
     if (!counts) return;
 
     const todayWorkDay = currentPriolistResetBoundary(); // the SAME boundary date PrioList itself is currently using
-    console.log('[MD TASK SYNC] todayWorkDay:', todayWorkDay);
+
+    // Query the REAL, current database values directly for today's
+    // date — NOT the in-memory ipsState.dailyEntries — so the
+    // decrease-safeguard below is immune to a real, confirmed timing
+    // gap: this sync can fire (from renderIpsTables) before
+    // loadIpsData() has finished populating ipsState.dailyEntries for
+    // a fresh session, which would otherwise make "existing" undefined
+    // and silently skip the decrease-check entirely.
+    const employeeIds = [...new Set([...counts.keys()].map(firstNameLower => {
+      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      return emp ? emp.id : null;
+    }).filter(Boolean))];
+    const { data: currentRows, error: currentErr } = employeeIds.length
+      ? await sb.from('ips_daily_entries').select('employee_id, md_value').eq('entry_date', todayWorkDay).in('employee_id', employeeIds)
+      : { data: [], error: null };
+    if (currentErr) { console.error('MD Task sync: could not verify current values:', currentErr); return; }
+    const currentByEmployeeId = new Map((currentRows || []).map(r => [r.employee_id, r.md_value]));
 
     const updates = [];
     const unmatchedNames = new Set();
     counts.forEach((count, firstNameLower) => {
       const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
-      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === todayWorkDay);
-      // Skip entirely if the current in-memory value is already correct
-      // — avoids an unnecessary write (and the resulting realtime
-      // echo/re-render) on every trigger when nothing actually changed.
-      if (existing && existing.md_value === count) return;
+      const existingValue = currentByEmployeeId.has(emp.id) ? currentByEmployeeId.get(emp.id) : null;
+      // Skip entirely if the current value is already correct — avoids
+      // an unnecessary write (and the resulting realtime echo/
+      // re-render) on every trigger when nothing actually changed.
+      if (existingValue != null && existingValue === count) return;
       // Safeguard: completion_log only ever gets NEW rows added during
       // the day (nothing is ever deleted), so a freshly-computed count
       // for TODAY should never legitimately be LOWER than what's
-      // already saved. If it is, this run is working from stale or
-      // incomplete data — skip the write rather than overwrite a
-      // correct, higher number with an incorrect, lower one.
-      if (existing && existing.md_value != null && count < existing.md_value) {
-        console.warn(`MD Task sync: computed ${count} for ${emp.display_name}, but ${existing.md_value} is already saved for today — skipping this write since a same-day decrease should be impossible.`);
+      // already saved. Checked against the REAL current database
+      // value, not a possibly-stale in-memory copy — see comment above.
+      if (existingValue != null && count < existingValue) {
+        console.warn(`MD Task sync: computed ${count} for ${emp.display_name}, but ${existingValue} is already saved for today — skipping this write since a same-day decrease should be impossible.`);
         return;
       }
       updates.push({ employee_id: emp.id, entry_date: todayWorkDay, md_value: count, updated_by: 'completion_log sync', updated_at: new Date().toISOString() });
@@ -11390,19 +11403,39 @@ async function syncIpsPeerReviewFromReviewBatches() {
 
     const todayWorkDay = currentPriolistResetBoundary();
 
+    // Query the REAL, current database values directly for today's
+    // date — NOT the in-memory ipsState.dailyEntries — so the
+    // decrease-safeguard below is immune to a real, confirmed timing
+    // gap: this sync can fire (from renderIpsTables) before
+    // loadIpsData() has finished populating ipsState.dailyEntries for
+    // a fresh session, which would otherwise make "existing" undefined
+    // and silently skip the decrease-check entirely, letting a lower,
+    // incorrect number overwrite a correct one.
+    const employeeIds = [...new Set([...sums.keys()].map(firstNameLower => {
+      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      return emp ? emp.id : null;
+    }).filter(Boolean))];
+    const { data: currentRows, error: currentErr } = employeeIds.length
+      ? await sb.from('ips_daily_entries').select('employee_id, peer_review_value').eq('entry_date', todayWorkDay).in('employee_id', employeeIds)
+      : { data: [], error: null };
+    if (currentErr) { console.error('IPS Peer Review sync: could not verify current values:', currentErr); return; }
+    const currentByEmployeeId = new Map((currentRows || []).map(r => [r.employee_id, r.peer_review_value]));
+
     const updates = [];
     const unmatchedNames = new Set();
     sums.forEach((total, firstNameLower) => {
       const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
-      const existing = ipsState.dailyEntries.find(e => e.employee_id === emp.id && e.entry_date === todayWorkDay);
-      if (existing && existing.peer_review_value === total) return; // no genuine change — skip the write
+      const existingValue = currentByEmployeeId.has(emp.id) ? currentByEmployeeId.get(emp.id) : null;
+      if (existingValue != null && existingValue === total) return; // no genuine change — skip the write
       // Safeguard: review_batches only ever gets NEW/updated rows
       // within the day, so a same-day total should never legitimately
       // decrease. If it does, this run has stale/incomplete data —
       // skip the write rather than overwrite a correct, higher total.
-      if (existing && existing.peer_review_value != null && total < existing.peer_review_value) {
-        console.warn(`Peer Review sync: computed ${total} for ${emp.display_name}, but ${existing.peer_review_value} is already saved for today — skipping this write since a same-day decrease should be impossible.`);
+      // Checked against the REAL current database value, not a
+      // possibly-stale in-memory copy — see the comment above.
+      if (existingValue != null && total < existingValue) {
+        console.warn(`Peer Review sync: computed ${total} for ${emp.display_name}, but ${existingValue} is already saved for today — skipping this write since a same-day decrease should be impossible.`);
         return;
       }
       updates.push({ employee_id: emp.id, entry_date: todayWorkDay, peer_review_value: total, updated_by: 'review_batches sync', updated_at: new Date().toISOString() });
@@ -12581,10 +12614,17 @@ function renderIpsTables() {
           <td style="padding:8px; text-align:center; font-weight:700; color:${stillLoadingLiveData ? 'var(--ink-faint)' : qaColor};">${qaCellContent}</td>
           <td style="padding:8px; text-align:center; color:var(--ink-soft);">${majorCellContent}</td>
           <td style="padding:8px; text-align:center; color:var(--ink-soft);">${minorCellContent}</td>
-          <td style="padding:6px; text-align:center;">
-            <button class="btn btn-ghost btn-sm ips-qa-manage-btn" data-emp-id="${emp.id}" style="font-size:11px; padding:4px 12px;">
-              ${allEntries.length} ${allEntries.length === 1 ? 'entry' : 'entries'}${qaEditor ? ' — manage' : ' — view'}
-            </button>
+          <td style="padding:6px 10px; text-align:center;">
+            ${stillLoadingLiveData ? `<span class="faint" style="font-size:11px;">—</span>` : (() => {
+              // Concise call-out summary — "1 major", "2 majors, 1 minor",
+              // etc., each kind pluralized independently. A plain dash
+              // when there are genuinely zero call-outs of either kind.
+              const parts = [];
+              if (major > 0) parts.push(`${major} major${major === 1 ? '' : 's'}`);
+              if (minor > 0) parts.push(`${minor} minor${minor === 1 ? '' : 's'}`);
+              const summary = parts.length ? parts.join(', ') : '—';
+              return `<span class="ips-qa-manage-btn" data-emp-id="${emp.id}" style="cursor:pointer; color:var(--teal); text-decoration:underline; font-size:11.5px;">${summary}</span>`;
+            })()}
           </td>
         </tr>
       `;
@@ -12603,7 +12643,7 @@ function renderIpsTables() {
       ` : ''}
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
-          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Entries</th>
+          <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th><th style="padding:6px 10px;">Call-outs</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
