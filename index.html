@@ -1724,7 +1724,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-18-reduce-realtime-egress';
+const APP_VERSION = '2026-08-18-callouts-blue-no-underline';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12641,15 +12641,16 @@ function renderIpsTables() {
           <td style="padding:8px; text-align:center; color:var(--ink-soft);">${majorCellContent}</td>
           <td style="padding:8px; text-align:center; color:var(--ink-soft);">${minorCellContent}</td>
           <td style="padding:6px 10px; text-align:center;">
-            ${stillLoadingLiveData ? `<span class="faint" style="font-size:11px;">—</span>` : (() => {
+            ${stillLoadingLiveData ? `<span class="faint" style="font-size:13px;">–</span>` : (() => {
               // Concise call-out summary — "1 major", "2 majors, 1 minor",
-              // etc., each kind pluralized independently. A plain dash
-              // when there are genuinely zero call-outs of either kind.
+              // etc., each kind pluralized independently. A single en
+              // dash (–, not an em dash — which can visually resemble
+              // an equal sign) when there are genuinely zero call-outs.
               const parts = [];
               if (major > 0) parts.push(`${major} major${major === 1 ? '' : 's'}`);
               if (minor > 0) parts.push(`${minor} minor${minor === 1 ? '' : 's'}`);
-              const summary = parts.length ? parts.join(', ') : '—';
-              return `<span class="ips-qa-manage-btn" data-emp-id="${emp.id}" style="cursor:pointer; color:var(--teal); text-decoration:underline; font-size:11.5px;">${summary}</span>`;
+              const summary = parts.length ? parts.join(', ') : '–';
+              return `<span class="ips-qa-manage-btn" data-emp-id="${emp.id}" style="cursor:pointer; color:#2D6A9F; font-size:13px;">${summary}</span>`;
             })()}
           </td>
         </tr>
