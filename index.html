@@ -1146,6 +1146,7 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
+  qaLeaderboardPeriodCache.clear();
   stopIpsArchiveWatcher();
   hideLeaveNotifPanel();
   stopPriolistPolling();
@@ -1741,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-20-qa-leaderboard-period-scoped';
+const APP_VERSION = '2026-08-20-qa-remove-download-report';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12263,12 +12264,30 @@ function ipsPoTotal(employeeId, dates) {
 // no per-lead detail or dispute workflow left in this app; all of that
 // lives in the source system.
 
+// Session-lived cache of already-fetched periods: period ('YYYY-MM')
+// -> Map(employeeId -> {score, major, minor}). Historical months
+// (year view, multi-month reports, previous-month rank comparison)
+// almost never change once that month has closed, so re-querying the
+// entire team's leaderboard for the SAME already-closed period every
+// time a different employee's year view is opened — or every time the
+// multi-month report is regenerated — is pure waste. Cleared on
+// logout (see logout()).
+const qaLeaderboardPeriodCache = new Map();
+
 // Fetches ONE month's leaderboard rows and returns a Map(employeeId ->
-// {score, major, minor}) — a plain, side-effect-free helper used both
-// by the main per-month load below AND anywhere else that needs a
-// SPECIFIC month's figures regardless of what's currently on screen
-// (the year view, previous-month rank comparison, multi-month reports).
-async function fetchQaLeaderboardForPeriod(periodStr) {
+// {score, major, minor}) — used both by the main per-month load below
+// AND anywhere else that needs a SPECIFIC month's figures regardless
+// of what's currently on screen (the year view, previous-month rank
+// comparison, multi-month reports). Reads from the cache above unless
+// bypassCache is set — the currently active/displayed month passes
+// bypassCache: true so it always reflects the live realtime state,
+// never a stale cached read; every other caller (anything asking
+// about a month that isn't the one currently on screen) is happy to
+// reuse a cached result. Every successful network fetch updates the
+// cache regardless of how it was called, so a bypassed read still
+// keeps the cache fresh for later cache-reading callers.
+async function fetchQaLeaderboardForPeriod(periodStr, { bypassCache = false } = {}) {
+  if (!bypassCache && qaLeaderboardPeriodCache.has(periodStr)) return qaLeaderboardPeriodCache.get(periodStr);
   if (!sbQaReview) return new Map();
   const { data, error } = await sbQaReview.from('qa_leaderboard').select('agent_name, score, major_count, minor_count').eq('period', periodStr);
   if (error) {
@@ -12292,15 +12311,20 @@ async function fetchQaLeaderboardForPeriod(periodStr) {
   if (unmatchedNames.size) {
     console.warn(`QA leaderboard (${periodStr}): could not match these agent_name first names to any employee:`, [...unmatchedNames].join(', '));
   }
+  qaLeaderboardPeriodCache.set(periodStr, byEmployeeId);
   return byEmployeeId;
 }
 
 // Loads the leaderboard for whichever month the IPS tab currently has
 // selected (ipsState.month) into ipsState.qaLeaderboard, the map every
-// display/scoring function on screen reads from.
+// display/scoring function on screen reads from. Always bypasses the
+// cache on read (this is the live-on-screen data, driven by the
+// realtime subscription below), but its fetch still refreshes the
+// cache for that period, so a year-view/report lookup for this same
+// month elsewhere doesn't need its own separate network round trip.
 async function loadQaLeaderboard() {
   const period = ipsState.month.slice(0, 7); // 'YYYY-MM-01' -> 'YYYY-MM'
-  ipsState.qaLeaderboard = await fetchQaLeaderboardForPeriod(period);
+  ipsState.qaLeaderboard = await fetchQaLeaderboardForPeriod(period, { bypassCache: true });
   ipsState.qaLeaderboardLoaded = true;
   ipsState.qaLeaderboardLoadedPeriod = period;
 }
@@ -12322,10 +12346,24 @@ function startQaLeaderboardRealtimeSync() {
   }
   if (_qaLeaderboardChannel || !sbQaReview) return;
   try {
-    const debouncedSync = debounceRealtime(async () => { await loadQaLeaderboard(); renderIpsTables(); }, 400);
+    const debouncedRepaintActiveMonth = debounceRealtime(async () => { await loadQaLeaderboard(); renderIpsTables(); }, 400);
     _qaLeaderboardChannel = sbQaReview
       .channel('rt:qa_leaderboard')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'qa_leaderboard' }, debouncedSync)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qa_leaderboard' }, (payload) => {
+        // Drop the CHANGED row's own cached period, wherever it falls —
+        // a correction to a past month shouldn't leave that month's
+        // cache entry stale for the rest of the session, even though
+        // it won't be visibly repainted until someone actually opens
+        // that month again (the year view, a report, etc.).
+        const changedPeriod = (payload.new || payload.old)?.period;
+        if (changedPeriod) qaLeaderboardPeriodCache.delete(changedPeriod);
+        // The currently active/displayed month always gets a genuine
+        // refetch + repaint, regardless of which period changed —
+        // simplest correct behavior, and this table is low-volume
+        // enough that an occasional redundant refetch here costs
+        // nothing meaningful.
+        debouncedRepaintActiveMonth();
+      })
       .subscribe();
   } catch (err) {
     console.error('qa_leaderboard realtime subscribe failed:', err);
@@ -12848,14 +12886,7 @@ function renderIpsTables() {
         </tr>
       `;
     }).join('');
-    const employeesWithResultsCount = roster.filter(emp => ipsState.qaLeaderboard && ipsState.qaLeaderboard.has(emp.id)).length;
     return `
-      ${isAdmin() ? `
-      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
-        <p class="faint" style="font-size:11.5px; margin:0; flex:1; min-width:260px; font-weight:700; color:var(--teal);">${employeesWithResultsCount}/${roster.length} employees have results this month</p>
-        <button class="btn btn-ghost btn-sm" id="ips-qa-download-report-btn" style="flex-shrink:0; font-size:11.5px;">Download Report</button>
-      </div>
-      ` : ''}
       <table class="ips-table" style="border-collapse:collapse; width:100%; min-width:560px;">
         <thead><tr style="border-bottom:2px solid var(--line); font-size:11px; text-transform:uppercase; color:var(--ink-faint);">
           <th style="padding:6px 10px; text-align:left;">Agent</th><th style="padding:6px 10px;">QA %</th><th style="padding:6px 10px;">Major</th><th style="padding:6px 10px;">Minor</th>
@@ -13595,53 +13626,6 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
   openIpsTabbedReport(rangeLabel, sections);
 }
 
-// QA Accuracy report: one row per employee, sorted by QA% descending
-// (highest first) rather than alphabetically. Major/Minor columns show
-// every entry that's STILL COUNTING against QA% — which is anything
-// EXCEPT 'conceded' or 'approved' (the only two outcomes that remove
-// an entry from the tally). Concretely this means:
-//   - 'rejected' / 'rejected_as_minor' — dispute was reviewed and rejected
-//   - 'disputed' — dispute is still pending review
-//   - 'none' — employee never disputed (or conceded) it at all
-// Each entry shows a short status tag so pending-review items aren't
-// mistaken for already-decided ones. Multiple qualifying entries for
-// QA Accuracy report: one row per employee, sorted by QA% descending
-// (highest first) rather than alphabetically. Major/Minor are the
-// plain counts pulled straight from the qa_leaderboard table — there's
-// no per-lead reason text to include anymore, since this app no longer
-// stores individual QA entries.
-function downloadIpsQaAccuracyReport() {
-  const roster = ipsRoster();
-  const monthLabel = ipsMonthLabel(ipsState.month);
-
-  const rows = roster.map(emp => {
-    const qaFrac = ipsQaFraction(emp.id);
-    const qa = qaFrac != null ? round2(qaFrac * 100) : 100; // no leaderboard row still reports as 100% here, per the agreed rule for this specific report
-    const { major, minor } = ipsQaCounts(emp.id);
-    return { name: emp.display_name, qa, major, minor };
-  });
-
-  // Highest QA% first — ties keep roster order (stable sort)
-  rows.sort((a, b) => b.qa - a.qa);
-
-  // Red font for the SCORE cell (column index 1): ANY Major count
-  // present makes it red regardless of the percentage itself — this
-  // takes priority over everything else. With zero Majors, the score
-  // follows the existing blue-if-95%+/red-if-94%-or-below threshold,
-  // matching the exact same rule already used on the live QA Accuracy
-  // tab. Keyed "rowIndex,colIndex" per openIpsTabbedReport's
-  // cellColors contract.
-  const cellColors = new Map();
-  rows.forEach((r, i) => { if (r.major > 0 || r.qa <= 94) cellColors.set(`${i},1`, '#C0392B'); });
-
-  openIpsTabbedReport(monthLabel, [{
-    title: 'QA Accuracy',
-    header: ['Employee Name', `${monthLabel.toUpperCase()} SCORE`, 'MAJOR', 'MINOR'],
-    rows: rows.map(r => [r.name, r.qa + '%', r.major, r.minor]),
-    cellColors,
-  }]);
-}
-
 function downloadIpsReport() {
   if (!isAdmin()) { showToast('Only admins can download this report.', true); return; }
 
@@ -13875,7 +13859,6 @@ function openIpsTabbedReport(monthLabel, sections) {
 }
 
 function attachIpsHandlers() {
-  document.getElementById('ips-qa-download-report-btn')?.addEventListener('click', downloadIpsQaAccuracyReport);
   document.getElementById('ips-missed-outputs-toggle')?.addEventListener('click', () => {
     ipsState.missedOutputsExpanded = !ipsState.missedOutputsExpanded;
     renderIpsTables();
