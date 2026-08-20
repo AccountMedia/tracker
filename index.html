@@ -1146,7 +1146,6 @@ function logout() {
   state.profile = null;
   state.creditsEditMode = false;
   state.leaveNotifPanelOpen = false;
-  qaLiveSyncReady = false;
   stopIpsArchiveWatcher();
   hideLeaveNotifPanel();
   stopPriolistPolling();
@@ -1639,30 +1638,6 @@ function startNavBadgePolling() {
     updateLeaveNavBadge();
   }, 200); // short debounce — badges should feel instant
 
-  // Every logged-in employee (not just admin/IPS) gets a lightweight,
-  // always-on subscription to their OWN QA entries — this is what lets
-  // "My Alerts" show a brand-new Major/Minor entry (or a dispute
-  // outcome) in real time, on whatever tab they happen to be on, not
-  // only while the IPS tab is open.
-  //
-  // Jeinna and Kristina specifically (the two people who review
-  // disputes) get an UNSCOPED view — every employee's entries, not just
-  // their own — since their My Alerts needs to surface "QA disputes
-  // need your review" for anyone's dispute, not only their own.
-  // Scoping with a Postgres RLS-style filter isn't available on
-  // realtime channels, so this patches client-side per-row instead.
-  const isQaReviewer = state.profile && ['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name);
-  const rerenderAlerts = debounceRealtime(() => {
-    if (state.profile) renderPersonalAlerts();
-  }, 200);
-  subscribeRealtime('my_qa_entries', 'ips_qa_entries', (payload) => {
-    const row = payload.new || payload.old;
-    if (!state.profile) return;
-    if (!isQaReviewer && row.employee_id !== state.profile.employee_id) return; // not mine, and I'm not a reviewer — ignore
-    applyRealtimePatch(payload, () => ipsState.qaEntries, (v) => { ipsState.qaEntries = v; });
-    rerenderAlerts();
-  });
-
   if (!isAdminOrIps) return; // everything below is admin/IPS-only, as before
 
   // Only open a SEPARATE leave_entries subscription if one doesn't
@@ -1736,7 +1711,6 @@ function startNavBadgePolling() {
 function stopNavBadgePolling() {
   unsubscribeRealtime('badge_leave_entries');
   unsubscribeRealtime('badge_leave_notifications');
-  unsubscribeRealtime('my_qa_entries');
   unsubscribeRealtime('app_settings_priolist');
   unsubscribeRealtime('team_chat_messages');
   unsubscribeRealtime('team_chat_reactions');
@@ -1767,7 +1741,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-20-qa-remove-manual-entry-buttons';
+const APP_VERSION = '2026-08-20-qa-leaderboard-period-scoped';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2510,31 +2484,22 @@ async function syncPriolistPeerReviewFromReviewBatches() {
   await Promise.all(updates.map(u => sb.from('priolist_entries').update({ peer_review: u.peer_review }).eq('id', u.id)));
 }
 
-// Shared by PrioList's Peer Review, IPS's Peer Review, AND QA
-// Accuracy's live sync — three features now triggered from ONE
-// subscription. QA Accuracy previously had its OWN separate
-// subscription directly on review_records, which receives roughly one
-// insert per lead reviewed (confirmed from real data: over a thousand
-// rows in a single month) — a genuinely high-volume table to watch at
-// the row level, and a real, confirmed driver of a Realtime egress
-// spike. review_batches updates far less often (once per batch, not
-// once per record), and its updated_at is confirmed — from real cases
-// traced this session, including a dispute-approval scenario — to
-// change whenever a batch's underlying records change, making it a
-// reliable, much cheaper trigger for the same sync.
+// Shared by PrioList's Peer Review and IPS's Peer Review — two
+// features triggered from one subscription. (QA Accuracy used to also
+// piggyback on this channel via review_records, but it's now driven
+// entirely by its own dedicated qa_leaderboard table/channel — see
+// startQaLeaderboardRealtimeSync — so it's no longer wired in here.)
 let _reviewBatchesChannel = null;
 function startReviewBatchesRealtimeSync() {
   if (_reviewBatchesChannel || !sbQaReview) return;
   try {
     const debouncedPriolistSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 400);
     const debouncedIpsSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 400);
-    const debouncedQaAccuracySync = debounceRealtime(syncQaAccuracyFromReviewRecords, 400);
     _reviewBatchesChannel = sbQaReview
       .channel('rt:review_batches_shared')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => {
         debouncedPriolistSync();
         debouncedIpsSync();
-        debouncedQaAccuracySync();
       })
       .subscribe();
     syncPriolistPeerReviewFromReviewBatches();
@@ -11807,11 +11772,9 @@ const ipsState = {
   pendingApprovals: [],      // ALL pending requests, for admin/IPS's approval inbox
   emergencyUnlocks: [],       // { employee_id, unlock_date } rows — self-service early/full-day-leave access overrides for TODAY
   missedOutputsExpanded: false, // whether the Missing LQ banner's full list is expanded — collapsed by default for a minimal single-line view
-  qaEntries: [],              // structured Major/Minor QA entries (ips_qa_entries) — replaces the old major_notes/minor_notes text arrays
-  qaEntriesLoadedMonth: null, // which month's qaEntries are currently loaded, so a cache-first repaint doesn't show stale data
-  qaPanelExpanded: {},        // { [employeeId]: true } — which employee's QA entry list is expanded in the admin's edit view
-  qaNoCallouts: [],           // explicit "reviewed, no Major/Minor issues" records (ips_qa_no_callouts) — distinguishes "reviewed and clean" from "not yet reviewed" for QA%
-  qaTab: 'major',             // 'major' | 'minor' — which tab is active inside the QA entry manage/view modals
+  qaLeaderboard: null,        // Map(employeeId -> {score, major, minor}) — live from the external qa_leaderboard table (see loadQaLeaderboard)
+  qaLeaderboardLoaded: false, // true once the leaderboard has been fetched at least once this session
+  qaLeaderboardLoadedPeriod: null, // 'YYYY-MM' of whichever period ipsState.qaLeaderboard currently holds
 };
 
 function ipsDatesForMonth(monthIso) {
@@ -11826,14 +11789,12 @@ async function loadIpsData() {
   const [y, m] = monthStart.split('-').map(Number);
   const monthEnd = isoDate(new Date(y, m, 0));
 
-  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes, qaEntriesRes, noCalloutsRes] = await Promise.all([
+  const [dailyRes, monthlyRes, settingsRes, correctionsRes, emergencyRes] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', monthStart).lte('entry_date', monthEnd),
     sb.from('ips_monthly_data').select('*').eq('month', monthStart),
     sb.from('ips_month_settings').select('*').eq('month', monthStart).maybeSingle(),
     sb.from('ips_correction_requests').select('*').order('requested_at', { ascending: false }),
     sb.from('ips_emergency_unlocks').select('*').eq('unlock_date', isoDate(new Date())),
-    sb.from('ips_qa_entries').select('*').eq('month', monthStart).order('created_at', { ascending: true }),
-    sb.from('ips_qa_no_callouts').select('*').eq('month', monthStart),
   ]);
 
   if (dailyRes.error || monthlyRes.error) {
@@ -11859,34 +11820,6 @@ async function loadIpsData() {
 
   // Emergency unlocks aren't fatal if the table isn't set up yet either.
   ipsState.emergencyUnlocks = emergencyRes.error ? [] : (emergencyRes.data || []);
-
-  // QA entries — not fatal if ips_qa_entries.sql hasn't been run yet.
-  // Merge rather than replace: this fetch is scoped to whichever month
-  // the IPS tab currently has selected, but ipsState.qaEntries may
-  // already hold OTHER months' rows too (an employee's own cross-month
-  // dispute view, or a reviewer's cross-employee pending-dispute list —
-  // see loadMyQaEntries and the reviewer cold-start fetch in
-  // ensureIpsDataForPersonalAlerts). A full replacement here would
-  // silently drop those, which was exactly why a resolved dispute could
-  // keep showing under "QA disputes need your review" — this month's
-  // fresh data would overwrite the correction that same in-memory
-  // patch had just made moments earlier if their timing ever crossed.
-  if (!qaEntriesRes.error) {
-    const freshRows = qaEntriesRes.data || [];
-    const otherMonthsOrAlreadyTracked = ipsState.qaEntries.filter(e => e.month !== monthStart);
-    ipsState.qaEntries = [...otherMonthsOrAlreadyTracked, ...freshRows];
-    ipsState.qaEntriesLoadedMonth = monthStart;
-  } else if (!/relation .* does not exist/i.test(qaEntriesRes.error.message || '')) {
-    console.error('Could not load QA entries:', qaEntriesRes.error);
-  }
-
-  // No-callout reviews — not fatal if ips_qa_no_callouts.sql hasn't
-  // been run yet either.
-  if (!noCalloutsRes.error) {
-    ipsState.qaNoCallouts = noCalloutsRes.data || [];
-  } else if (!/relation .* does not exist/i.test(noCalloutsRes.error.message || '')) {
-    console.error('Could not load QA no-callout reviews:', noCalloutsRes.error);
-  }
 }
 
 // One-off name overrides: when the source table's agent name field uses a
@@ -12106,305 +12039,6 @@ function stopIpsPeerReviewRealtimeSync() {
   // reasoning. Torn down only on logout.
 }
 
-// ── QA Accuracy live sync from review_records ──────────────────────────
-// Replaces the old manual "Import from QA Review" button entirely —
-// this runs automatically and continuously, exactly like MD Task and
-// Peer Review already do. Scoped to the CURRENT calendar month only:
-// once a month passes, whatever was already imported for it stays
-// exactly as it is forever (never re-queried, never deleted by this
-// sync) — only the current month's data is ever actively watched and
-// updated.
-//
-// Dispute fields are mapped from review_records' own dispute columns
-// (confirmed against real data and explicit rules):
-//   - dispute_status = 'Approved'  -> ips_qa_entries.dispute_status = 'approved' (does NOT count against QA%)
-//   - dispute_status = 'Rejected'  -> 'none' (STILL counts — a rejected dispute doesn't remove the entry)
-//   - dispute_action = 'Concede'   -> 'none' (STILL counts — conceding doesn't remove it either)
-//   - neither set (no dispute filed) -> 'none' (counts, same as always)
-// dispute_explanation is copied directly. dispute_proof_urls (an array
-// of Supabase Storage object PATHS, not full URLs) is converted into
-// real public image URLs using the confirmed public "dispute-proofs"
-// bucket in this same project.
-//
-// Unlike the old button, THIS sync also actively UPDATES an existing
-// entry's dispute fields on every run (not just when first created) —
-// this is the explicit reason the manual button was replaced: an
-// employee's dispute can be filed/resolved in review_records AFTER
-// their entry was first imported, and this keeps that outcome
-// genuinely live rather than frozen at import time.
-function qaDisputeProofUrlsFor(rawPaths) {
-  if (!rawPaths) return null;
-  let paths = rawPaths;
-  if (typeof paths === 'string') {
-    try { paths = JSON.parse(paths); } catch { return null; } // stored as a JSON string in some rows — parse defensively rather than assume
-  }
-  if (!Array.isArray(paths) || !paths.length) return null;
-  return paths.map(p => `${QA_REVIEW_SUPABASE_URL}/storage/v1/object/public/dispute-proofs/${p}`);
-}
-
-function qaDisputeStatusFor(row) {
-  if (row.dispute_status === 'Approved') return 'approved'; // the ONE outcome that stops counting against QA%
-  if (row.dispute_status === 'Rejected') return 'rejected'; // still counts, but genuinely shown as "reviewed and rejected" rather than lumped in with "no dispute at all"
-  if (row.dispute_action === 'Concede') return 'conceded'; // still counts, but genuinely shown as "you conceded this" rather than looking like nothing ever happened
-  return 'none'; // no dispute or concession at all
-}
-
-async function syncQaAccuracyFromReviewRecords() {
-  if (!sbQaReview) return;
-
-  try {
-    const now = new Date();
-    const monthIso = isoDate(new Date(now.getFullYear(), now.getMonth(), 1)); // current month only — never touches past months
-    const monthStart = `${monthIso}T00:00:00Z`;
-    const nextMonthDate = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    const monthEnd = `${isoDate(nextMonthDate)}T00:00:00Z`;
-
-    // Fired immediately, in PARALLEL with the entire external-project
-    // batch+records fetch chain below — this queries OUR OWN project,
-    // genuinely independent of anything from the external one until
-    // byReviewer processing needs it further down. Only awaited once
-    // its result is actually required, not right away.
-    const ownProjectQueryPromise = Promise.all([
-      sb.from('ips_qa_entries').select('id, employee_id, lead_name, linkedin_url, recent_activity, company, job_title').eq('month', monthIso),
-      sb.from('ips_qa_no_callouts').select('employee_id').eq('month', monthIso),
-    ]);
-
-    const { data: eligibleBatches, error: batchErr } = await sbQaReview
-      .from('review_batches')
-      .select('id')
-      .or('qa_track.neq.PIP,qa_track.is.null')
-      .gte('updated_at', monthStart)
-      .lt('updated_at', monthEnd);
-    if (batchErr) { console.error('QA Accuracy sync (batch lookup) failed:', batchErr); return; }
-    const eligibleBatchIds = (eligibleBatches || []).map(b => b.id);
-    if (!eligibleBatchIds.length) return;
-
-    // Fetches in pages of 1000 (Supabase's REST API default row cap
-    // per request) rather than trusting one unbounded request to
-    // return everything — with many eligible batches, a single request
-    // could silently truncate before every row is returned, dropping
-    // some entries (including dispute outcomes) without any error at
-    // all.
-    //
-    // The first page also requests an EXACT total count alongside the
-    // data — this tells us upfront exactly how many more pages exist,
-    // so every remaining page can be requested IN PARALLEL via
-    // Promise.all rather than one-at-a-time. Multiple requests in
-    // flight simultaneously take roughly the same wall-clock time as a
-    // single request, not the sum of all of them — this is what
-    // actually cuts the real loading time when there's more than one
-    // page of data (e.g. this month's ~1700 rows across 2 pages).
-    const PAGE_SIZE = 1000;
-    const selectCols = 'status_reason, first_name, last_name, job_title, company, domain, country, recent_activity, profile_url, corrected_profile_url, major_error, minor_error, review_notes, created_at, batch_id, dispute_action, dispute_explanation, dispute_status, dispute_proof_urls, original_major_error, original_minor_error';
-
-    const { data: firstPage, count: totalCount, error: firstPageErr } = await sbQaReview
-      .from('review_records')
-      .select(selectCols, { count: 'exact' })
-      .in('batch_id', eligibleBatchIds)
-      .range(0, PAGE_SIZE - 1);
-    if (firstPageErr) { console.error('QA Accuracy sync (records fetch) failed:', firstPageErr); return; }
-    let data = firstPage || [];
-
-    const remainingPages = totalCount != null ? Math.ceil((totalCount - data.length) / PAGE_SIZE) : 0;
-    if (remainingPages > 0) {
-      // Bounded batches of parallel requests, not one unbounded burst —
-      // at realistic volumes (thousands of rows) this still fires
-      // everything in a single batch, identical in speed to firing
-      // them all at once. This cap only matters if volume ever grew
-      // dramatically (tens of thousands of rows), where firing dozens
-      // or hundreds of simultaneous requests would be genuinely
-      // excessive — this keeps things safely scalable either way.
-      const MAX_PARALLEL_PAGES = 10;
-      for (let batchStart = 1; batchStart <= remainingPages; batchStart += MAX_PARALLEL_PAGES) {
-        const batchEnd = Math.min(batchStart + MAX_PARALLEL_PAGES - 1, remainingPages);
-        const pagePromises = [];
-        for (let p = batchStart; p <= batchEnd; p++) {
-          const start = p * PAGE_SIZE;
-          pagePromises.push(
-            sbQaReview.from('review_records').select(selectCols).in('batch_id', eligibleBatchIds).range(start, start + PAGE_SIZE - 1)
-          );
-        }
-        const pageResults = await Promise.all(pagePromises);
-        for (const { data: page, error: pageErr } of pageResults) {
-          if (pageErr) { console.error('QA Accuracy sync (records fetch, parallel page) failed:', pageErr); return; }
-          if (page) data = data.concat(page);
-        }
-      }
-    }
-    if (!data || !data.length) return;
-
-    const VALID_ACTIVITY = ['Recently Active', 'Active', 'Passive', 'Silent'];
-    const unmatchedNames = new Set();
-
-    const [{ data: existingEntries, error: existingErr }, { data: existingNoCallouts, error: noCalloutErr }] = await ownProjectQueryPromise;
-    if (existingErr) { console.error('QA Accuracy sync (existing entries check) failed:', existingErr); return; }
-    if (noCalloutErr) { console.error('QA Accuracy sync (no-callout check) failed:', noCalloutErr); return; }
-    const employeeIdsWithRealEntries = new Set((existingEntries || []).map(e => e.employee_id));
-    const employeeIdsAlreadyNoCallout = new Set((existingNoCallouts || []).map(r => r.employee_id));
-
-    const byReviewer = new Map(); // keyed by NORMALIZED FIRST NAME, not the full extracted name — the source data genuinely varies per-row (e.g. "Katrena S", "Katrena Salenga", "Katrena Saladaga" for the same person, confirmed against real data), so grouping by the full string would silently fragment one person's rows across multiple groups and fail to match the roster at all for any variant.
-    data.forEach(row => {
-      const m = (row.status_reason || '').match(/^(.*?)\s+Marked\s+/i);
-      const fullReviewerName = m ? m[1].trim() : null;
-      if (!fullReviewerName) return;
-      const rawFirstName = fullReviewerName.split(/\s+/)[0];
-      if (!rawFirstName) return;
-      const firstNameKey = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase(); // same alias resolution already used by MD Task/Peer Review, for known one-off mismatches
-      if (!byReviewer.has(firstNameKey)) byReviewer.set(firstNameKey, []);
-      byReviewer.get(firstNameKey).push(row);
-    });
-
-    const toInsert = [];
-    const toBackfill = []; // [{ id, patch }] — only genuinely-missing display fields (lead_name/linkedin_url/recent_activity), NEVER dispute fields — those are looked up live now, not stored
-    const toMarkNoCallout = [];
-    const freshDisputeLookup = new Map(); // rebuilt from scratch on every run — the new live source of truth for dispute status, replacing the old "write it to the database and hope the sync caught every row" approach
-    // Tracks identity keys (employee_id + lead identity) already staged
-    // for insertion WITHIN THIS RUN — existingEntries only reflects rows
-    // already in the database at the START of this run, so without this,
-    // several review_records rows for the SAME lead (re-reviews,
-    // duplicate batches, etc.) would each independently fail to find a
-    // match in existingEntries and each get queued as its own insert,
-    // producing exact duplicate ips_qa_entries rows. This is the actual
-    // confirmed cause of employees showing the same Major/Minor entry
-    // repeated 2-3 times.
-    const stagedForInsertThisRun = new Set();
-
-    byReviewer.forEach((rows, firstNameKey) => {
-      const emp = state.employees.find(e => e.display_name.split(/\s+/)[0].toLowerCase() === firstNameKey);
-      if (!emp) { unmatchedNames.add(firstNameKey); return; }
-
-      // A row counts as "flagged" if EITHER its current major_error/
-      // minor_error is true, OR it was ORIGINALLY flagged before a
-      // dispute got approved — approval flips the live flags back to
-      // false in the source system (confirmed against real data), but
-      // preserves what it originally was in original_major_error/
-      // original_minor_error.
-      const flaggedRows = rows.filter(r => r.major_error || r.minor_error || r.original_major_error || r.original_minor_error);
-
-      if (!flaggedRows.length) {
-        if (!employeeIdsWithRealEntries.has(emp.id) && !employeeIdsAlreadyNoCallout.has(emp.id)) {
-          toMarkNoCallout.push(emp.id);
-        }
-        return;
-      }
-
-      flaggedRows.forEach(row => {
-        const kind = (row.major_error || row.original_major_error) ? 'major' : 'minor';
-        const activity = VALID_ACTIVITY.includes(row.recent_activity) ? row.recent_activity : null;
-        const leadName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null;
-        const statusReason = row.review_notes || null;
-        const linkedinUrl = row.corrected_profile_url || row.profile_url || null;
-        const disputeStatus = qaDisputeStatusFor(row);
-        const disputeExplanation = row.dispute_explanation || null;
-        const disputeEvidenceUrls = qaDisputeProofUrlsFor(row.dispute_proof_urls);
-
-        const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        const normalizedLeadName = normalizeText(leadName);
-        const normalizedCompany = normalizeText(row.company);
-        const normalizedJobTitle = normalizeText(row.job_title);
-
-        const existingMatch = (existingEntries || []).find(e => {
-          if (e.employee_id !== emp.id) return false;
-          const eNormalizedName = normalizeText(e.lead_name);
-          if (normalizedLeadName && eNormalizedName) return eNormalizedName === normalizedLeadName;
-          return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
-        });
-
-        // Same identity check as existingMatch above, but against rows
-        // already queued for insertion by AN EARLIER row in this very
-        // loop (see stagedForInsertThisRun's declaration for why this
-        // is required) — a second or third review_records row for the
-        // identical lead is treated as already covered rather than
-        // queued again.
-        const runDedupeKey = `${emp.id}|${normalizedLeadName || `${normalizedCompany}::${normalizedJobTitle}`}`;
-        if (stagedForInsertThisRun.has(runDedupeKey)) return;
-
-        // Record this row's LIVE dispute outcome in the fresh lookup,
-        // keyed by employee+identity — used regardless of whether this
-        // is a new or existing entry, since ipsQaEntryCounts() will
-        // consult this lookup by the entry's own employee_id+lead_name
-        // (or company+job_title) at read time, not by database id.
-        const lookupKey = `${emp.id}|${normalizedLeadName || `${normalizedCompany}::${normalizedJobTitle}`}`;
-        freshDisputeLookup.set(lookupKey, { dispute_status: disputeStatus, dispute_explanation: disputeExplanation, dispute_evidence_urls: disputeEvidenceUrls });
-
-        if (existingMatch) {
-          const patch = {};
-          if (!existingMatch.lead_name && leadName) patch.lead_name = leadName;
-          if (!existingMatch.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
-          if (!existingMatch.recent_activity && activity) patch.recent_activity = activity;
-          if (Object.keys(patch).length) toBackfill.push({ id: existingMatch.id, patch });
-          return;
-        }
-
-        stagedForInsertThisRun.add(runDedupeKey);
-        toInsert.push({
-          employee_id: emp.id,
-          month: monthIso,
-          kind,
-          status_reason: statusReason,
-          lead_name: leadName,
-          job_title: row.job_title || null,
-          company: row.company || null,
-          domain: row.domain || null,
-          country: row.country || null,
-          recent_activity: activity,
-          linkedin_url: linkedinUrl,
-        });
-      });
-    });
-
-    if (unmatchedNames.size) {
-      console.warn('QA Accuracy sync: could not match these reviewer names to any employee:', [...unmatchedNames].join(', '));
-    }
-
-    for (const { id, patch } of toBackfill) {
-      const { error: backfillErr } = await sb.from('ips_qa_entries').update(patch).eq('id', id);
-      if (backfillErr) console.error('QA Accuracy sync: backfill failed for entry', id, backfillErr);
-    }
-
-    if (toInsert.length) {
-      const { error: insertErr } = await sb.from('ips_qa_entries').insert(toInsert);
-      if (insertErr) console.error('QA Accuracy sync: insert failed:', insertErr);
-    }
-
-    if (toMarkNoCallout.length) {
-      const { error: noCalloutInsertErr } = await sb.from('ips_qa_no_callouts').insert(
-        toMarkNoCallout.map(employeeId => ({ employee_id: employeeId, month: monthIso }))
-      );
-      if (noCalloutInsertErr) console.error('QA Accuracy sync: no-callout insert failed:', noCalloutInsertErr);
-    }
-
-    // Publish the freshly-built lookup — this is the new live source of
-    // truth ipsQaEntryCounts() reads from, replacing the old stored
-    // dispute_status column entirely. Published and re-rendered on
-    // EVERY run, not just when something was inserted/backfilled,
-    // since a dispute outcome changing (e.g. a fresh Approval) updates
-    // this lookup's VALUES without necessarily creating any new
-    // insert/backfill operation — the screen still needs to reflect it.
-    qaLiveDisputeLookup = freshDisputeLookup;
-    qaLiveSyncReady = true;
-    if (toInsert.length) { await loadIpsData(); }
-    renderIpsTables();
-  } catch (err) {
-    console.error('QA Accuracy sync error:', err);
-  }
-}
-
-// Live-updating for QA Accuracy is now handled by the shared
-// review_batches channel (see startReviewBatchesRealtimeSync above) —
-// this function only fires the INITIAL sync, so the numbers are
-// correct the moment QA Accuracy is opened, without needing its own
-// separate, high-volume subscription directly on review_records.
-let _qaAccuracyInitialSyncDone = false;
-function startQaAccuracyRealtimeSync() {
-  if (_qaAccuracyInitialSyncDone || !sbQaReview) return;
-  _qaAccuracyInitialSyncDone = true;
-  syncQaAccuracyFromReviewRecords();
-}
-function stopQaAccuracyRealtimeSync() {
-  _qaAccuracyInitialSyncDone = false; // re-arm so the next login/session gets a genuine fresh initial sync, not a stale "already done" flag
-}
-
 // ── Daily archive of MD Task / Peer Review, protecting against the ──
 // ── external source's own daily data deletion ────────────────────────
 // The source project (claim_records/review_batches) deletes its own
@@ -12549,31 +12183,6 @@ function stopIpsArchiveWatcher() {
 // independent of what an admin happens to be looking at right now.
 // Cached per-session via _myQaEntriesLoaded; call forceReload to bypass.
 let _myQaEntriesLoaded = false;
-async function loadMyQaEntries(forceReload) {
-  if (!state.profile || !state.profile.employee_id) return;
-  if (_myQaEntriesLoaded && !forceReload) return;
-  const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1)); // current month only — past months' entries are no longer shown here
-  const { data, error } = await sb
-    .from('ips_qa_entries')
-    .select('*')
-    .eq('employee_id', state.profile.employee_id)
-    .eq('month', currentMonthIso)
-    .order('created_at', { ascending: true });
-  if (error) {
-    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load my QA entries:', error);
-    return;
-  }
-  // Merge into ipsState.qaEntries by id, rather than replacing — this
-  // preserves whatever month-scoped rows the admin view already loaded
-  // (avoids two competing sources of truth stomping on each other).
-  const existingIds = new Set(ipsState.qaEntries.map(e => e.id));
-  const newOnes = (data || []).filter(e => !existingIds.has(e.id));
-  ipsState.qaEntries = [...ipsState.qaEntries, ...newOnes];
-  // Also refresh any that already existed, in case their dispute status changed elsewhere
-  const byId = new Map((data || []).map(e => [e.id, e]));
-  ipsState.qaEntries = ipsState.qaEntries.map(e => byId.get(e.id) || e);
-  _myQaEntriesLoaded = true;
-}
 
 function ipsDailyFor(employeeId, dateIso) {
   return ipsState.dailyEntries.find(e => e.employee_id === employeeId && e.entry_date === dateIso);
@@ -12642,99 +12251,110 @@ function ipsPoTotal(employeeId, dates) {
   // comparable across days regardless of each day's actual target.
   return round2(ipsPoRatioAverage(employeeId, dates) * 800);
 }
-// Every QA entry for one employee in one month, of a given kind
-// ('major' or 'minor'). Used both for the count/formula and for
-// rendering the detailed table.
-function ipsQaEntriesFor(employeeId, monthIso, kind) {
-  return ipsState.qaEntries.filter(e => e.employee_id === employeeId && e.month === monthIso && (!kind || e.kind === kind));
-}
+// ── QA Accuracy — live from the external qa_leaderboard table ─────────
+// QA%, Major count, and Minor count are pulled directly, already
+// computed, from a qa_leaderboard table maintained in the external
+// QA-review project (columns: agent_name, score, major_count,
+// minor_count, period — period is 'YYYY-MM', e.g. '2026-08' for
+// August) — this app no longer scans review_records or stores its own
+// per-lead QA entries at all. Matched to the roster by first name,
+// reusing the same alias resolution already used for MD Task and Peer
+// Review. Major/Minor are plain, non-clickable numbers now — there's
+// no per-lead detail or dispute workflow left in this app; all of that
+// lives in the source system.
 
-// The live, in-memory dispute-status lookup — rebuilt fresh on every
-// syncQaAccuracyFromReviewRecords() run (see there), keyed by
-// `${employee_id}|${normalized lead name, or company::job_title if no
-// name}`. This REPLACES trusting a stored ips_qa_entries.dispute_status
-// column to have been correctly synced — instead, QA% is computed
-// directly from whatever review_records says RIGHT NOW, every time,
-// eliminating the entire class of bug where a sync fails to catch or
-// correctly update a specific row. ONLY ever populated for the CURRENT
-// month — a past month's dispute outcomes are frozen historical facts
-// by the time they're "past," with no live sync racing to update them,
-// so those genuinely fall back to whatever's already stored.
-let qaLiveDisputeLookup = new Map();
-// Tracks whether the live sync has completed AT LEAST ONCE this
-// session — false until the very first successful run. This exists
-// specifically to fix a real, reported glitch: QA% would sometimes
-// show a stale/wrong number for a brief moment on page load, then
-// silently snap to the correct one once the async sync finished — the
-// PAGE INITIALLY RENDERS BEFORE THE NETWORK FETCH COMPLETES, so the
-// first paint had no way of knowing the live data wasn't ready yet.
-// The display layer checks this flag and shows a loading indicator
-// instead of a possibly-wrong number during that brief window, rather
-// than showing something that might be about to change underneath the
-// viewer.
-let qaLiveSyncReady = false;
-function qaLiveDisputeStatusFor(entry) {
-  const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  if (entry.month !== currentMonthIso) return entry.dispute_status || 'none'; // past month — the live lookup was never built for this, use the stored value
-  const normalizeText = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  const normalizedLeadName = normalizeText(entry.lead_name);
-  const key = `${entry.employee_id}|${normalizedLeadName || `${normalizeText(entry.company)}::${normalizeText(entry.job_title)}`}`;
-  const live = qaLiveDisputeLookup.get(key);
-  // Falls back to whatever's stored on the entry itself if this
-  // specific lead genuinely isn't in the live lookup yet (e.g. the
-  // sync hasn't completed its first run this session) — better to show
-  // last-known information than nothing at all while the live data
-  // loads in.
-  return live ? live.dispute_status : (entry.dispute_status || 'none');
-}
-
-// Whether a QA entry currently counts against QA% — every entry counts
-// EXCEPT one that has been disputed and the dispute was approved (that
-// removes it from the tally entirely, per the agreed rule: an admin
-// approving a dispute reduces the employee's major/minor count).
-// Rejected disputes, conceded entries, and never-disputed entries all
-// still count normally.
-function ipsQaEntryCounts(employeeId, monthIso) {
-  const effective = (kind) => ipsQaEntriesFor(employeeId, monthIso, kind).filter(e => qaLiveDisputeStatusFor(e) !== 'approved').length;
-  return { major: effective('major'), minor: effective('minor') };
-}
-
-
-
-// Whether an admin has explicitly marked this employee as reviewed-
-// and-clean for this month (see "No call-out" in the manage modal).
-function ipsQaHasNoCallout(employeeId, monthIso) {
-  return ipsState.qaNoCallouts.some(n => n.employee_id === employeeId && n.month === monthIso);
-}
-
-// QA% is now fully derived — 100, minus 3 points per still-counting
-// Major entry, minus 1 point per still-counting Minor entry. No manual
-// qa_percent field exists anymore; admins can only affect this by
-// adding/removing/editing structured entries (or by approving a
-// dispute, which removes an entry from the count).
-//
-// Returns null — not 100% — when the employee has ZERO QA entries
-// recorded AND no explicit "No call-out" review either. This is
-// deliberate: an admin simply hasn't reviewed this employee yet, which
-// is a genuinely different state from "was reviewed and found clean"
-// (100%, either via a No call-out record or via zero still-counting
-// entries after review). Returning null lets the display layer show a
-// blank/"not reviewed" indicator instead of a number an employee could
-// mistake for an actual clean score. Scoring math is unaffected —
-// ipsMonthlyScore already falls back to 0 for this exact case via
-// `?? 0`, so the leaderboard/total-score cascade is untouched; only
-// the QA Accuracy tab's own display needs to distinguish the two.
-function ipsQaFraction(employeeId, monthIso) {
-  if (!employeeId || !monthIso) return null;
-  const { major, minor } = ipsQaEntryCounts(employeeId, monthIso);
-  const totalEntries = ipsQaEntriesFor(employeeId, monthIso).length;
-  if (totalEntries === 0) {
-    // Nothing recorded yet — genuinely 100% ONLY if an admin explicitly
-    // confirmed "No call-out" for this month; otherwise stays blank.
-    return ipsQaHasNoCallout(employeeId, monthIso) ? 1 : null;
+// Fetches ONE month's leaderboard rows and returns a Map(employeeId ->
+// {score, major, minor}) — a plain, side-effect-free helper used both
+// by the main per-month load below AND anywhere else that needs a
+// SPECIFIC month's figures regardless of what's currently on screen
+// (the year view, previous-month rank comparison, multi-month reports).
+async function fetchQaLeaderboardForPeriod(periodStr) {
+  if (!sbQaReview) return new Map();
+  const { data, error } = await sbQaReview.from('qa_leaderboard').select('agent_name, score, major_count, minor_count').eq('period', periodStr);
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('QA leaderboard load failed for period', periodStr, error);
+    return new Map();
   }
-  const pct = 100 - (major * 3) - (minor * 1);
-  return Math.max(0, pct) / 100;
+  const byEmployeeId = new Map();
+  const unmatchedNames = new Set();
+  (data || []).forEach(row => {
+    const rawFirstName = (row.agent_name || '').trim().split(/\s+/)[0];
+    if (!rawFirstName) return;
+    const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
+    const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstName);
+    if (!emp) { unmatchedNames.add(firstName); return; }
+    byEmployeeId.set(emp.id, {
+      score: row.score != null ? Number(row.score) : null,
+      major: row.major_count != null ? Number(row.major_count) : 0,
+      minor: row.minor_count != null ? Number(row.minor_count) : 0,
+    });
+  });
+  if (unmatchedNames.size) {
+    console.warn(`QA leaderboard (${periodStr}): could not match these agent_name first names to any employee:`, [...unmatchedNames].join(', '));
+  }
+  return byEmployeeId;
+}
+
+// Loads the leaderboard for whichever month the IPS tab currently has
+// selected (ipsState.month) into ipsState.qaLeaderboard, the map every
+// display/scoring function on screen reads from.
+async function loadQaLeaderboard() {
+  const period = ipsState.month.slice(0, 7); // 'YYYY-MM-01' -> 'YYYY-MM'
+  ipsState.qaLeaderboard = await fetchQaLeaderboardForPeriod(period);
+  ipsState.qaLeaderboardLoaded = true;
+  ipsState.qaLeaderboardLoadedPeriod = period;
+}
+
+// Genuinely real-time: subscribes directly to qa_leaderboard in the
+// SECOND Supabase project, same pattern as the completion_log and
+// review_batches shared channels — a fresh score/major/minor value
+// there is reflected here the instant it changes, no page reload needed.
+// The channel itself is opened once and left open (it isn't scoped to
+// a single month), but every call also checks whether the CURRENTLY
+// VIEWED month's data has actually been loaded yet — switching IPS
+// months calls this again, and this is what makes that refetch happen
+// even though the realtime subscription itself doesn't need to restart.
+let _qaLeaderboardChannel = null;
+function startQaLeaderboardRealtimeSync() {
+  const currentPeriod = ipsState.month.slice(0, 7);
+  if (ipsState.qaLeaderboardLoadedPeriod !== currentPeriod) {
+    loadQaLeaderboard().then(() => renderIpsTables());
+  }
+  if (_qaLeaderboardChannel || !sbQaReview) return;
+  try {
+    const debouncedSync = debounceRealtime(async () => { await loadQaLeaderboard(); renderIpsTables(); }, 400);
+    _qaLeaderboardChannel = sbQaReview
+      .channel('rt:qa_leaderboard')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'qa_leaderboard' }, debouncedSync)
+      .subscribe();
+  } catch (err) {
+    console.error('qa_leaderboard realtime subscribe failed:', err);
+  }
+}
+function stopQaLeaderboardRealtimeSync() {
+  if (_qaLeaderboardChannel) {
+    try { sbQaReview.removeChannel(_qaLeaderboardChannel); } catch (err) { /* non-fatal */ }
+    _qaLeaderboardChannel = null;
+  }
+}
+
+// Live QA% for one employee, straight from the leaderboard's `score`
+// column (already a 0-100 number). Returns null if the employee has
+// no leaderboard row yet — matches the previous "blank until
+// reviewed" behavior. ipsMonthlyScore already falls back to 0 for
+// null via `?? 0`, so the total-score cascade is unaffected.
+function ipsQaFraction(employeeId) {
+  const row = ipsState.qaLeaderboard && ipsState.qaLeaderboard.get(employeeId);
+  if (!row || row.score == null) return null;
+  return Math.max(0, row.score) / 100;
+}
+
+// Live Major/Minor counts for one employee, straight from the
+// leaderboard — display only. There's no per-lead entry behind these
+// numbers in this app anymore, so nothing here is clickable.
+function ipsQaCounts(employeeId) {
+  const row = ipsState.qaLeaderboard && ipsState.qaLeaderboard.get(employeeId);
+  return { major: row ? row.major : 0, minor: row ? row.minor : 0 };
 }
 
 // Sums each day's logged errors for the given dates — the daily entries
@@ -12758,7 +12378,7 @@ function ipsErrorCorrectionPct(employeeId, dates) {
   return (1 - (errors / workingDays)) * 1;
 }
 function ipsMonthlyScore(employeeId, dates, monthIso) {
-  const qa = ipsQaFraction(employeeId, monthIso || ipsState.month) ?? 0;
+  const qa = ipsQaFraction(employeeId) ?? 0;
   const poRatioAvg = ipsPoRatioAverage(employeeId, dates);
   const ec = ipsErrorCorrectionPct(employeeId, dates);
   const aoScore = qa * 0.5;
@@ -12845,13 +12465,6 @@ function startIpsRealtime() {
     applyRealtimePatch(payload, () => ipsState.emergencyUnlocks, (v) => { ipsState.emergencyUnlocks = v; });
     rerender();
   });
-  // QA entries — NOT month-scoped like daily/monthly data above, since
-  // an employee's own dispute view spans every month they have entries
-  // in, not just whichever month an admin happens to have selected.
-  subscribeRealtime('ips_qa_entries', 'ips_qa_entries', (payload) => {
-    applyRealtimePatch(payload, () => ipsState.qaEntries, (v) => { ipsState.qaEntries = v; });
-    rerender();
-  });
 }
 
 function stopIpsRealtime() {
@@ -12860,10 +12473,9 @@ function stopIpsRealtime() {
   unsubscribeRealtime('ips_month_settings');
   unsubscribeRealtime('ips_correction_requests');
   unsubscribeRealtime('ips_emergency_unlocks');
-  unsubscribeRealtime('ips_qa_entries');
   stopIpsMdTaskRealtimeSync();
   stopIpsPeerReviewRealtimeSync();
-  stopQaAccuracyRealtimeSync();
+  stopQaLeaderboardRealtimeSync();
 }
 
 function renderIps() {
@@ -13219,52 +12831,24 @@ function renderIpsTables() {
   }
 
   function buildQaSection() {
-    const qaEditor = canManageIpsQa();
-    // The live dispute sync only ever applies to the CURRENT month —
-    // past months' QA% never depends on it, so the loading state below
-    // only matters when someone's actually viewing the current month.
-    const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-    const viewingCurrentMonth = ipsState.month === currentMonthIso;
-    const stillLoadingLiveData = viewingCurrentMonth && !qaLiveSyncReady;
     const rows = roster.map(emp => {
-      const qaFrac = ipsQaFraction(emp.id, ipsState.month);
+      const qaFrac = ipsQaFraction(emp.id);
       const qa = qaFrac != null ? round2(qaFrac * 100) : '';
-      const { major, minor } = ipsQaEntryCounts(emp.id, ipsState.month);
-      // QA% text color: any still-counting Major entry takes priority
-      // and always shows red, regardless of the score. Otherwise, a
-      // 97-100% score shows blue. Anything else uses the normal ink color.
+      const { major, minor } = ipsQaCounts(emp.id);
+      // QA% text color: any Major count takes priority and always
+      // shows red, regardless of the score. Otherwise, a 95-100% score
+      // shows blue. Anything else uses the normal ink color.
       const qaColor = major > 0 ? 'var(--coral)' : qa === '' ? 'inherit' : (qa >= 95 ? '#2D6A9F' : 'var(--coral)');
-      const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
-      const pendingDisputeCount = allEntries.filter(e => e.dispute_status === 'disputed').length;
-      // While the live sync's first run this session hasn't completed
-      // yet, showing a real QA%/Major/Minor number here would be
-      // genuinely misleading — it could be built from a stale stored
-      // dispute_status that's about to change the instant the sync
-      // finishes (this was the exact cause of the reported "flickers
-      // to a different number on refresh" glitch). A plain loading
-      // indicator is honest about the fact that this isn't settled yet.
-      const qaCellContent = stillLoadingLiveData
-        ? `<span class="faint" style="font-size:11px;">loading…</span>`
-        : (qa !== '' ? qa + '%' : '—');
-      const majorCellContent = stillLoadingLiveData ? '–' : major;
-      const minorCellContent = stillLoadingLiveData ? '–' : minor;
       return `
         <tr style="border-bottom:1px solid var(--line-soft); ${rosterRowStyle(emp)}">
-          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">
-            ${escapeHtml(emp.display_name)}
-            ${pendingDisputeCount > 0 ? `<span class="ips-dispute-badge" data-emp-id="${emp.id}" title="${pendingDisputeCount} pending dispute${pendingDisputeCount===1?'':''} — click to review" style="cursor:pointer; margin-left:6px; display:inline-flex; align-items:center; justify-content:center; min-width:17px; height:17px; padding:0 4px; border-radius:999px; background:var(--coral); color:#fff; font-size:10px; font-weight:700; vertical-align:middle;">${pendingDisputeCount}</span>` : ''}
-          </td>
-          <td style="padding:8px; text-align:center; font-weight:700; color:${stillLoadingLiveData ? 'var(--ink-faint)' : qaColor};">${qaCellContent}</td>
-          <td class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="major" style="padding:8px; text-align:center; cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${majorCellContent}</td>
-          <td class="ips-qa-manage-btn" data-emp-id="${emp.id}" data-qa-kind="minor" style="padding:8px; text-align:center; cursor:pointer; color:${stillLoadingLiveData ? 'var(--ink-faint)' : 'var(--ink)'}; font-size:13px;">${minorCellContent}</td>
+          <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${escapeHtml(emp.display_name)}</td>
+          <td style="padding:8px; text-align:center; font-weight:700; color:${qaColor};">${qa !== '' ? qa + '%' : '—'}</td>
+          <td style="padding:8px; text-align:center; color:var(--ink); font-size:13px;">${major}</td>
+          <td style="padding:8px; text-align:center; color:var(--ink); font-size:13px;">${minor}</td>
         </tr>
       `;
     }).join('');
-    const employeeIdsWithResults = new Set([
-      ...ipsState.qaEntries.filter(e => e.month === ipsState.month).map(e => e.employee_id),
-      ...ipsState.qaNoCallouts.filter(r => r.month === ipsState.month).map(r => r.employee_id),
-    ]);
-    const employeesWithResultsCount = roster.filter(emp => employeeIdsWithResults.has(emp.id)).length;
+    const employeesWithResultsCount = roster.filter(emp => ipsState.qaLeaderboard && ipsState.qaLeaderboard.has(emp.id)).length;
     return `
       ${isAdmin() ? `
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin:0 0 14px;">
@@ -13278,7 +12862,7 @@ function renderIpsTables() {
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <p class="faint" style="font-size:11px; margin:12px 0 0;">QA% is calculated automatically: 100 − (3 × Major entries) − (1 × Minor entries) still counting against the employee. An entry stops counting only once the employee disputes it and an admin approves the dispute. ${qaEditor ? 'Click "manage" on any row to add, edit, or remove entries and review disputes.' : 'Click "view" on your row to review your own entries and file a dispute if needed.'}</p>
+      <p class="faint" style="font-size:11px; margin:12px 0 0;">QA %, Major, and Minor are pulled live from the QA leaderboard in the review system — this app no longer stores or manages individual QA entries.</p>
     `;
   }
 
@@ -13508,7 +13092,7 @@ function renderIpsTables() {
   const active = ipsState.tab;
   startIpsMdTaskRealtimeSync(); // safe to call repeatedly — internally guarded against duplicate subscriptions
   startIpsPeerReviewRealtimeSync();
-  startQaAccuracyRealtimeSync();
+  startQaLeaderboardRealtimeSync();
 
   const body =
     active === 'daily' ? buildDailySection() :
@@ -13592,15 +13176,14 @@ async function loadIpsPrevRanks() {
   const prevEnd = prevDates[prevDates.length - 1];
 
   try {
-    const [dailyRes, qaEntriesRes, settingsRes] = await Promise.all([
+    const [dailyRes, settingsRes, prevQaMap] = await Promise.all([
       sb.from('ips_daily_entries').select('employee_id, entry_date, lq_value, md_value, peer_review_value, po_excluded, errors').gte('entry_date', prevDates[0]).lte('entry_date', prevEnd),
-      sb.from('ips_qa_entries').select('employee_id, kind, dispute_status').eq('month', prevMonthIso),
       sb.from('ips_month_settings').select('working_days').eq('month', prevMonthIso).maybeSingle(),
+      fetchQaLeaderboardForPeriod(prevMonthIso.slice(0, 7)),
     ]);
     if (dailyRes.error) return;
 
     const daily = dailyRes.data || [];
-    const qaEntriesPrev = qaEntriesRes.error ? [] : (qaEntriesRes.data || []);
     const wd = settingsRes.data ? Number(settingsRes.data.working_days || 0) : 0;
 
     const totals = ipsRoster().map(emp => {
@@ -13614,13 +13197,11 @@ async function loadIpsPrevRanks() {
         return (t > 0 && target > 0) ? t / target : null;
       }).filter(r => r != null);
       const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
-      const myQaEntries = qaEntriesPrev.filter(e => e.employee_id === emp.id && e.dispute_status !== 'approved');
-      const majorCount = myQaEntries.filter(e => e.kind === 'major').length;
-      const minorCount = myQaEntries.filter(e => e.kind === 'minor').length;
-      const qa = Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
+      const qaRow = prevQaMap.get(emp.id);
+      const qa = qaRow && qaRow.score != null ? Math.max(0, qaRow.score) / 100 : 0;
       const errorsSum = mine.reduce((s, e) => s + (e.errors != null ? Number(e.errors) : 0), 0);
       const ec = wd ? (1 - (errorsSum / wd)) : 0;
-      return { id: emp.id, total: qa * 0.5 + po * 0.3 + ec * 0.2, hasData: !!(mine.length || qaEntriesPrev.some(e => e.employee_id === emp.id)) };
+      return { id: emp.id, total: qa * 0.5 + po * 0.3 + ec * 0.2, hasData: !!(mine.length || qaRow) };
     });
 
     const anyData = totals.some(t => t.hasData);
@@ -13649,27 +13230,27 @@ async function openIpsYearModal(employeeId) {
 
   openModal(`${emp.display_name} — ${year}`, '<div class="loading-row">Loading…</div>');
 
-  const [dailyRes, qaEntriesRes, settingsRes] = await Promise.all([
+  const monthIsosForYear = Array.from({ length: 12 }, (_, m) => `${year}-${String(m + 1).padStart(2, '0')}-01`);
+  const [dailyRes, settingsRes, monthlyQaMaps] = await Promise.all([
     sb.from('ips_daily_entries').select('*').eq('employee_id', employeeId).gte('entry_date', `${year}-01-01`).lte('entry_date', `${year}-12-31`),
-    sb.from('ips_qa_entries').select('*').eq('employee_id', employeeId).gte('month', `${year}-01-01`).lte('month', `${year}-12-01`),
     sb.from('ips_month_settings').select('*').gte('month', `${year}-01-01`).lte('month', `${year}-12-01`),
+    Promise.all(monthIsosForYear.map(mIso => fetchQaLeaderboardForPeriod(mIso.slice(0, 7)))),
   ]);
   if (dailyRes.error || settingsRes.error) {
     openModal(`${emp.display_name} — ${year}`, '<p class="muted">Could not load the year data.</p>');
     return;
   }
   const daily = dailyRes.data || [];
-  const qaEntriesYear = qaEntriesRes.error ? [] : (qaEntriesRes.data || []);
   const settings = settingsRes.data || [];
 
   const monthRows = [];
   for (let m = 0; m < 12; m++) {
-    const monthIso = `${year}-${String(m + 1).padStart(2, '0')}-01`;
+    const monthIso = monthIsosForYear[m];
     const dates = ipsDatesForMonth(monthIso);
     const dEntries = daily.filter(e => e.entry_date >= dates[0] && e.entry_date <= dates[dates.length - 1]);
-    const monthQaEntries = qaEntriesYear.filter(e => e.month === monthIso);
     const setting = settings.find(x => x.month === monthIso) || null;
-    const hasAny = dEntries.length || monthQaEntries.length;
+    const qaRow = monthlyQaMaps[m].get(employeeId);
+    const hasAny = dEntries.length || !!qaRow;
     if (!hasAny) { monthRows.push({ m, empty: true }); continue; }
 
     // Same formulas as the live tabs, scoped to this month's fetched rows
@@ -13699,10 +13280,7 @@ async function openIpsYearModal(employeeId) {
       return (t > 0 && target > 0) ? t / target : null;
     }).filter(r => r != null);
     const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
-    const effectiveEntries = monthQaEntries.filter(e => qaLiveDisputeStatusFor(e) !== 'approved');
-    const majorCount = effectiveEntries.filter(e => e.kind === 'major').length;
-    const minorCount = effectiveEntries.filter(e => e.kind === 'minor').length;
-    const qa = Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
+    const qa = qaRow && qaRow.score != null ? Math.max(0, qaRow.score) / 100 : 0;
     const wd = setting ? Number(setting.working_days || 0) : 0;
     const errorsSum = dEntries.reduce((s, e) => s + (e.errors != null ? Number(e.errors) : 0), 0);
     const ec = wd ? (1 - (errorsSum / wd)) : null;
@@ -13923,15 +13501,16 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
   const rangeStart = months[0];
   const rangeEndDate = isoDate(new Date(ey, em, 0));
 
-  const [dailyRes, qaEntriesRes, settingsRes] = await Promise.all([
+  const [dailyRes, settingsRes, qaMapsByMonth] = await Promise.all([
     sb.from('ips_daily_entries').select('*').gte('entry_date', rangeStart).lte('entry_date', rangeEndDate),
-    sb.from('ips_qa_entries').select('*').gte('month', rangeStart).lte('month', months[months.length - 1]),
     sb.from('ips_month_settings').select('*').gte('month', rangeStart).lte('month', months[months.length - 1]),
+    Promise.all(months.map(mIso => fetchQaLeaderboardForPeriod(mIso.slice(0, 7)))),
   ]);
   if (dailyRes.error) { showToast('Could not load the report data.', true); return; }
   const daily = dailyRes.data || [];
-  const qaEntriesAll = qaEntriesRes.error ? [] : (qaEntriesRes.data || []);
   const settings = settingsRes.data || [];
+  const qaMapByMonthIso = {};
+  months.forEach((mIso, i) => { qaMapByMonthIso[mIso] = qaMapsByMonth[i]; });
 
   const sections = [];
 
@@ -13940,9 +13519,9 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
     const dateHeaders = dates.map(d => formatMonthDay(d));
     const monthLabel = ipsMonthLabel(monthIso);
     const workingDays = (settings.find(s => s.month === monthIso) || {}).working_days || '';
+    const qaMap = qaMapByMonthIso[monthIso];
 
     const dailyFor = (empId, dateIso) => daily.find(e => e.employee_id === empId && e.entry_date === dateIso) || null;
-    const qaEntriesForMonth = (empId) => qaEntriesAll.filter(e => e.employee_id === empId && e.month === monthIso);
 
     const poRatioAvgFor = (empId) => {
       const ratios = dates.map(d => {
@@ -13956,12 +13535,7 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
     };
     const errorsSumFor = (empId) => dates.reduce((s, d) => { const e = dailyFor(empId, d); return s + (e && e.errors != null ? Number(e.errors) : 0); }, 0);
     const ecFor = (empId) => { const wd = Number(workingDays || 0); return wd ? (1 - (errorsSumFor(empId) / wd)) : null; };
-    const qaFor = (empId) => {
-      const effective = qaEntriesForMonth(empId).filter(e => qaLiveDisputeStatusFor(e) !== 'approved');
-      const majorCount = effective.filter(e => e.kind === 'major').length;
-      const minorCount = effective.filter(e => e.kind === 'minor').length;
-      return Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
-    };
+    const qaFor = (empId) => { const row = qaMap.get(empId); return row && row.score != null ? Math.max(0, row.score) / 100 : 0; };
 
     // ── Lead Qualification & Missing Data Task — ONE table, two rows
     //    per employee: an "LQ" row immediately followed by an "MD" row,
@@ -13989,16 +13563,11 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 
     const qaBlock = {
       label: 'QA Accuracy',
-      header: ['Agent', 'QA %', 'Major (effective)', 'Minor (effective)', 'Pending Disputes', 'Lead Names (Major/Minor)'],
+      header: ['Agent', 'QA %', 'Major', 'Minor'],
       rows: roster.map(emp => {
-        const entries = qaEntriesForMonth(emp.id);
-        const effective = entries.filter(e => qaLiveDisputeStatusFor(e) !== 'approved');
-        const majorCount = effective.filter(e => e.kind === 'major').length;
-        const minorCount = effective.filter(e => e.kind === 'minor').length;
-        const pendingDisputes = entries.filter(e => e.dispute_status === 'disputed').length;
-        const leadNames = entries.map(e => `${e.lead_name || '—'} (${e.kind})`).join(' | ');
-        const qaFrac = Math.max(0, 100 - majorCount * 3 - minorCount * 1) / 100;
-        return [emp.display_name, (qaFrac * 100).toFixed(2) + '%', majorCount, minorCount, pendingDisputes, leadNames];
+        const row = qaMap.get(emp.id);
+        const qaFrac = row && row.score != null ? Math.max(0, row.score) / 100 : null;
+        return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '—', row ? row.major : 0, row ? row.minor : 0];
       }),
     };
 
@@ -14036,53 +13605,34 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 //   - 'none' — employee never disputed (or conceded) it at all
 // Each entry shows a short status tag so pending-review items aren't
 // mistaken for already-decided ones. Multiple qualifying entries for
-// one employee are combined into a single cell, prefixed with a count.
 // QA Accuracy report: one row per employee, sorted by QA% descending
-// (highest first) rather than alphabetically. Major/Minor columns show
-// every entry that's STILL COUNTING against QA% — which must match
-// ipsQaEntryCounts()'s own rule EXACTLY, or the displayed reasons and
-// the displayed score can silently disagree (a bug that shipped
-// earlier: this report excluded 'conceded' entries from the cell text,
-// but the real formula still counts them — an employee with a conceded
-// entry showed a QA% below 100% with nothing in Major/Minor explaining
-// why). The only status that removes an entry from the count is
-// 'approved' — everything else (never disputed, pending review,
-// rejected, rejected-as-minor, AND conceded) still counts and must
-// still show here.
+// (highest first) rather than alphabetically. Major/Minor are the
+// plain counts pulled straight from the qa_leaderboard table — there's
+// no per-lead reason text to include anymore, since this app no longer
+// stores individual QA entries.
 function downloadIpsQaAccuracyReport() {
   const roster = ipsRoster();
   const monthLabel = ipsMonthLabel(ipsState.month);
 
   const rows = roster.map(emp => {
-    const qaFrac = ipsQaFraction(emp.id, ipsState.month);
-    const qa = qaFrac != null ? round2(qaFrac * 100) : 100; // no entries + no No-call-out still reports as 100% here, per the agreed rule for this specific report
-    const allEntries = ipsQaEntriesFor(emp.id, ipsState.month);
-    // Matches ipsQaEntryCounts()'s rule exactly: only 'approved' is excluded.
-    const stillCounting = (kind) => allEntries.filter(e => e.kind === kind && qaLiveDisputeStatusFor(e) !== 'approved');
-
-    const cellFor = (kind) => {
-      const entries = stillCounting(kind);
-      if (!entries.length) return '';
-      const reasons = entries.map(e => e.status_reason || '—').join(' | ');
-      return `(${entries.length}) ${reasons}`;
-    };
-
-    return { name: emp.display_name, qa, major: cellFor('major'), minor: cellFor('minor'), majorCount: stillCounting('major').length };
+    const qaFrac = ipsQaFraction(emp.id);
+    const qa = qaFrac != null ? round2(qaFrac * 100) : 100; // no leaderboard row still reports as 100% here, per the agreed rule for this specific report
+    const { major, minor } = ipsQaCounts(emp.id);
+    return { name: emp.display_name, qa, major, minor };
   });
 
   // Highest QA% first — ties keep roster order (stable sort)
   rows.sort((a, b) => b.qa - a.qa);
 
-  // Red font for the SCORE cell (column index 1): ANY Major error
+  // Red font for the SCORE cell (column index 1): ANY Major count
   // present makes it red regardless of the percentage itself — this
   // takes priority over everything else. With zero Majors, the score
   // follows the existing blue-if-95%+/red-if-94%-or-below threshold,
   // matching the exact same rule already used on the live QA Accuracy
   // tab. Keyed "rowIndex,colIndex" per openIpsTabbedReport's
-  // cellColors contract; only the percentage itself gets colored, not
-  // the Major/Minor reason text next to it.
+  // cellColors contract.
   const cellColors = new Map();
-  rows.forEach((r, i) => { if (r.majorCount > 0 || r.qa <= 94) cellColors.set(`${i},1`, '#C0392B'); });
+  rows.forEach((r, i) => { if (r.major > 0 || r.qa <= 94) cellColors.set(`${i},1`, '#C0392B'); });
 
   openIpsTabbedReport(monthLabel, [{
     title: 'QA Accuracy',
@@ -14145,14 +13695,11 @@ function downloadIpsReport() {
 
   sections.push({
     title: 'QA Accuracy',
-    header: ['Agent', 'QA %', 'Major (effective)', 'Minor (effective)', 'Pending Disputes', 'Lead Names (Major/Minor)'],
+    header: ['Agent', 'QA %', 'Major', 'Minor'],
     rows: roster.map(emp => {
-      const entries = ipsQaEntriesFor(emp.id, ipsState.month);
-      const { major, minor } = ipsQaEntryCounts(emp.id, ipsState.month);
-      const pendingDisputes = entries.filter(e => e.dispute_status === 'disputed').length;
-      const leadNames = entries.map(e => `${e.lead_name || '—'} (${e.kind})`).join(' | ');
-      const qaFrac = ipsQaFraction(emp.id, ipsState.month);
-      return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '', major, minor, pendingDisputes, leadNames];
+      const { major, minor } = ipsQaCounts(emp.id);
+      const qaFrac = ipsQaFraction(emp.id);
+      return [emp.display_name, qaFrac != null ? (qaFrac * 100).toFixed(2) + '%' : '', major, minor];
     }),
   });
 
@@ -14379,34 +13926,6 @@ function attachIpsHandlers() {
     });
   });
   document.getElementById('ips-save-working-days')?.addEventListener('click', saveIpsWorkingDays);
-  document.querySelectorAll('.ips-qa-manage-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const empId = btn.dataset.empId;
-      const isOwnRow = empId === state.profile.employee_id;
-      // Genuinely open to everyone now — any employee can click ANY
-      // row's Major/Minor numbers, not just their own (previously, a
-      // non-admin clicking someone else's row was blocked entirely).
-      // Clicking your OWN row's number still goes through
-      // openMyQaEntriesModal() exactly as before (correctly scoped to
-      // the current month, and clears the "dispute reviewed" alert
-      // badge). Clicking someone ELSE's opens openIpsQaManageModal(),
-      // which already computes admin permissions internally and
-      // correctly shows a read-only view (no Edit/Delete/Concede/
-      // Dispute) for anyone who isn't an admin/IPS/QA-role account.
-      // Either way, the specific kind clicked (major/minor) is passed
-      // through so the modal opens directly to that list — there's no
-      // tab switcher inside the modal to pick it after the fact.
-      const kind = btn.dataset.qaKind === 'minor' ? 'minor' : 'major';
-      if (isOwnRow) openMyQaEntriesModal(kind);
-      else openIpsQaManageModal(empId, kind);
-    });
-  });
-  document.querySelectorAll('.ips-dispute-badge').forEach(badge => {
-    badge.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (canManageIpsQa()) openIpsQaManageModal(badge.dataset.empId);
-    });
-  });
 }
 
 // Turns a Supabase error into an actionable toast for the IPS tables.
@@ -14740,592 +14259,6 @@ async function saveIpsWorkingDays() {
 
 const IPS_RECENT_ACTIVITY_OPTIONS = ['Recently Active', 'Active', 'Passive', 'Silent'];
 
-// Admin-facing entry management modal — lists every Major/Minor QA
-// entry for one employee this month, with add/edit/delete, and (if any
-// exist) a dispute-review section right in the same modal so admins
-// don't have to hunt for pending disputes separately from managing
-// entries. Also reachable for non-admins as read-only (canManageIps()
-// gates the actual write actions, not the modal itself, so IPS-role
-// viewers and the entry's own employee can still open it — though the
-// employee's own dispute flow lives in a separate, dedicated modal;
-// see openMyQaEntriesModal).
-function openIpsQaManageModal(employeeId, kind) {
-  const emp = state.employees.find(e => e.id === employeeId);
-  const admin = canManageIpsQa();
-  renderIpsQaManageModalBody(employeeId, emp, admin, kind);
-}
-
-function renderIpsQaManageModalBody(employeeId, emp, admin, kind) {
-  const entries = ipsQaEntriesFor(employeeId, ipsState.month);
-  // Three-tier sort applied within each Major/Minor group, so whatever
-  // needs the admin's attention floats to the top automatically:
-  //   1. 'disputed'              — pending review, needs a decision NOW
-  //   2. 'none'                  — no status/dispute yet, nothing to act on
-  //   3. 'conceded'/'approved'/'rejected' — fully resolved, settled, sinks
-  //      to the bottom regardless of which of the three it is.
-  // Ties within the same tier keep their original relative order
-  // (a stable sort) rather than being further reshuffled.
-  const disputeTier = (status) => status === 'disputed' ? 0 : (status === 'conceded' || status === 'approved' || status === 'rejected') ? 2 : 1;
-  const sortedEntries = [...entries].sort((a, b) => disputeTier(qaLiveDisputeStatusFor(a)) - disputeTier(qaLiveDisputeStatusFor(b)));
-  const majorEntries = sortedEntries.filter(e => e.kind === 'major');
-  const minorEntries = sortedEntries.filter(e => e.kind === 'minor');
-  const disputed = entries.filter(e => e.dispute_status === 'disputed');
-  const hasNoCallout = ipsQaHasNoCallout(employeeId, ipsState.month);
-  // Locked to whichever kind was actually clicked to open this modal —
-  // no tab switcher inside anymore, per the explicit requirement.
-  // Falls back to 'major' only if genuinely nothing was specified
-  // (e.g. some other, older call site that hasn't been updated).
-  const activeTab = kind === 'minor' ? 'minor' : 'major';
-  const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
-
-  function entryCard(e) {
-    const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
-    const wash = e.kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
-    const liveStatus = qaLiveDisputeStatusFor(e);
-    const statusBadge = {
-      none:      '',
-      conceded:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green-wash); color:var(--green);">✓ conceded</span>`,
-      disputed:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--coral); color:#fff;">⚠ disputed — pending review</span>`,
-      approved:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--green); color:#fff;">✓ dispute approved — removed from count</span>`,
-      rejected_as_minor: `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:#2D6A9F; color:#fff;">dispute rejected — downgraded to Minor</span>`,
-      rejected:  `<span style="font-size:9.5px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--ink-faint); color:#fff;">dispute rejected — still counts</span>`,
-    }[liveStatus] || '';
-    const excluded = liveStatus === 'approved'; // ONLY a full approval excludes it — rejected_as_minor still counts, just as Minor
-    const isEditable = !['conceded', 'approved', 'rejected_as_minor', 'rejected'].includes(e.dispute_status);
-    return `
-      <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:8px; ${excluded ? 'opacity:0.55;' : ''}">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
-          <div>
-            <span style="font-weight:700; font-size:12.5px; color:${accent};">${e.kind === 'major' ? 'Major' : 'Minor'}</span>
-            ${excluded ? '<span class="faint" style="font-size:10.5px; margin-left:6px;">(excluded from QA%)</span>' : ''}
-          </div>
-          ${statusBadge}
-        </div>
-        <div style="overflow-x:auto; margin-bottom:8px;">
-          <table style="border-collapse:collapse; width:100%; min-width:640px; background:#fff; border-radius:6px; overflow:hidden;">
-            <thead>
-              <tr style="background:var(--line-soft);">
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Lead Name</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Company</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Job Title</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Domain</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Country</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">LinkedIn URL</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td style="padding:7px 9px; font-size:12px; font-weight:600; white-space:nowrap;">${escapeHtml(e.lead_name || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.company || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.job_title || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.domain)}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.country || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.linkedin_url)}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
-        ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
-        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Employee's dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
-        ${(e.dispute_status === 'rejected' || e.dispute_status === 'rejected_as_minor') && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
-        ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
-        ${['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_review_evidence_urls?.length ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reviewer's images:</span>${renderDisputeEvidenceGallery(e.dispute_review_evidence_urls)}</div>` : ''}
-        <div style="display:flex; gap:6px; margin-top:8px; align-items:center; position:relative;">
-          ${admin && !isEditable ? `
-            <span class="faint" style="font-size:10.5px;">This entry has been resolved and can no longer be edited or deleted.</span>
-          ` : ''}
-          ${admin && isEditable ? `
-            <div style="margin-left:auto; position:relative; width:26px; height:24px; flex-shrink:0;">
-              <button type="button" class="ips-qa-entry-menu-toggle" data-id="${e.id}" title="More actions" style="
-                position:absolute; top:0; right:0; background:none; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer;
-                color:var(--ink-soft); font-size:13px; line-height:1;">⋮</button>
-              <div class="ips-qa-entry-menu" data-id="${e.id}" style="display:none; position:absolute; bottom:calc(100% - 4px); right:0; z-index:40; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:120px; overflow:hidden;">
-                <button type="button" class="ips-qa-edit-entry-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:8px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:var(--ink);">Edit</button>
-                <button type="button" class="ips-qa-delete-entry-btn" data-id="${e.id}" style="display:block; width:100%; text-align:left; padding:8px 12px; font-size:11.5px; background:none; border:none; cursor:pointer; color:var(--coral);">Delete</button>
-              </div>
-            </div>
-          ` : ''}
-        </div>
-      </div>
-    `;
-  }
-
-  const bodyHtml = `
-    ${disputed.length ? `<p class="muted" style="font-size:12px; margin:0 0 12px; color:var(--coral); font-weight:600;">⚠ ${disputed.length} pending dispute${disputed.length===1?'':'s'} below need${disputed.length===1?'s':''} a decision.</p>` : ''}
-    ${hasNoCallout ? `
-      <div style="padding:10px 14px; margin-bottom:14px; background:var(--green-wash); border-radius:8px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
-        <span style="font-size:12.5px; font-weight:600; color:var(--green);">✓ Reviewed — no Major or Minor issues found for ${ipsMonthLabel(ipsState.month)}. QA% is 100%.</span>
-        ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-clear-no-callout-btn" id="ips-qa-clear-no-callout-btn" style="font-size:10.5px; padding:3px 9px; flex-shrink:0;">Undo</button>` : ''}
-      </div>
-    ` : ''}
-    ${entries.length ? `
-      <div style="margin-bottom:14px; padding-bottom:8px; border-bottom:2px solid var(--line);">
-        <span style="font-size:12.5px; font-weight:700; color:${activeTab === 'major' ? 'var(--coral)' : 'var(--amber)'};">${activeTab === 'major' ? 'Major' : 'Minor'} (${activeEntries.length})</span>
-      </div>
-      ${activeEntries.length ? activeEntries.map(entryCard).join('') : `<p class="muted" style="font-size:13px; margin:0;">No ${activeTab === 'major' ? 'Major' : 'Minor'} entries for this month.</p>`}
-    ` : hasNoCallout ? '' : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for this month.</p>`}
-  `;
-
-  openModal(`QA entries — ${emp ? emp.display_name : ''}`, bodyHtml, { width: '900px' });
-  attachIpsQaManageModalHandlers(employeeId, emp, admin, activeTab);
-}
-
-// Closes every open "more actions" (⋮) menu on QA entry cards — kept
-// as a standalone named function (not an inline arrow) specifically so
-// attachIpsQaManageModalHandlers can remove-then-re-add it safely on
-// every render without leaking duplicate document-level listeners.
-function closeAllIpsQaEntryMenus() {
-  document.querySelectorAll('.ips-qa-entry-menu').forEach(m => { m.style.display = 'none'; });
-}
-
-function attachIpsQaManageModalHandlers(employeeId, emp, admin, kind) {
-  document.getElementById('ips-qa-clear-no-callout-btn')?.addEventListener('click', () => clearIpsQaNoCallout(employeeId, emp, kind));
-  document.querySelectorAll('.ips-qa-edit-entry-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const entry = ipsState.qaEntries.find(e => e.id === btn.dataset.id);
-      if (entry) openIpsQaEntryFormModal(employeeId, entry.kind, entry, kind);
-    });
-  });
-  document.querySelectorAll('.ips-qa-delete-entry-btn').forEach(btn => {
-    btn.addEventListener('click', () => deleteIpsQaEntry(btn.dataset.id, employeeId, emp, admin, kind));
-  });
-  // Three-dot "more actions" menu (Edit/Delete) — one toggle per entry.
-  // Opening one closes any other that's already open; clicking anywhere
-  // outside closes whichever is open.
-  document.querySelectorAll('.ips-qa-entry-menu-toggle').forEach(toggle => {
-    toggle.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const menu = document.querySelector(`.ips-qa-entry-menu[data-id="${toggle.dataset.id}"]`);
-      const isOpen = menu.style.display === 'block';
-      closeAllIpsQaEntryMenus();
-      menu.style.display = isOpen ? 'none' : 'block';
-    });
-  });
-  document.querySelectorAll('.ips-qa-entry-menu').forEach(menu => {
-    // Clicking an item inside the menu should close it too (Edit/Delete
-    // handlers above already do the actual work — this just tidies up)
-    menu.addEventListener('click', (e) => e.stopPropagation());
-  });
-  // Named + removed-before-re-added so this doesn't accumulate a new
-  // document-level listener every time the modal re-renders (which
-  // happens after every add/edit/delete/resolve action) — without
-  // this, each render would leak one more permanent listener.
-  document.removeEventListener('click', closeAllIpsQaEntryMenus);
-  document.addEventListener('click', closeAllIpsQaEntryMenus);
-}
-
-// Admin explicitly confirms "I reviewed this employee for this month
-// and found nothing" — creates a record so QA% shows a genuine 100%
-// instead of staying blank. Only offered when zero entries exist yet
-// (adding a real entry later should replace this state, not coexist
-// with it — see markIpsQaNoCallout's own guard and openIpsQaEntryFormModal's
-// cleanup of any existing no-callout record on save).
-async function markIpsQaNoCallout(employeeId, emp, kind) {
-  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can do this.', true); return; }
-  const { error } = await sb.from('ips_qa_no_callouts').insert({
-    employee_id: employeeId, month: ipsState.month, reviewed_by: state.profile.display_name,
-  });
-  if (error) {
-    console.error(error);
-    showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_qa_no_callouts_schema.sql in Supabase.' : 'Could not save.', true);
-    return;
-  }
-  showToast(`${emp ? emp.display_name : 'Employee'} marked reviewed — QA% is now 100%.`);
-  await loadIpsData();
-  renderIpsTables();
-  openIpsQaManageModal(employeeId, kind);
-}
-
-async function clearIpsQaNoCallout(employeeId, emp, kind) {
-  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can do this.', true); return; }
-  const { error } = await sb.from('ips_qa_no_callouts').delete().eq('employee_id', employeeId).eq('month', ipsState.month);
-  if (error) { showToast('Could not undo.', true); return; }
-  showToast('No call-out cleared — QA% is blank again until reviewed.');
-  await loadIpsData();
-  renderIpsTables();
-  openIpsQaManageModal(employeeId, kind);
-}
-
-// Add/Edit form for a single QA entry — all 8 admin-input fields.
-function openIpsQaEntryFormModal(employeeId, kind, existing, returnToTab) {
-  const emp = state.employees.find(e => e.id === employeeId);
-  const activityOptions = IPS_RECENT_ACTIVITY_OPTIONS.map(o => `<option value="${o}" ${existing?.recent_activity === o ? 'selected' : ''}>${o}</option>`).join('');
-  openModal(`${existing ? 'Edit' : 'Add'} ${kind === 'major' ? 'Major' : 'Minor'} entry — ${emp ? emp.display_name : ''}`, `
-    <form id="ips-qa-entry-form" style="display:flex; flex-direction:column; gap:12px;">
-      <div class="field">
-        <label for="ips-qa-lead-name">Lead Name</label>
-        <input type="text" id="ips-qa-lead-name" value="${escapeHtml(existing?.lead_name || '')}" required
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-      </div>
-      <div class="field" style="display:flex; gap:10px;">
-        <div style="flex:1;">
-          <label for="ips-qa-company">Company</label>
-          <input type="text" id="ips-qa-company" value="${escapeHtml(existing?.company || '')}"
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-        <div style="flex:1;">
-          <label for="ips-qa-job-title">Job Title</label>
-          <input type="text" id="ips-qa-job-title" value="${escapeHtml(existing?.job_title || '')}"
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-      </div>
-      <div class="field" style="display:flex; gap:10px;">
-        <div style="flex:1;">
-          <label for="ips-qa-domain">Domain</label>
-          <input type="text" id="ips-qa-domain" value="${escapeHtml(existing?.domain || '')}" placeholder="e.g. company.com"
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-        <div style="flex:1;">
-          <label for="ips-qa-country">Country</label>
-          <input type="text" id="ips-qa-country" value="${escapeHtml(existing?.country || '')}"
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-      </div>
-      <div class="field">
-        <label for="ips-qa-linkedin">LinkedIn URL</label>
-        <input type="text" id="ips-qa-linkedin" value="${escapeHtml(existing?.linkedin_url || '')}" placeholder="e.g. linkedin.com/in/username"
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-      </div>
-      <div class="field">
-        <label for="ips-qa-activity">Recent Activity</label>
-        <select id="ips-qa-activity" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-          <option value="">—</option>
-          ${activityOptions}
-        </select>
-      </div>
-      <div class="field">
-        <label for="ips-qa-status-reason">Status Reason</label>
-        <textarea id="ips-qa-status-reason" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(existing?.status_reason || '')}</textarea>
-      </div>
-      <div class="field">
-        <label for="ips-qa-reviewer-comment">Reviewer Comment</label>
-        <textarea id="ips-qa-reviewer-comment" rows="2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;">${escapeHtml(existing?.reviewer_comment || '')}</textarea>
-      </div>
-      <button type="submit" class="btn btn-primary" style="justify-content:center;">${existing ? 'Save changes' : 'Add entry'}</button>
-    </form>
-  `);
-
-  document.getElementById('ips-qa-entry-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const payload = {
-      employee_id: employeeId, month: ipsState.month, kind,
-      lead_name: document.getElementById('ips-qa-lead-name').value.trim() || null,
-      company: document.getElementById('ips-qa-company').value.trim() || null,
-      job_title: document.getElementById('ips-qa-job-title').value.trim() || null,
-      domain: document.getElementById('ips-qa-domain').value.trim() || null,
-      country: document.getElementById('ips-qa-country').value.trim() || null,
-      linkedin_url: document.getElementById('ips-qa-linkedin').value.trim() || null,
-      recent_activity: document.getElementById('ips-qa-activity').value || null,
-      status_reason: document.getElementById('ips-qa-status-reason').value.trim() || null,
-      reviewer_comment: document.getElementById('ips-qa-reviewer-comment').value.trim() || null,
-      updated_at: new Date().toISOString(),
-    };
-    if (!payload.lead_name) { showToast('Lead Name is required.', true); return; }
-
-    let error;
-    if (existing) {
-      ({ error } = await sb.from('ips_qa_entries').update(payload).eq('id', existing.id));
-    } else {
-      payload.created_by = state.profile.display_name;
-      payload.dispute_status = 'none';
-      ({ error } = await sb.from('ips_qa_entries').insert(payload));
-      // A real entry and a "No call-out" review can't both be true for
-      // the same employee/month — clear the no-callout record if one
-      // exists, since adding this entry means the month is no longer clean.
-      if (!error) {
-        await sb.from('ips_qa_no_callouts').delete().eq('employee_id', employeeId).eq('month', ipsState.month);
-      }
-    }
-    if (error) {
-      console.error(error);
-      showToast(/relation .* does not exist/i.test(error.message || '') ? 'Needs setup — run ips_qa_entries_schema.sql in Supabase.' : 'Could not save the entry.', true);
-      return;
-    }
-    showToast(existing ? 'Entry updated.' : 'Entry added — QA% recalculated.');
-    await loadIpsData();
-    renderIpsTables();
-    const emp = state.employees.find(x => x.id === employeeId);
-    openIpsQaManageModal(employeeId, returnToTab || kind); // reopen the manage list, correctly returning to whichever tab was being viewed
-  });
-}
-
-async function deleteIpsQaEntry(entryId, employeeId, emp, admin, kind) {
-  if (!canManageIpsQa()) { showToast('Only admins, IPS, and QA can delete entries.', true); return; }
-  const { data: current, error: fetchErr } = await sb.from('ips_qa_entries').select('dispute_status').eq('id', entryId).maybeSingle();
-  if (fetchErr || !current) { showToast('Could not verify this entry — please try again.', true); return; }
-  if (['conceded', 'approved', 'rejected'].includes(current.dispute_status)) {
-    showToast('This entry has been resolved and can no longer be deleted.', true);
-    await loadIpsData();
-    renderIpsTables();
-    openIpsQaManageModal(employeeId, kind);
-    return;
-  }
-  if (!confirm('Delete this entry? This permanently removes it and recalculates QA%. This cannot be undone.')) return;
-  const { error } = await sb.from('ips_qa_entries').delete().eq('id', entryId);
-  if (error) { showToast('Could not delete the entry.', true); return; }
-  showToast('Entry deleted — QA% recalculated.');
-  await loadIpsData();
-  renderIpsTables();
-  openIpsQaManageModal(employeeId, kind);
-}
-
-// =====================================================================
-// EMPLOYEE-FACING QA DISPUTE VIEW — "My QA Notes"
-// =====================================================================
-// Shows an employee every Major/Minor entry recorded against THEM,
-// across every month (not scoped to whichever month an admin's IPS tab
-// currently has selected — see loadMyQaEntries). For each entry that
-// hasn't been decided yet, the employee can Concede (accept it as-is,
-// no further action) or Dispute (requires a written explanation).
-async function openMyQaEntriesModal(kind) {
-  if (!state.profile || !state.profile.employee_id) return;
-  openModal('My QA Notes', '<div class="loading-row">Loading...</div>', { width: '900px' });
-  await loadMyQaEntries();
-  await markMyResolvedDisputesAsSeen();
-  renderMyQaEntriesModalBody(kind);
-}
-
-// Clears the "Your dispute was reviewed" My Alerts item the moment the
-// employee actually opens My QA Notes and can see the outcome —
-// updates the database (so it stays cleared across sessions/devices)
-// and patches the in-memory array immediately (so the alert badge
-// updates without waiting on a fresh fetch).
-async function markMyResolvedDisputesAsSeen() {
-  const myId = state.profile.employee_id;
-  const unseenIds = (ipsState.qaEntries || [])
-    .filter(e => e.employee_id === myId && ['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_seen_by_employee === false)
-    .map(e => e.id);
-  if (!unseenIds.length) return;
-  const { error } = await sb.from('ips_qa_entries').update({ dispute_seen_by_employee: true }).in('id', unseenIds);
-  if (error) {
-    // Non-fatal — if this column doesn't exist yet (migration not run),
-    // just skip silently rather than blocking the modal from opening.
-    if (!/dispute_seen_by_employee.* does not exist/i.test(error.message || '')) console.error(error);
-    return;
-  }
-  ipsState.qaEntries = ipsState.qaEntries.map(e => unseenIds.includes(e.id) ? { ...e, dispute_seen_by_employee: true } : e);
-  renderPersonalAlertsFromCache();
-}
-
-function renderMyQaEntriesModalBody(kind) {
-  const myId = state.profile.employee_id;
-  // Same 3-tier priority as the admin view: pending disputes first
-  // (need my attention least — wait, they need admin's attention, but
-  // I still want to see the status clearly), then no-status entries,
-  // then fully resolved ones sink to the bottom. Status priority wins
-  // over month/date, so an older month's still-pending dispute doesn't
-  // get buried under this month's already-resolved entries.
-  const disputeTier = (status) => status === 'disputed' ? 0 : (status === 'conceded' || status === 'approved' || status === 'rejected') ? 2 : 1;
-  const currentMonthIso = isoDate(new Date(new Date().getFullYear(), new Date().getMonth(), 1));
-  const mine = ipsState.qaEntries
-    .filter(e => e.employee_id === myId && e.month === currentMonthIso)
-    .sort((a, b) => disputeTier(qaLiveDisputeStatusFor(a)) - disputeTier(qaLiveDisputeStatusFor(b))
-      || (b.month || '').localeCompare(a.month || '')
-      || (a.created_at || '').localeCompare(b.created_at || ''));
-  const majorEntries = mine.filter(e => e.kind === 'major');
-  const minorEntries = mine.filter(e => e.kind === 'minor');
-  // Locked to whichever kind was actually clicked — no tab switcher
-  // inside anymore, per the explicit requirement.
-  const activeTab = kind === 'minor' ? 'minor' : 'major';
-  const activeEntries = activeTab === 'major' ? majorEntries : minorEntries;
-
-  function entryCard(e) {
-    const accent = e.kind === 'major' ? 'var(--coral)' : 'var(--amber)';
-    const wash = e.kind === 'major' ? 'var(--coral-wash)' : 'var(--amber-wash)';
-    const statusLine = {
-      none:      '',
-      conceded:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ You conceded this entry.</div>`,
-      disputed:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--coral);">⚠ Dispute submitted — waiting on admin/IPS review.</div>`,
-      approved:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--green);">✓ Your dispute was approved — this entry no longer counts against your QA%.</div>`,
-      rejected_as_minor: `<div style="margin-top:8px; font-size:11px; font-weight:600; color:#2D6A9F;">Your dispute was reviewed and rejected, but the entry was downgraded from Major to Minor — it now counts as −1 instead of −3.</div>`,
-      rejected:  `<div style="margin-top:8px; font-size:11px; font-weight:600; color:var(--ink-soft);">Your dispute was reviewed and rejected — this entry still counts.</div>`,
-    }[qaLiveDisputeStatusFor(e)] || '';
-    return `
-      <div style="padding:12px 14px; background:${wash}; border-left:3px solid ${accent}; border-radius:8px; margin-bottom:10px;">
-        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:8px;">
-          <span style="font-weight:700; font-size:12.5px; color:${accent};">${e.kind === 'major' ? 'Major' : 'Minor'}</span>
-          <span class="faint" style="font-size:11px;">${ipsMonthLabel(e.month)}</span>
-        </div>
-        <div style="overflow-x:auto; margin-bottom:8px;">
-          <table style="border-collapse:collapse; width:100%; min-width:640px; background:#fff; border-radius:6px; overflow:hidden;">
-            <thead>
-              <tr style="background:var(--line-soft);">
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Lead Name</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Company</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Job Title</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Domain</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Country</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">LinkedIn URL</th>
-                <th style="padding:6px 9px; text-align:left; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-faint); white-space:nowrap;">Recent Activity</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td style="padding:7px 9px; font-size:12px; font-weight:600; white-space:nowrap;">${escapeHtml(e.lead_name || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.company || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.job_title || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.domain)}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.country || '—')}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${renderUrlLink(e.linkedin_url)}</td>
-                <td style="padding:7px 9px; font-size:12px; white-space:nowrap;">${escapeHtml(e.recent_activity || '—')}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        ${e.status_reason ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Status Reason:</span> ${escapeHtml(e.status_reason)}</div>` : ''}
-        ${e.reviewer_comment ? `<div style="font-size:11.5px; margin-bottom:4px;"><span class="faint">Reviewer Comment:</span> ${escapeHtml(e.reviewer_comment)}</div>` : ''}
-        ${e.dispute_explanation ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Your dispute explanation:</span><br>${escapeHtml(e.dispute_explanation)}${renderDisputeEvidenceGallery(e.dispute_evidence_urls)}</div>` : ''}
-        ${(e.dispute_status === 'rejected' || e.dispute_status === 'rejected_as_minor') && e.dispute_reject_reason ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reason for rejection:</span><br>${escapeHtml(e.dispute_reject_reason)}</div>` : ''}
-        ${e.dispute_status === 'approved' && e.dispute_approve_note ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Note:</span><br>${escapeHtml(e.dispute_approve_note)}</div>` : ''}
-        ${['approved', 'rejected', 'rejected_as_minor'].includes(e.dispute_status) && e.dispute_review_evidence_urls?.length ? `<div style="font-size:11.5px; margin-top:6px; padding:8px 10px; background:#fff; border-radius:6px;"><span class="faint">Reviewer's images:</span>${renderDisputeEvidenceGallery(e.dispute_review_evidence_urls)}</div>` : ''}
-        ${statusLine}
-      </div>
-    `;
-  }
-
-  const bodyHtml = mine.length ? `
-    <div style="margin-bottom:14px; padding-bottom:8px; border-bottom:2px solid var(--line);">
-      <span style="font-size:12.5px; font-weight:700; color:${activeTab === 'major' ? 'var(--coral)' : 'var(--amber)'};">${activeTab === 'major' ? 'Major' : 'Minor'} (${activeEntries.length})</span>
-    </div>
-    ${activeEntries.length ? activeEntries.map(entryCard).join('') : `<p class="muted" style="font-size:13px; margin:0;">No ${activeTab === 'major' ? 'Major' : 'Minor'} entries recorded.</p>`}
-  ` : `<p class="muted" style="font-size:13px; margin:0;">No QA entries recorded for you yet.</p>`;
-
-  openModal('My QA Notes', bodyHtml, { width: '900px' });
-}
-
-async function concedeMyQaEntry(entryId) {
-  showToast('Conceding entries is no longer available.', true);
-}
-
-// Separate small modal for the mandatory dispute explanation, opened
-// from within "My QA Notes" — kept as its own step (rather than an
-// inline textarea) so the explanation can't be accidentally submitted
-// empty, and so the person has a clear moment to write their case.
-function openDisputeExplanationModal(entryId) {
-  const entry = ipsState.qaEntries.find(e => e.id === entryId);
-  if (!entry) return;
-  const isEdit = entry.dispute_status === 'disputed';
-  const existingUrls = isEdit ? (entry.dispute_evidence_urls || []) : [];
-  openModal(isEdit ? 'Edit your dispute' : 'Dispute this entry', `
-    <p class="muted" style="font-size:12.5px; margin:0 0 14px;">${isEdit
-      ? `You can still edit your explanation and images while this dispute is pending review.`
-      : `Explain why you believe this ${entry.kind === 'major' ? 'Major' : 'Minor'} entry for <strong>${escapeHtml(entry.lead_name || 'this lead')}</strong> is incorrect. This is required and will be reviewed by an admin/IPS.`}</p>
-    <form id="ips-qa-dispute-form" style="display:flex; flex-direction:column; gap:14px;">
-      <div class="field">
-        <label for="ips-qa-dispute-explanation">Dispute explanation</label>
-        <textarea id="ips-qa-dispute-explanation" rows="4" required
-          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; resize:vertical;"
-          placeholder="Explain why this entry should not count...">${escapeHtml(entry.dispute_explanation || '')}</textarea>
-      </div>
-      ${existingUrls.length ? `
-        <div class="field">
-          <label>Current images (click ✕ to remove)</label>
-          <div id="ips-qa-dispute-existing-images" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:6px;">
-            ${existingUrls.map((u, i) => `
-              <div class="ips-qa-existing-image-wrap" data-url="${escapeHtml(u)}" style="position:relative;">
-                <img src="${escapeHtml(u)}" style="width:56px; height:56px; object-fit:cover; border-radius:6px; border:1px solid var(--line);">
-                <button type="button" class="ips-qa-remove-existing-image-btn" data-url="${escapeHtml(u)}" title="Remove"
-                  style="position:absolute; top:-6px; right:-6px; width:18px; height:18px; border-radius:50%; background:var(--coral); color:#fff; border:2px solid #fff; font-size:11px; line-height:1; cursor:pointer; padding:0;">✕</button>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      ` : ''}
-      <div class="field">
-        <label for="ips-qa-dispute-images">${isEdit ? 'Add more screenshots (optional)' : 'Supporting screenshots (optional)'}</label>
-        <div id="ips-qa-dispute-images-dropzone" style="border:2px dashed var(--line); border-radius:8px; padding:10px; transition:border-color 0.12s, background 0.12s;">
-          <input type="file" id="ips-qa-dispute-images" accept="image/*" multiple
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-          <p class="faint" style="font-size:10.5px; margin:6px 0 0;">Or drag images here, or paste (Ctrl+V) a screenshot/Snipping Tool capture</p>
-        </div>
-        <div id="ips-qa-dispute-images-preview" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
-      </div>
-      <button type="submit" class="btn btn-primary" id="ips-qa-dispute-submit-btn" style="justify-content:center; background:var(--coral);">${isEdit ? 'Save changes' : 'Submit dispute'}</button>
-    </form>
-  `);
-  enableImageDropAndPaste('ips-qa-dispute-images-dropzone', 'ips-qa-dispute-images');
-
-  // Track which of the ORIGINAL images the person has removed in this
-  // editing session — kept separate from newly-selected files so the
-  // final save can compute (kept originals) + (newly uploaded) cleanly.
-  let removedUrls = new Set();
-  document.querySelectorAll('.ips-qa-remove-existing-image-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      removedUrls.add(btn.dataset.url);
-      btn.closest('.ips-qa-existing-image-wrap').remove();
-    });
-  });
-
-  document.getElementById('ips-qa-dispute-images').addEventListener('change', (e) => {
-    const preview = document.getElementById('ips-qa-dispute-images-preview');
-    preview.innerHTML = '';
-    Array.from(e.target.files).forEach(file => {
-      const url = URL.createObjectURL(file);
-      const thumb = document.createElement('img');
-      thumb.src = url;
-      thumb.style.cssText = 'width:56px; height:56px; object-fit:cover; border-radius:6px; border:1px solid var(--line);';
-      preview.appendChild(thumb);
-    });
-  });
-  document.getElementById('ips-qa-dispute-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const explanation = document.getElementById('ips-qa-dispute-explanation').value.trim();
-    if (!explanation) { showToast('A dispute explanation is required.', true); return; }
-    const files = Array.from(document.getElementById('ips-qa-dispute-images').files);
-    const submitBtn = document.getElementById('ips-qa-dispute-submit-btn');
-    submitBtn.disabled = true;
-    submitBtn.textContent = files.length ? 'Uploading images...' : (isEdit ? 'Saving...' : 'Submitting...');
-    if (isEdit) {
-      const keptUrls = existingUrls.filter(u => !removedUrls.has(u));
-      await updateQaDispute(entryId, explanation, files, keptUrls);
-    } else {
-      await submitQaDispute(entryId, explanation, files);
-    }
-  });
-}
-
-// Uploads each file to the qa-dispute-evidence Storage bucket under a
-// path scoped to this entry, so all evidence for one dispute stays
-// together. Returns the list of public URLs — any file that fails to
-// upload is skipped (with a toast) rather than blocking the whole
-// dispute submission, since the written explanation is the required
-// part and images are supplementary.
-async function uploadQaDisputeEvidence(entryId, files) {
-  const urls = [];
-  for (const file of files) {
-    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-    const path = `${entryId}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-    const { error: uploadErr } = await sb.storage.from('qa-dispute-evidence').upload(path, file, { upsert: false });
-    if (uploadErr) {
-      console.error('Evidence upload failed:', uploadErr);
-      showToast(/Bucket not found/i.test(uploadErr.message || '') ? 'Image upload needs setup — run qa_dispute_evidence_storage.sql in Supabase.' : `Could not upload ${file.name} — dispute will still be submitted without it.`, true);
-      continue;
-    }
-    const { data: pub } = sb.storage.from('qa-dispute-evidence').getPublicUrl(path);
-    if (pub?.publicUrl) urls.push(pub.publicUrl);
-  }
-  return urls;
-}
-
-async function submitQaDispute(entryId, explanation, files = []) {
-  showToast('Disputing entries is no longer available.', true);
-}
-
-// Saves edits to an ALREADY-SUBMITTED dispute (text and/or evidence
-// images) while it's still pending review. Re-checks dispute_status is
-// genuinely still 'disputed' right before writing — if an admin
-// approved/rejected it in the moments between the modal opening and
-// this save, the edit is refused rather than silently overwriting a
-// resolved decision. Does not push a new notification: the admin was
-// already notified once when the dispute was first filed, and this is
-// just a refinement of that same pending item.
-async function updateQaDispute(entryId, explanation, newFiles, keptUrls) {
-  showToast('Editing disputes is no longer available.', true);
-}
-
 // =====================================================================
 // PERSONAL ALERTS BUBBLE — one per employee, shows only items relevant
 // to THEM: leave/cancellation approval decisions, missing IPS Lead
@@ -15409,30 +14342,6 @@ function myPersonalAlertItems() {
     });
   }
 
-  // 3. QA% uploaded for the month — fires ONCE per employee per month,
-  // the first time they have ANY QA data at all for that month (a real
-  // Major/Minor entry, OR a "No call-out" clean-review record) —
-  // whichever arrives first. Deliberately does NOT repeat if more
-  // entries get added later in the same month; "seen" tracking below
-  // (the same localStorage mechanism every other alert already uses)
-  // is what prevents it firing again once acknowledged, and the
-  // sortKey is pinned to the FIRST piece of data that ever arrived
-  // that month, so a later entry doesn't bump it back into view.
-  const myEntriesThisMonth = (ipsState.qaEntries || []).filter(e => e.employee_id === myId && e.month === ipsState.month);
-  const myNoCalloutThisMonth = (ipsState.qaNoCallouts || []).find(n => n.employee_id === myId && n.month === ipsState.month);
-  if (myEntriesThisMonth.length || myNoCalloutThisMonth) {
-    const earliestEntryAt = myEntriesThisMonth.reduce((m, e) => (!m || (e.created_at || '') < m) ? e.created_at : m, null);
-    const noCalloutAt = myNoCalloutThisMonth ? myNoCalloutThisMonth.created_at : null;
-    // Whichever came first is what "uploaded" genuinely means for this
-    // employee this month — a real entry or being marked clean.
-    const uploadedAt = [earliestEntryAt, noCalloutAt].filter(Boolean).sort()[0] || isoDate(new Date());
-    items.push({
-      icon: '📊', label: 'Your QA % for the month has been uploaded',
-      detail: ipsMonthLabel(ipsState.month),
-      sortKey: uploadedAt,
-    });
-  }
-
   let seen = '';
   try { seen = localStorage.getItem(personalAlertsLastSeenKey()) || ''; } catch {}
   const visibleItems = seen ? items.filter(it => (it.sortKey || '') > seen) : items;
@@ -15477,34 +14386,12 @@ async function ensureIpsDataForPersonalAlerts() {
   paIpsDataLoadingPromise = (async () => {
     const [y, m] = month.split('-').map(Number);
     const monthEnd = isoDate(new Date(y, m, 0));
-    const isQaReviewer = ['Kristina Mutia', 'Jeinna Louise Perez'].includes(state.profile.display_name);
-    const [dailyRes] = await Promise.all([
-      sb
-        .from('ips_daily_entries')
-        .select('employee_id, entry_date, lq_value, md_value, peer_review_value, po_excluded, other_task')
-        .eq('employee_id', state.profile.employee_id)
-        .gte('entry_date', month)
-        .lte('entry_date', monthEnd),
-      // Runs alongside the daily-entries fetch so this doesn't add any
-      // extra wait time — populates ipsState.qaEntries with this
-      // employee's own entries across every month, needed for the
-      // "QA entries need your response" alert item.
-      loadMyQaEntries(),
-      // Reviewers ALSO need every pending dispute across every
-      // employee, not just their own entries — this is the cold-start
-      // counterpart to the always-on realtime subscription in
-      // startNavBadgePolling, covering disputes that already existed
-      // before this session's subscription connected.
-      isQaReviewer
-        ? sb.from('ips_qa_entries').select('*').eq('dispute_status', 'disputed').then(({ data: disputedRows, error: disputedErr }) => {
-            if (disputedErr) { console.error('Could not load pending QA disputes for reviewer:', disputedErr); return; }
-            const existingIds = new Set(ipsState.qaEntries.map(e => e.id));
-            const newOnes = (disputedRows || []).filter(e => !existingIds.has(e.id));
-            ipsState.qaEntries = [...ipsState.qaEntries, ...newOnes];
-          })
-        : Promise.resolve(),
-    ]);
-    const { data, error } = dailyRes;
+    const { data, error } = await sb
+      .from('ips_daily_entries')
+      .select('employee_id, entry_date, lq_value, md_value, peer_review_value, po_excluded, other_task')
+      .eq('employee_id', state.profile.employee_id)
+      .gte('entry_date', month)
+      .lte('entry_date', monthEnd);
     if (error) { console.error('Personal alerts IPS check failed:', error); return; }
 
     // Merge into ipsState.dailyEntries rather than replacing it — if the
@@ -15576,29 +14463,20 @@ function renderPersonalAlertsFromCache() {
   } else {
     badge.style.display = 'none';
   }
-  const alertActions = {
-    'Your QA % for the month has been uploaded': 'open-qa-notes',
-  };
-  list.innerHTML = items.length ? items.map(item => {
-    const action = alertActions[item.label] || '';
-    return `
-    <div class="pa-alert-item" data-action="${action}" style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start; ${action ? 'cursor:pointer;' : ''}">
+  list.innerHTML = items.length ? items.map(item => `
+    <div class="pa-alert-item" style="padding:10px 14px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start;">
       <span style="font-size:16px; flex-shrink:0; margin-top:1px;">${item.icon}</span>
       <div style="flex:1; min-width:0;">
         <div style="font-size:12.5px; font-weight:600; color:var(--ink);">${escapeHtml(item.label)}</div>
         <div class="faint" style="font-size:11.5px; margin-top:2px;">${escapeHtml(item.detail)}</div>
       </div>
     </div>
-  `;
-  }).join('') : `
+  `).join('') : `
     <div style="padding:32px 16px; text-align:center; color:var(--ink-faint);">
       <div style="font-size:28px; margin-bottom:8px;">🔔</div>
       <div style="font-size:13px;">Nothing to flag right now.</div>
     </div>
   `;
-  list.querySelectorAll('.pa-alert-item[data-action="open-qa-notes"]').forEach(el => {
-    el.addEventListener('click', () => openMyQaEntriesModal());
-  });
 }
 
 // TASK MANAGER — restricted to Kristina Mutia and Jeinna Louise Perez
