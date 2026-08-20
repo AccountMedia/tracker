@@ -1767,7 +1767,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-20-lq-playbook-exact-top-domain';
+const APP_VERSION = '2026-08-20-qa-accuracy-dedupe-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12258,6 +12258,16 @@ async function syncQaAccuracyFromReviewRecords() {
     const toBackfill = []; // [{ id, patch }] — only genuinely-missing display fields (lead_name/linkedin_url/recent_activity), NEVER dispute fields — those are looked up live now, not stored
     const toMarkNoCallout = [];
     const freshDisputeLookup = new Map(); // rebuilt from scratch on every run — the new live source of truth for dispute status, replacing the old "write it to the database and hope the sync caught every row" approach
+    // Tracks identity keys (employee_id + lead identity) already staged
+    // for insertion WITHIN THIS RUN — existingEntries only reflects rows
+    // already in the database at the START of this run, so without this,
+    // several review_records rows for the SAME lead (re-reviews,
+    // duplicate batches, etc.) would each independently fail to find a
+    // match in existingEntries and each get queued as its own insert,
+    // producing exact duplicate ips_qa_entries rows. This is the actual
+    // confirmed cause of employees showing the same Major/Minor entry
+    // repeated 2-3 times.
+    const stagedForInsertThisRun = new Set();
 
     byReviewer.forEach((rows, firstNameKey) => {
       const emp = state.employees.find(e => e.display_name.split(/\s+/)[0].toLowerCase() === firstNameKey);
@@ -12300,6 +12310,15 @@ async function syncQaAccuracyFromReviewRecords() {
           return normalizeText(e.company) === normalizedCompany && normalizeText(e.job_title) === normalizedJobTitle;
         });
 
+        // Same identity check as existingMatch above, but against rows
+        // already queued for insertion by AN EARLIER row in this very
+        // loop (see stagedForInsertThisRun's declaration for why this
+        // is required) — a second or third review_records row for the
+        // identical lead is treated as already covered rather than
+        // queued again.
+        const runDedupeKey = `${emp.id}|${normalizedLeadName || `${normalizedCompany}::${normalizedJobTitle}`}`;
+        if (stagedForInsertThisRun.has(runDedupeKey)) return;
+
         // Record this row's LIVE dispute outcome in the fresh lookup,
         // keyed by employee+identity — used regardless of whether this
         // is a new or existing entry, since ipsQaEntryCounts() will
@@ -12317,6 +12336,7 @@ async function syncQaAccuracyFromReviewRecords() {
           return;
         }
 
+        stagedForInsertThisRun.add(runDedupeKey);
         toInsert.push({
           employee_id: emp.id,
           month: monthIso,
