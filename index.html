@@ -1767,7 +1767,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-20-qa-accuracy-dedupe-fix';
+const APP_VERSION = '2026-08-20-qa-remove-manual-entry-buttons';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -14861,13 +14861,6 @@ function renderIpsQaManageModalBody(employeeId, emp, admin, kind) {
         ${admin ? `<button class="btn btn-ghost btn-sm ips-qa-clear-no-callout-btn" id="ips-qa-clear-no-callout-btn" style="font-size:10.5px; padding:3px 9px; flex-shrink:0;">Undo</button>` : ''}
       </div>
     ` : ''}
-    ${admin ? `
-      <div style="display:flex; gap:8px; margin-bottom:14px;">
-        <button class="btn btn-primary btn-sm" id="ips-qa-add-major-btn" style="flex:1; justify-content:center; font-size:12px;">+ Add Major entry</button>
-        <button class="btn btn-primary btn-sm" id="ips-qa-add-minor-btn" style="flex:1; justify-content:center; font-size:12px; background:var(--amber);">+ Add Minor entry</button>
-        ${!hasNoCallout && !entries.length ? `<button class="btn btn-ghost btn-sm" id="ips-qa-no-callout-btn" style="flex:1; justify-content:center; font-size:12px;">No call-out</button>` : ''}
-      </div>
-    ` : ''}
     ${entries.length ? `
       <div style="margin-bottom:14px; padding-bottom:8px; border-bottom:2px solid var(--line);">
         <span style="font-size:12.5px; font-weight:700; color:${activeTab === 'major' ? 'var(--coral)' : 'var(--amber)'};">${activeTab === 'major' ? 'Major' : 'Minor'} (${activeEntries.length})</span>
@@ -14889,9 +14882,6 @@ function closeAllIpsQaEntryMenus() {
 }
 
 function attachIpsQaManageModalHandlers(employeeId, emp, admin, kind) {
-  document.getElementById('ips-qa-add-major-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'major', null, kind));
-  document.getElementById('ips-qa-add-minor-btn')?.addEventListener('click', () => openIpsQaEntryFormModal(employeeId, 'minor', null, kind));
-  document.getElementById('ips-qa-no-callout-btn')?.addEventListener('click', () => markIpsQaNoCallout(employeeId, emp, kind));
   document.getElementById('ips-qa-clear-no-callout-btn')?.addEventListener('click', () => clearIpsQaNoCallout(employeeId, emp, kind));
   document.querySelectorAll('.ips-qa-edit-entry-btn').forEach(btn => {
     btn.addEventListener('click', () => {
