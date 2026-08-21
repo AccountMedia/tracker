@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-20-qa-remove-download-report';
+const APP_VERSION = '2026-08-21-po-ratio-include-peer-review';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12238,7 +12238,21 @@ function ipsPoRatioAverage(employeeId, dates) {
     if (e && e.other_task) return null; // assigned a special/other task that day — no target to measure against
     const lq = e && e.lq_value != null ? Number(e.lq_value) : 0;
     const md = e && e.md_value != null ? Number(e.md_value) : 0;
-    const total = lq + md;
+    const peerReview = e && e.peer_review_value != null ? Number(e.peer_review_value) : 0;
+    // FIX (bump: ips-po-include-peer-review): Peer Review was missing
+    // from this total entirely — this is the ONE function that feeds
+    // the live PO & EC Score tab, the Monthly Score leaderboard, and
+    // ipsMonthlyScore()'s Total%, so leaving it out here (while the
+    // Daily Entry tab's own per-day ratio, and the year-view/report
+    // code, all correctly included it) made the live leaderboard
+    // silently disagree with every other view of the same data —
+    // confirmed via a real employee whose leaderboard Total% (94.26%)
+    // didn't match their own year-view figure for the same month
+    // (93.61%). Beyond just the missing addition, excluding Peer
+    // Review here also changed which days even qualified for the
+    // average: a day with LQ+MD=0 but real Peer Review work used to
+    // be thrown out entirely (total <= 0), rather than counted.
+    const total = lq + md + peerReview;
     if (total <= 0) return null;
     const target = ipsDayTarget(employeeId, d); // shrinks for partial-day leave (VLH, hourly VL/SL/EL, etc.); zero for other-task days
     if (target <= 0) return null; // full day on leave, or other task — nothing to measure
