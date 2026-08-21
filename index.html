@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-21-po-ratio-include-peer-review';
+const APP_VERSION = '2026-08-21-po-missed-lq-day-penalized';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12233,29 +12233,36 @@ function ipsDayTarget(employeeId, dateIso) {
 
 function ipsPoRatioAverage(employeeId, dates) {
   const ratios = dates.map(d => {
+    const kind = ipsDayKind(d); // 'past' | 'today' | 'future'
+    if (kind === 'future') return null; // hasn't happened yet — nothing to measure
     const e = ipsDailyFor(employeeId, d);
     if (e && e.po_excluded) return null; // counted in MD/LQ totals, but NOT the PO average (mirrors the spreadsheet)
     if (e && e.other_task) return null; // assigned a special/other task that day — no target to measure against
-    const lq = e && e.lq_value != null ? Number(e.lq_value) : 0;
+    const target = ipsDayTarget(employeeId, d); // shrinks for partial-day leave (VLH, hourly VL/SL/EL, etc.); zero for full-day leave or other-task days
+    if (target <= 0) return null; // full day on leave, or other task — nothing to measure
+
+    const lqLogged = !!(e && e.lq_value != null);
+    // TODAY, with LQ not yet logged, is still excluded — not penalized.
+    // Peer Review and MD both auto-sync live from the external review
+    // system at any point in the day, completely independent of when
+    // the employee actually gets around to typing in their own LQ
+    // number (typically near end of shift). A same-day row with
+    // Peer Review already synced but LQ still blank isn't a missed
+    // day — it just isn't due yet. Confirmed against real data: an
+    // employee's "today" row showed Peer Review=200 with LQ still
+    // null mid-day, and counting it produced a real, unfair drop.
+    if (kind === 'today' && !lqLogged) return null;
+
+    // Once the day is genuinely OVER ('past'), a missing LQ no longer
+    // gets a free pass — it counts as a real, low ratio (built from
+    // whatever WAS actually logged, which may be nothing at all) so
+    // the "Missing Lead Qualification output" banner elsewhere in the
+    // app actually has teeth: skipping a day's entry now measurably
+    // hurts the score instead of that day just quietly not counting.
+    const lq = lqLogged ? Number(e.lq_value) : 0;
     const md = e && e.md_value != null ? Number(e.md_value) : 0;
     const peerReview = e && e.peer_review_value != null ? Number(e.peer_review_value) : 0;
-    // FIX (bump: ips-po-include-peer-review): Peer Review was missing
-    // from this total entirely — this is the ONE function that feeds
-    // the live PO & EC Score tab, the Monthly Score leaderboard, and
-    // ipsMonthlyScore()'s Total%, so leaving it out here (while the
-    // Daily Entry tab's own per-day ratio, and the year-view/report
-    // code, all correctly included it) made the live leaderboard
-    // silently disagree with every other view of the same data —
-    // confirmed via a real employee whose leaderboard Total% (94.26%)
-    // didn't match their own year-view figure for the same month
-    // (93.61%). Beyond just the missing addition, excluding Peer
-    // Review here also changed which days even qualified for the
-    // average: a day with LQ+MD=0 but real Peer Review work used to
-    // be thrown out entirely (total <= 0), rather than counted.
     const total = lq + md + peerReview;
-    if (total <= 0) return null;
-    const target = ipsDayTarget(employeeId, d); // shrinks for partial-day leave (VLH, hourly VL/SL/EL, etc.); zero for other-task days
-    if (target <= 0) return null; // full day on leave, or other task — nothing to measure
     return total / target;
   }).filter(r => r != null);
   if (!ratios.length) return 0;
@@ -13318,11 +13325,19 @@ async function openIpsYearModal(employeeId) {
       return Math.round((workedHours / 8) * 800);
     };
     const ratios = dates.map(d => {
+      const kind = ipsDayKind(d);
+      if (kind === 'future') return null;
       const e = byDate[d];
-      if (!e || e.po_excluded || e.other_task) return null;
-      const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0) + (e.peer_review_value != null ? Number(e.peer_review_value) : 0);
+      if (e && e.po_excluded) return null;
+      if (e && e.other_task) return null;
       const target = dayTargetForYear(d);
-      return (t > 0 && target > 0) ? t / target : null;
+      if (target <= 0) return null;
+      const lqLogged = !!(e && e.lq_value != null);
+      if (kind === 'today' && !lqLogged) return null; // still in progress — see ipsPoRatioAverage's identical fix
+      const lq = lqLogged ? Number(e.lq_value) : 0;
+      const md = e && e.md_value != null ? Number(e.md_value) : 0;
+      const peerReview = e && e.peer_review_value != null ? Number(e.peer_review_value) : 0;
+      return (lq + md + peerReview) / target;
     }).filter(r => r != null);
     const po = ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
     const qa = qaRow && qaRow.score != null ? Math.max(0, qaRow.score) / 100 : 0;
@@ -13570,11 +13585,19 @@ async function downloadIpsMultiMonthReport(startMonth, endMonth) {
 
     const poRatioAvgFor = (empId) => {
       const ratios = dates.map(d => {
+        const kind = ipsDayKind(d);
+        if (kind === 'future') return null;
         const e = dailyFor(empId, d);
-        if (!e || e.po_excluded || e.other_task) return null;
-        const t = (e.lq_value != null ? Number(e.lq_value) : 0) + (e.md_value != null ? Number(e.md_value) : 0) + (e.peer_review_value != null ? Number(e.peer_review_value) : 0);
+        if (e && e.po_excluded) return null;
+        if (e && e.other_task) return null;
         const target = ipsDayTarget(empId, d);
-        return (t > 0 && target > 0) ? t / target : null;
+        if (target <= 0) return null;
+        const lqLogged = !!(e && e.lq_value != null);
+        if (kind === 'today' && !lqLogged) return null; // still in progress — see ipsPoRatioAverage's identical fix
+        const lq = lqLogged ? Number(e.lq_value) : 0;
+        const md = e && e.md_value != null ? Number(e.md_value) : 0;
+        const peerReview = e && e.peer_review_value != null ? Number(e.peer_review_value) : 0;
+        return (lq + md + peerReview) / target;
       }).filter(r => r != null);
       return ratios.length ? ratios.reduce((s, r) => s + r, 0) / ratios.length : 0;
     };
