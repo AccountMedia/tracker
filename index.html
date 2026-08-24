@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-21-po-missed-lq-day-penalized';
+const APP_VERSION = '2026-08-21-change-type-hours-option';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3201,6 +3201,7 @@ function renderMyRequestsPanel() {
             const hrs = g.days[0].hours;
             const today = isoDate(new Date());
             const canEditDates = canEditDatesForGroup(g, today);
+            const canChangeType = canChangeMyLeaveType(g);
             return `
             <div style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
               <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
@@ -3209,6 +3210,7 @@ function renderMyRequestsPanel() {
                   ${g.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(g.note)}</div>` : ''}
                   ${g.days[0].approved_by ? `<div class="faint" style="font-size:11px; margin-top:2px;">Approved by ${escapeHtml(g.days[0].approved_by)}</div>` : ''}
                   ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
+                  ${canChangeType ? `<span class="change-my-leave-type-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px; margin-left:${canEditDates ? '10px' : '0'};">Change type</span>` : ''}
                 </div>
                 <span class="stamp ${status === STATUS.PENDING ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
               </div>
@@ -3232,6 +3234,18 @@ function renderMyRequestsPanel() {
       }
     </style>
   `;
+}
+
+// Whether an employee can request a leave-TYPE change for their own
+// group of leave days. Only offered for already-APPROVED requests (a
+// still-pending request can simply be withdrawn and resubmitted
+// correctly instead), and never for the auto-generated company-wide
+// holiday block, which is fixed company policy rather than a personal
+// request — matches the same exclusion already used for admin's own
+// instant Change Type link and for canEditDatesForGroup above.
+function canChangeMyLeaveType(group) {
+  if (group.days[0].requested_by === SYSTEM_HOLIDAY_MARKER) return false;
+  return group.days[0].status === STATUS.APPROVED;
 }
 
 // Whether a multi-day group's dates can be edited at all. The
@@ -3273,6 +3287,9 @@ function attachMyRequestsHandlers() {
   });
   document.querySelectorAll('.edit-dates-link').forEach(b => {
     b.addEventListener('click', () => openEditDatesModal(b.dataset.id));
+  });
+  document.querySelectorAll('.change-my-leave-type-link').forEach(b => {
+    b.addEventListener('click', () => openMyChangeLeaveTypeModal(b.dataset.id));
   });
 }
 
@@ -4408,6 +4425,7 @@ function openDayPanel(dateIso) {
         ${e.approved_by ? `<div class="faint" style="font-size:11px; margin-top:2px;">Approved by ${escapeHtml(e.approved_by)}</div>` : ''}
         ${canEditDates ? `<span class="edit-dates-link" data-id="${e.id}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px;">Edit dates</span>` : ''}
         ${admin && e.status === STATUS.APPROVED && e.requested_by !== SYSTEM_HOLIDAY_MARKER ? `<span class="change-leave-type-link" data-id="${e.id}" data-current-type="${e.leave_type}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px; margin-left:${canEditDates ? '10px' : '0'};">Change type</span>` : ''}
+        ${!admin && isOwner && e.status === STATUS.APPROVED && e.requested_by !== SYSTEM_HOLIDAY_MARKER ? `<span class="change-my-leave-type-link" data-id="${e.id}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:3px; margin-left:${canEditDates ? '10px' : '0'};">Change type</span>` : ''}
       </div>
       <span class="faint" style="font-size:11px;">${formatStatusLabel(e.status)}</span>
       ${admin && e.leave_date < today ? `<span class="force-delete-btn" data-id="${e.id}" title="Delete this entry" style="cursor:pointer; color:var(--ink-faint); font-size:13px; margin-left:6px; padding:0 4px; line-height:1;">×</span>` : ''}
@@ -4443,6 +4461,9 @@ function openDayPanel(dateIso) {
   });
   document.querySelectorAll('.edit-dates-link').forEach(b => {
     b.addEventListener('click', () => openEditDatesModal(b.dataset.id));
+  });
+  document.querySelectorAll('.change-my-leave-type-link').forEach(b => {
+    b.addEventListener('click', () => openMyChangeLeaveTypeModal(b.dataset.id));
   });
   document.querySelectorAll('.change-leave-type-link').forEach(b => {
     b.addEventListener('click', () => openChangeLeaveTypeModal(b.dataset.id, b.dataset.currentType));
@@ -4568,17 +4589,28 @@ function openChangeLeaveTypeModal(entryId, currentType) {
     .map(t => `<option value="${t}" ${t === currentType ? 'selected' : ''}>${LEAVE_TYPES[t].label} (${t})</option>`)
     .join('');
 
+  const hasHours = entry.hours != null && entry.hours !== '';
+
   openModal('Change Leave Type', `
     <form id="change-leave-type-form" style="display:flex; flex-direction:column; gap:14px;">
       <p class="muted" style="font-size:12.5px; margin:0;">
         ${employeeName(entry.employee_id)} — ${formatPrettyDate(entry.leave_date)}<br>
-        Currently: <strong>${LEAVE_TYPES[currentType] ? LEAVE_TYPES[currentType].label : currentType}</strong>
+        Currently: <strong>${LEAVE_TYPES[currentType] ? LEAVE_TYPES[currentType].label : currentType}${hasHours ? ` (${entry.hours}h)` : ''}</strong>
       </p>
       <div class="field">
         <label for="change-leave-type-select">New leave type</label>
         <select id="change-leave-type-select" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
           ${typeOptions}
         </select>
+      </div>
+      <div class="field" style="display:flex; align-items:center; gap:8px; margin-top:-2px;">
+        <input type="checkbox" id="change-leave-type-use-hours" ${hasHours ? 'checked' : ''} style="width:16px; height:16px; margin:0;">
+        <label for="change-leave-type-use-hours" style="margin:0; font-size:12.5px; font-weight:500; color:var(--ink-soft); cursor:pointer;">Use specific hours instead of a full or half day</label>
+      </div>
+      <div class="field" id="change-leave-type-hours-field" style="display:${hasHours ? 'block' : 'none'};">
+        <label for="change-leave-type-hours">Number of hours <span class="faint">(based on an 8-hour day)</span></label>
+        <input type="number" id="change-leave-type-hours" min="0.5" max="8" step="0.5" value="${hasHours ? entry.hours : ''}" placeholder="e.g. 2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+        <p class="faint" style="font-size:11px; margin:6px 0 0;">For a half day (4h), use the "(Half)" leave type instead; for a full day (8h), use the regular leave type.</p>
       </div>
       <p class="muted" style="font-size:11.5px; margin:0;">
         This directly changes the leave type on this entry — the original type's credit is freed up and the new type's credit is used instead. No balance check is performed; use this only when you're intentionally correcting or overriding the type.
@@ -4587,22 +4619,183 @@ function openChangeLeaveTypeModal(entryId, currentType) {
     </form>
   `);
 
+  const useHoursCheckbox = document.getElementById('change-leave-type-use-hours');
+  const hoursField = document.getElementById('change-leave-type-hours-field');
+  useHoursCheckbox.addEventListener('change', () => {
+    hoursField.style.display = useHoursCheckbox.checked ? 'block' : 'none';
+  });
+
   document.getElementById('change-leave-type-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const newType = document.getElementById('change-leave-type-select').value;
-    if (newType === currentType) { closeModal(); return; }
+    let newType = document.getElementById('change-leave-type-select').value;
+    const useHours = useHoursCheckbox.checked;
+    const fields = { leave_type: newType };
 
-    const { error } = await sb.from('leave_entries').update({ leave_type: newType }).eq('id', entryId);
+    if (useHours) {
+      const hours = parseFloat(document.getElementById('change-leave-type-hours').value);
+      if (isNaN(hours) || hours <= 0 || hours > 8) {
+        showToast('Enter a number of hours between 0.5 and 8.', true);
+        return;
+      }
+      if (hours === 4) {
+        showToast('4 hours is a half day — untick the hours option and pick the "(Half)" leave type from the dropdown instead.', true);
+        return;
+      }
+      if (hours === 8) {
+        showToast('8 hours is a full day — untick the hours option and use the regular full-day leave type instead.', true);
+        return;
+      }
+      // Hours fully describe the duration, so the half-day distinction is
+      // irrelevant here — normalize VLH/SLH/ELH down to their base type.
+      newType = newType.replace(/H$/, '');
+      fields.leave_type = newType;
+      fields.hours = hours;
+    } else {
+      // Explicitly clear hours so switching AWAY from an hourly entry
+      // (back to a plain full/half day) doesn't leave a stale hours
+      // value sitting on the row that no longer matches the new type.
+      fields.hours = null;
+    }
+
+    if (newType === currentType && !useHours && !hasHours) { closeModal(); return; }
+
+    const { error } = await sb.from('leave_entries').update(fields).eq('id', entryId);
     if (error) {
       console.error(error);
       showToast('Could not change the leave type.', true);
       return;
     }
     closeModal();
-    showToast(`Leave type changed to ${LEAVE_TYPES[newType].label}.`);
+    showToast(`Leave type changed to ${LEAVE_TYPES[newType].label}${useHours ? ` (${fields.hours}h)` : ''}.`);
     await loadLeaveEntries();
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
     renderDashboard();
+  });
+}
+
+// =====================================================================
+// CHANGE LEAVE TYPE — employee self-service request (needs approval)
+// =====================================================================
+// Unlike openChangeLeaveTypeModal above (admin-only, applies instantly,
+// no re-approval), this is what any employee uses to request a type
+// change on their OWN already-approved leave. It does NOT apply the
+// new type directly — it reuses the exact same re-approval mechanism
+// "Edit dates" already established: the entry (or the whole multi-day
+// group, all together) is updated to the new leave_type AND reset to
+// STATUS.PENDING, so it drops back into the normal Pending Requests
+// queue and goes through decideRequest() like any other request when
+// an admin acts on it — including the existing Leave-Without-Pay
+// conversion and credit-change notification logic, with no separate
+// code path needed for this case.
+function openMyChangeLeaveTypeModal(entryId) {
+  const entry = state.leaveEntries.find(e => e.id === entryId);
+  if (!entry) return;
+  if (entry.employee_id !== state.profile.employee_id) {
+    showToast('You can only change the type of your own leave.', true);
+    return;
+  }
+  if (entry.status !== STATUS.APPROVED) {
+    showToast('Only an already-approved request can have its type changed.', true);
+    return;
+  }
+  const currentType = entry.leave_type;
+  const groupCount = entry.request_group_id
+    ? state.leaveEntries.filter(g => g.request_group_id === entry.request_group_id && g.status !== STATUS.DECLINED).length
+    : 1;
+  const hasHours = entry.hours != null && entry.hours !== '';
+
+  const typeOptions = Object.keys(LEAVE_TYPES)
+    .filter(t => t !== 'LNP' && t !== 'HLNP') // LNP/HLNP are auto-derived overflow markers, not something an employee should hand-pick here
+    .map(t => `<option value="${t}" ${t === currentType ? 'selected' : ''}>${LEAVE_TYPES[t].label} (${t})</option>`)
+    .join('');
+
+  openModal('Request leave type change', `
+    <form id="my-change-leave-type-form" style="display:flex; flex-direction:column; gap:14px;">
+      <p class="muted" style="font-size:12.5px; margin:0;">
+        ${formatPrettyDate(entry.leave_date)}${groupCount > 1 ? ` — this covers ${groupCount} days` : ''}<br>
+        Currently: <strong>${LEAVE_TYPES[currentType] ? LEAVE_TYPES[currentType].label : currentType}${hasHours ? ` (${entry.hours}h)` : ''}</strong>
+      </p>
+      <div class="field">
+        <label for="my-change-leave-type-select">New leave type</label>
+        <select id="my-change-leave-type-select" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          ${typeOptions}
+        </select>
+      </div>
+      ${groupCount === 1 ? `
+        <div class="field" style="display:flex; align-items:center; gap:8px; margin-top:-2px;">
+          <input type="checkbox" id="my-change-leave-type-use-hours" ${hasHours ? 'checked' : ''} style="width:16px; height:16px; margin:0;">
+          <label for="my-change-leave-type-use-hours" style="margin:0; font-size:12.5px; font-weight:500; color:var(--ink-soft); cursor:pointer;">Use specific hours instead of a full or half day</label>
+        </div>
+        <div class="field" id="my-change-leave-type-hours-field" style="display:${hasHours ? 'block' : 'none'};">
+          <label for="my-change-leave-type-hours">Number of hours <span class="faint">(based on an 8-hour day)</span></label>
+          <input type="number" id="my-change-leave-type-hours" min="0.5" max="8" step="0.5" value="${hasHours ? entry.hours : ''}" placeholder="e.g. 2" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <p class="faint" style="font-size:11px; margin:6px 0 0;">For a half day (4h), use the "(Half)" leave type instead; for a full day (8h), use the regular leave type.</p>
+        </div>
+      ` : ''}
+      <p class="muted" style="font-size:11.5px; margin:0;">
+        ${groupCount > 1 ? 'All days in this request' : 'This request'} will go back to Pending until an admin approves the new type.
+      </p>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Submit for approval</button>
+    </form>
+  `);
+
+  const myUseHoursCheckbox = document.getElementById('my-change-leave-type-use-hours');
+  const myHoursField = document.getElementById('my-change-leave-type-hours-field');
+  myUseHoursCheckbox?.addEventListener('change', () => {
+    myHoursField.style.display = myUseHoursCheckbox.checked ? 'block' : 'none';
+  });
+
+  document.getElementById('my-change-leave-type-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    let newType = document.getElementById('my-change-leave-type-select').value;
+    const useHours = !!myUseHoursCheckbox?.checked;
+    const fields = { status: STATUS.PENDING, approved_by: null, decided_at: null };
+
+    if (useHours) {
+      const hours = parseFloat(document.getElementById('my-change-leave-type-hours').value);
+      if (isNaN(hours) || hours <= 0 || hours > 8) {
+        showToast('Enter a number of hours between 0.5 and 8.', true);
+        return;
+      }
+      if (hours === 4) {
+        showToast('4 hours is a half day — untick the hours option and pick the "(Half)" leave type from the dropdown instead.', true);
+        return;
+      }
+      if (hours === 8) {
+        showToast('8 hours is a full day — untick the hours option and use the regular full-day leave type instead.', true);
+        return;
+      }
+      // Hours fully describe the duration, so the half-day distinction is
+      // irrelevant here — normalize VLH/SLH/ELH down to their base type.
+      newType = newType.replace(/H$/, '');
+      fields.leave_type = newType;
+      fields.hours = hours;
+    } else {
+      fields.leave_type = newType;
+      // Explicitly clear hours so switching AWAY from an hourly entry
+      // (back to a plain full/half day) doesn't leave a stale hours
+      // value sitting on the row that no longer matches the new type.
+      fields.hours = null;
+    }
+
+    if (newType === currentType && !useHours && !hasHours) { closeModal(); return; }
+
+    const query = sb.from('leave_entries').update(fields);
+    const { error } = entry.request_group_id
+      ? await query.eq('request_group_id', entry.request_group_id)
+      : await query.eq('id', entry.id);
+
+    if (error) {
+      console.error(error);
+      showToast('Could not submit the type change request.', true);
+      return;
+    }
+    closeModal();
+    showToast(groupCount > 1 ? `Type change requested for ${groupCount} days — waiting on admin approval.` : 'Type change requested — waiting on admin approval.');
+    await loadLeaveEntries();
+    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
+    renderDashboard();
+    updateLeaveNavBadge();
   });
 }
 
@@ -4645,6 +4838,7 @@ function renderPendingPanel() {
               const hrs = g.days[0].hours;
               const today = isoDate(new Date());
               const canEditDates = canEditDatesForGroup(g, today);
+              const canChangeType = canChangeMyLeaveType(g);
               return `
               <div style="border:1px solid var(--line-soft); border-radius:10px; padding:12px;">
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
@@ -4653,6 +4847,7 @@ function renderPendingPanel() {
                     ${g.note ? `<div class="muted" style="font-size:12px; margin-top:4px;">${escapeHtml(g.note)}</div>` : ''}
                     ${g.days[0].approved_by ? `<div class="faint" style="font-size:11px; margin-top:2px;">Approved by ${escapeHtml(g.days[0].approved_by)}</div>` : ''}
                     ${canEditDates ? `<span class="edit-dates-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px;">Edit dates</span>` : ''}
+                    ${canChangeType ? `<span class="change-my-leave-type-link" data-id="${g.firstId}" style="cursor:pointer; color:var(--teal-soft); font-size:11px; text-decoration:underline; display:inline-block; margin-top:4px; margin-left:${canEditDates ? '10px' : '0'};">Change type</span>` : ''}
                   </div>
                   <span class="stamp ${(status === STATUS.PENDING || status === STATUS.CANCELLATION_PENDING) ? 'pending' : LEAVE_TYPES[g.leave_type].cls}">${LEAVE_TYPES[g.leave_type].short}</span>
                 </div>
