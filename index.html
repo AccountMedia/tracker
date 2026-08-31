@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-21-change-type-hours-option';
+const APP_VERSION = '2026-08-21-leave-allow-past-date-requests';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -8511,14 +8511,14 @@ function openRequestModal() {
       <div class="field" style="display:flex; gap:10px;">
         <div style="flex:1;">
           <label for="req-date-from">From</label>
-          <input type="date" id="req-date-from" required min="${isoDate(new Date())}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <input type="date" id="req-date-from" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
         </div>
         <div style="flex:1;">
           <label for="req-date-to">To</label>
-          <input type="date" id="req-date-to" required min="${isoDate(new Date())}" style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+          <input type="date" id="req-date-to" required style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
         </div>
       </div>
-      <p class="faint" style="font-size:11px; margin:-6px 0 0;">For a single day, use the same date for both fields. Weekends are skipped automatically.</p>
+      <p class="faint" style="font-size:11px; margin:-6px 0 0;">For a single day, use the same date for both fields. Weekends are skipped automatically. Past dates are allowed — you'll be asked to confirm before submitting.</p>
       <div class="field" style="display:flex; align-items:center; gap:8px; margin-top:-2px;">
         <input type="checkbox" id="req-use-hours" style="width:16px; height:16px; margin:0;">
         <label for="req-use-hours" style="margin:0; font-size:12.5px; font-weight:500; color:var(--ink-soft); cursor:pointer;">Request specific hours instead of a full or half day</label>
@@ -8604,7 +8604,16 @@ async function submitLeaveRequest(e) {
   toInput.style.borderColor = toDate ? 'var(--line)' : 'var(--coral)';
   if (!fromDate || !toDate) { showToast('Please fill in both the "From" and "To" dates.', true); return; }
   if (toDate < fromDate) { showToast('The "To" date must be on or after the "From" date.', true); return; }
-  if (fromDate < isoDate(new Date())) { showToast('You can\'t request leave for a date that has already passed.', true); return; }
+  // Past dates are allowed now — filing leave after the fact is a
+  // legitimate, real scenario — but flagged explicitly with a
+  // confirmation so it's never accidentally backdated without the
+  // person realizing. Only the START date needs checking; a range that
+  // starts in the past and continues into the future is still exactly
+  // one confirmation, not one per day.
+  if (fromDate < isoDate(new Date())) {
+    const pastLabel = fromDate === toDate ? formatPrettyDate(fromDate) : `${formatPrettyDate(fromDate)} – ${formatPrettyDate(toDate)}`;
+    if (!confirm(`${pastLabel} is in the past. Are you sure you want to file this leave request for a past date?`)) return;
+  }
 
   const dates = datesInRange(fromDate, toDate, { skipWeekends: true });
   if (!dates.length) { showToast('That range has no workdays in it.', true); return; }
