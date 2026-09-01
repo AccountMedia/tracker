@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-21-leave-sl-exhaustion-fix-v3';
+const APP_VERSION = '2026-08-21-credit-edit-future-leave-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5582,12 +5582,41 @@ async function saveCreditEdit(empId) {
     return; // no change, nothing to save — stay in edit mode
   }
 
-  // Re-baseline the stored snapshot to today so both new figures are exactly
-  // right going forward.
+  // Re-baseline the stored snapshot to today, exactly like this always
+  // did — the fix here isn't the cutoff date itself, it's what number
+  // gets WRITTEN alongside it. The admin types in the TRUE CURRENT
+  // balance (e.g. "8.88"), but the live formula recomputes going
+  // forward as (stored value) − (every VL/SL entry dated >= today) —
+  // which would ALSO re-subtract any leave already booked for a future
+  // date (most notably the year-end holiday block, auto-generated and
+  // approved years in advance for every employee) a second time,
+  // deflating the display below what was just typed in. To keep
+  // "the number I typed" and "what the screen shows right after
+  // saving" the same thing, the amount already booked for future dates
+  // is added back into what's actually STORED — the display still nets
+  // out to exactly what was typed, and any future leave (this
+  // already-existing booking, or a brand new request filed later)
+  // still deducts normally, exactly once, going forward, since the
+  // cutoff stays at today rather than being pushed past it. Confirmed
+  // as a real, reported issue: typing in a corrected balance and
+  // seeing it immediately drop again once already-booked future leave
+  // was subtracted a second time.
+  const fy = currentFiscalYear();
+  const today = isoDate(new Date());
+  const alreadyBookedFutureDays = (pool) => round2(
+    entriesForEmployee(employee.id)
+      .filter(e => fiscalYearForDate(e.leave_date) === fy)
+      .filter(e => e.leave_date >= today)
+      .filter(e => creditPoolForType(e.leave_type) === pool)
+      .reduce((sum, e) => sum + dayFractionForEntry(e), 0)
+  );
+  const vlToStore = round2(newVL + alreadyBookedFutureDays('vl'));
+  const slToStore = round2(newSL + alreadyBookedFutureDays('sl'));
+
   const updates = {
-    balance_as_of_date: isoDate(new Date()),
-    vl_balance: newVL,
-    sl_balance: newSL,
+    balance_as_of_date: today,
+    vl_balance: vlToStore,
+    sl_balance: slToStore,
   };
 
   const { error } = await sb.from('employees').update(updates).eq('id', empId);
