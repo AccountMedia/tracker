@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-21-leave-sl-exhaustion-fix-v2';
+const APP_VERSION = '2026-08-21-leave-sl-exhaustion-fix-v3';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2038,7 +2038,7 @@ async function ensureYearEndHolidayBlocks() {
 
       if (!groupRows.length) continue;
 
-      const { updates, inserts, finalSlBalanceByFy } = planLeaveWithoutPayConversion(employee, groupRows);
+      const { updates, inserts, slExhaustedHoursByFy } = planLeaveWithoutPayConversion(employee, groupRows);
       for (const u of updates) {
         const { error: updateErr } = await sb.from('leave_entries').update(u.fields).eq('id', u.id);
         if (updateErr) console.error('Holiday LWNP conversion update failed:', updateErr);
@@ -2047,7 +2047,7 @@ async function ensureYearEndHolidayBlocks() {
         const { error: insertErr } = await sb.from('leave_entries').insert(inserts);
         if (insertErr) console.error('Holiday LWNP conversion insert failed:', insertErr);
       }
-      await applySlExhaustionSnapshotAdjustments(employee, finalSlBalanceByFy);
+      await applySlExhaustionSnapshotAdjustments(employee, slExhaustedHoursByFy);
     }
   }
 
@@ -5119,20 +5119,28 @@ function noPayEquivalent(leaveType) {
 function planLeaveWithoutPayConversion(employee, groupRows) {
   const updates = []; // { id, fields }
   const inserts = []; // new row objects (overflow portions)
-  // Fiscal-year -> the FINAL SL balance (in days) after this
-  // conversion, computed directly from this function's own running
-  // balance tracking below — never recomputed later from a fresh
-  // (and, at that point, still-stale) read of global state. The
-  // caller (applySlExhaustionSnapshotAdjustments) writes this value
-  // verbatim. This is deliberate: an earlier version of this feature
-  // tried to recompute "the current SL balance" AFTER writing the
-  // leave_entries updates but BEFORE reloading state, which silently
-  // included the row's own pre-conversion deduction a second time —
-  // producing a wrong (even negative) stored value that only looked
-  // correct on screen because the display floors negative numbers to
-  // zero. Computing the final number once, here, using values this
-  // function already knows are correct, avoids that entirely.
-  const finalSlBalanceByFy = {};
+  // Fiscal-year -> TOTAL hours of SL/EL that were genuinely available
+  // and are being spent by this conversion, summed across every row in
+  // the group that needed it. The caller (see
+  // applySlExhaustionSnapshotAdjustments) subtracts this directly from
+  // the employee's CURRENT stored sl_balance, WITHOUT touching
+  // balance_as_of_date at all. An earlier version of this feature
+  // moved that cutoff date forward to "re-baseline" the snapshot —
+  // but this employee's leave history showed exactly why that's
+  // unsafe: the year-end holiday block is auto-generated and
+  // pre-approved YEARS in advance, so virtually every employee already
+  // has future-dated VL leave sitting in the same fiscal year. Moving
+  // the cutoff forward risked those already-approved future days
+  // getting subtracted a second time the next time the balance was
+  // computed — not a rare edge case, but the normal case given how
+  // holidays are pre-generated. Leaving balance_as_of_date completely
+  // untouched avoids that: the exhausted row's own leave_type simply
+  // changes away from SL/EL (handled by the update below), which is
+  // all that's needed for it to correctly stop counting against SL —
+  // no date shift required, and VL needs zero snapshot involvement
+  // since it's already handled correctly by the normal entries-based
+  // calculation once this row's hours are set to the true shortfall.
+  const slExhaustedHoursByFy = {};
 
   // Tracking keys are "fiscalYearStart:pool" (e.g. "2026:vl") rather than
   // just "vl"/"sl", since rows in the same group could in principle fall
@@ -5184,10 +5192,8 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     // no further fallback). Whatever WAS genuinely available in the
     // primary pool IS still spent — fully exhausted — but instead of
     // leaving a separate, tiny leave_entries row to represent that
-    // sliver, it's captured in finalSlBalanceByFy and applied by the
-    // caller as a direct reduction to the employee's stored SL balance
-    // (the same re-baseline mechanism a manual admin credit edit
-    // already uses — see applySlExhaustionSnapshotAdjustments). The
+    // sliver, it's accumulated in slExhaustedHoursByFy for the caller
+    // to subtract directly from the employee's stored SL balance. The
     // day converts to ONE spill-type entry (VL) covering ONLY the
     // genuine shortfall — not the whole day — since the SL/EL-covered
     // portion is accounted for separately, not by inflating what VL
@@ -5199,17 +5205,8 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     const spillLeaveType = pool === 'sl' ? (isHalf ? 'VLH' : 'VL') : null;
     const spillKey = spillPool ? `${fy}:${spillPool}` : null;
 
-    if (pool === 'sl') {
-      // Exhausting whatever was available drives this pool's true
-      // balance down to exactly 0 (or leaves it at whatever negative
-      // value it may already have been at, in the unlikely case it was
-      // already over-drawn before this row) — never below what it
-      // already was. Tracked as the LOWEST (most depleted) value seen
-      // across the whole group, so a multi-day group that exhausts SL
-      // on an earlier day doesn't get accidentally overwritten by a
-      // less-depleted number from a later day.
-      const depletedBalance = round2(Math.min(0, balanceBefore));
-      finalSlBalanceByFy[fy] = fy in finalSlBalanceByFy ? Math.min(finalSlBalanceByFy[fy], depletedBalance) : depletedBalance;
+    if (pool === 'sl' && availableHours > 0) {
+      slExhaustedHoursByFy[fy] = round2((slExhaustedHoursByFy[fy] || 0) + availableHours);
       // Still tracked in virtualUsed so a LATER day in this same
       // multi-day group correctly sees this pool as already depleted,
       // even though no leave_entries row reflects this specific
@@ -5273,60 +5270,51 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     }
   });
 
-  return { updates, inserts, finalSlBalanceByFy };
+  return { updates, inserts, slExhaustedHoursByFy };
 }
 
-// After planLeaveWithoutPayConversion computes the FINAL SL balance
-// for a fiscal year (see finalSlBalanceByFy), this writes it directly
-// to the employee's stored snapshot — the same re-baseline mechanism a
-// manual admin credit edit already uses (see saveCreditEdit). The
-// value passed in is already correct and final; this function does NOT
-// recompute it from a fresh state read (a previous version did, and
-// that's exactly what caused a real, confirmed bug: reading
-// "current" balance from state that hadn't been reloaded yet after the
-// leave_entries writes double-counted this row's own deduction).
-async function applySlExhaustionSnapshotAdjustments(employee, finalSlBalanceByFy) {
-  if (!finalSlBalanceByFy) return;
-  for (const [fyStr, finalBalance] of Object.entries(finalSlBalanceByFy)) {
+// After planLeaveWithoutPayConversion accumulates the total SL/EL hours
+// genuinely exhausted by this conversion, this subtracts them directly
+// from the employee's CURRENT stored sl_balance — nothing else. It
+// deliberately does NOT touch balance_as_of_date or vl_balance at all:
+// an earlier version of this feature tried re-anchoring the snapshot
+// cutoff date forward (the same mechanism a manual admin credit edit
+// uses), but that broke as soon as an employee had ANY future-dated VL
+// leave already approved within the same fiscal year — which, given
+// the year-end holiday block is auto-generated years in advance for
+// every employee, is the normal case, not a rare one. Leaving the
+// cutoff untouched sidesteps that entirely: the exhausted row's
+// leave_type simply changes away from SL/EL (handled by the caller's
+// own leave_entries update), which alone is what makes it correctly
+// stop counting against SL going forward — no date shift needed.
+async function applySlExhaustionSnapshotAdjustments(employee, slExhaustedHoursByFy) {
+  if (!slExhaustedHoursByFy) return;
+  for (const [fyStr, exhaustedHours] of Object.entries(slExhaustedHoursByFy)) {
+    if (!exhaustedHours) continue;
     const fy = Number(fyStr);
-
-    // The new snapshot date must be AT OR AFTER every credit-relevant
-    // entry (VL or SL/EL) this employee already has in this fiscal
-    // year — not just SL/EL ones — or whichever pool has an entry
-    // dated past the cutoff would get double-subtracted the next time
-    // its balance is computed. Today covers the normal case; a
-    // genuinely future-dated entry (leave can be filed for future
-    // dates too) pushes the cutoff out further if one exists. Reading
-    // entry DATES here from state is safe even before a reload — dates
-    // don't change as a result of this conversion, only leave_type and
-    // hours do, which is exactly what caused the earlier balance bug
-    // (reading VALUES, not dates, from stale state).
-    const today = isoDate(new Date());
-    const relevantEntryDates = entriesForEmployee(employee.id)
-      .filter(e => fiscalYearForDate(e.leave_date) === fy)
-      .filter(e => creditPoolForType(e.leave_type) === 'sl' || creditPoolForType(e.leave_type) === 'vl')
-      .map(e => e.leave_date);
-    const latestRelevantDate = relevantEntryDates.length ? relevantEntryDates.sort().slice(-1)[0] : today;
-    const newAsOfDate = latestRelevantDate > today ? latestRelevantDate : today;
-
-    // VL balance must ALSO be re-anchored to this exact same new date
-    // — balance_as_of_date is a single shared cutoff for BOTH pools —
-    // but since this converted row is STILL 'EL'/'SL'-typed in
-    // whatever state this function reads (not yet reloaded), it is
-    // NOT YET counted against VL here, which is exactly what makes
-    // this read safe: it captures VL's balance UNAFFECTED by this
-    // day, and once the DB write (already applied by the caller,
-    // changing this row to 'VL') is later reflected in a fresh reload,
-    // this row's own VL deduction will be correctly applied exactly
-    // once, going forward, against the newAsOfDate cutoff.
-    const currentVl = fiscalPoolBalanceUnfloored(employee, 'vl', fy);
-
-    const { error } = await sb.from('employees').update({
-      sl_balance: round2(finalBalance),
-      vl_balance: round2(currentVl),
-      balance_as_of_date: newAsOfDate,
-    }).eq('id', employee.id);
-    if (error) console.error('SL exhaustion snapshot adjustment failed:', error);
+    // Only meaningful if the employee's CURRENT stored snapshot
+    // actually applies to this fiscal year — if balance_as_of_date
+    // belongs to an earlier fiscal year, sl_balance doesn't represent
+    // targetFY's allotment at all (the live calc falls back to the
+    // standard allotment instead), and adjusting the raw field here
+    // would be wrong. This should be rare in practice (every approval
+    // or manual edit keeps balance_as_of_date current), but is guarded
+    // rather than assumed — if it ever does happen, this logs a
+    // warning and skips, leaving it for a manual Leave Credits fix
+    // rather than silently writing an incorrect number.
+    if (storedBalanceFiscalYear(employee) !== fy) {
+      console.warn(`Skipping automatic SL adjustment for ${employee.display_name} — their stored balance belongs to a different fiscal year than ${fiscalYearLabel(fy)}. Please adjust manually via Leave Credits.`);
+      continue;
+    }
+    const newSlBalance = round2((employee.sl_balance ?? 0) - (exhaustedHours / 8));
+    const { error } = await sb.from('employees').update({ sl_balance: newSlBalance }).eq('id', employee.id);
+    if (error) {
+      console.error('SL exhaustion snapshot adjustment failed:', error);
+    } else {
+      // Keep the in-memory employee object consistent in case this
+      // loop processes more than one fiscal year for the same person.
+      employee.sl_balance = newSlBalance;
+    }
   }
 }
 
@@ -5393,7 +5381,7 @@ async function decideRequest(id, decision) {
         ? state.leaveEntries.filter(e => e.request_group_id === groupId && e.status === STATUS.APPROVED).sort((a, b) => a.leave_date.localeCompare(b.leave_date))
         : state.leaveEntries.filter(e => e.id === id && e.status === STATUS.APPROVED);
 
-      const { updates, inserts, finalSlBalanceByFy } = planLeaveWithoutPayConversion(employee, groupRows);
+      const { updates, inserts, slExhaustedHoursByFy } = planLeaveWithoutPayConversion(employee, groupRows);
       if (updates.length || inserts.length) {
         console.log('LWNP/spillover conversion applied:', { employee: employee.display_name, groupRows, updates, inserts });
       } else if (groupRows.some(r => r.leave_type !== 'VL' && r.leave_type !== 'SL')) {
@@ -5417,7 +5405,7 @@ async function decideRequest(id, decision) {
       // this conversion — see applySlExhaustionSnapshotAdjustments —
       // so the day shows as a single VL entry while the SL/EL credit
       // is still actually deducted, not left untouched.
-      await applySlExhaustionSnapshotAdjustments(employee, finalSlBalanceByFy);
+      await applySlExhaustionSnapshotAdjustments(employee, slExhaustedHoursByFy);
       if (updates.length || inserts.length) {
         showToast(`${label} approved — some days auto-marked Leave Without Pay due to exhausted credit.`);
         // The conversion above just wrote LNP/VL-spillover changes to the
