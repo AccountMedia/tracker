@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-dashboard-ot-zero-hours-fix';
+const APP_VERSION = '2026-09-04-ot-estimated-leads-availability';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7440,8 +7440,9 @@ function renderOtFiling() {
     return;
   }
 
-  const headerCells = dates.map(d => `<th colspan="2" style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">${formatOtDateHeader(d)}</th>`).join('');
+  const headerCells = dates.map(d => `<th colspan="3" style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">${formatOtDateHeader(d)}</th>`).join('');
   const subHeaderCells = dates.map(() => `
+    <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">OT?</th>
     <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">No. of Hours</th>
     <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">Total Output</th>
   `).join('');
@@ -7464,18 +7465,65 @@ function renderOtFiling() {
     }, 0);
   }
 
+  // Who has clicked to confirm they're AVAILABLE for OT that date —
+  // separate from "has actually logged hours" (headsForDate above).
+  // This is what the No. of Hours field's editability gates on, and
+  // what the Estimated Pending Leads split divides across.
+  function confirmedForOtCount(d) {
+    return roster.reduce((count, emp) => count + (getOtEntry(emp.id, d)?.available_for_ot ? 1 : 0), 0);
+  }
+
   const headsRow = dates.map(d => {
     const heads = headsForDate(d);
-    return `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
+    return `<td colspan="3" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
   }).join('');
 
   const leadsToValidatePerDate = dates.map(d => round2(hoursForDate(d) * 100));
 
   const leadsRow = dates.map((d, i) => {
-    return `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
+    return `<td colspan="3" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
   }).join('');
 
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
+
+  // Estimated Pending Leads: a rough forecast an admin types in per
+  // date, independent of the confirmed "Total Leads Available" figure
+  // below it. Automatically divided across everyone who's clicked to
+  // confirm OT availability that date, then converted to hours at the
+  // fixed 100-leads-per-hour ratio — this is what auto-fills a
+  // suggested "No. of Hours" the moment someone confirms availability
+  // (see saveOtAvailability).
+  const estimatedPendingLeadsPerDate = dates.map(d => {
+    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
+    return dateRecord && dateRecord.estimated_pending_leads != null ? Number(dateRecord.estimated_pending_leads) : null;
+  });
+  const estimatedPendingLeadsEditedByPerDate = dates.map(d => {
+    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
+    return dateRecord ? dateRecord.estimated_pending_leads_updated_by : null;
+  });
+  const confirmedForOtCountPerDate = dates.map(d => confirmedForOtCount(d));
+  const suggestedHoursPerEmployeePerDate = dates.map((d, i) => {
+    const estimated = estimatedPendingLeadsPerDate[i];
+    const count = confirmedForOtCountPerDate[i];
+    if (estimated == null || count <= 0) return null;
+    const leadsPerEmployee = round2(estimated / count);
+    return round2(leadsPerEmployee / 100);
+  });
+
+  const estimatedPendingLeadsRow = dates.map((d, i) => {
+    const val = estimatedPendingLeadsPerDate[i];
+    const editedBy = estimatedPendingLeadsEditedByPerDate[i];
+    const count = confirmedForOtCountPerDate[i];
+    const suggestedHours = suggestedHoursPerEmployeePerDate[i];
+    return `<td colspan="3" style="padding:6px;">
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+        <input type="number" min="0" step="1" class="priolist-input ot-estimated-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Estimated"
+          style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
+        ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
+        ${val != null ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">${count} confirmed${count > 0 ? ` → ${suggestedHours}h each` : ''}</div>` : ''}
+      </div>
+    </td>`;
+  }).join('');
 
   // Total Leads Available is shown for every open date, independently
   // editable per date. Pending Leads for each date = that date's own
@@ -7498,7 +7546,7 @@ function renderOtFiling() {
   const totalLeadsRow = dates.map((d, i) => {
     const val = totalLeadsPerDate[i];
     const editedBy = totalLeadsEditedByPerDate[i];
-    return `<td colspan="2" style="padding:6px;">
+    return `<td colspan="3" style="padding:6px;">
       <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
         <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
           style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
@@ -7507,7 +7555,7 @@ function renderOtFiling() {
     </td>`;
   }).join('');
 
-  const pendingRow = pendingBalancesPerDate.map(bal => `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
+  const pendingRow = pendingBalancesPerDate.map(bal => `<td colspan="3" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
@@ -7518,6 +7566,7 @@ function renderOtFiling() {
       const hasAssumed = entry && entry.assumed_hours != null;
       const hasActual = entry && entry.actual_hours != null;
       const confirmed = entry && entry.confirmed;
+      const availableForOt = !!(entry && entry.available_for_ot);
       const displayVal = hasActual ? entry.actual_hours : (hasAssumed ? entry.assumed_hours : '—');
 
       // Total Output is now a REAL number the employee types in at
@@ -7535,8 +7584,18 @@ function renderOtFiling() {
       // normally below rather than being hidden — being on PIP blocks
       // future filing and editing, it doesn't erase past records.
       if (isPip && !confirmed) {
-        return `<td style="padding:8px; text-align:center; font-size:11px; color:var(--ink-faint); font-style:italic;" title="This employee is on PIP and cannot file OT">PIP — locked</td>` + outputCell;
+        return `<td colspan="2" style="padding:8px; text-align:center; font-size:11px; color:var(--ink-faint); font-style:italic;" title="This employee is on PIP and cannot file OT">PIP — locked</td>` + outputCell;
       }
+
+      // The "OT?" availability checkbox — this is the gate: the hours
+      // field stays locked until this is checked. Frozen (read-only)
+      // once the entry is confirmed, editable by the owner/admin
+      // beforehand, and read-only for anyone else the whole time.
+      const otCheckboxCell = confirmed
+        ? `<td style="padding:8px; text-align:center;">${availableForOt ? '<span style="color:var(--green); font-weight:700;" title="Confirmed available for OT">✓</span>' : '<span class="faint">—</span>'}</td>`
+        : canEdit
+          ? `<td style="padding:8px; text-align:center;"><input type="checkbox" class="ot-availability-checkbox" data-emp-id="${emp.id}" data-date="${d}" ${availableForOt ? 'checked' : ''} title="Confirm availability for OT" style="width:16px; height:16px; cursor:pointer;"></td>`
+          : `<td style="padding:8px; text-align:center;">${availableForOt ? '<span style="color:var(--green); font-weight:700;" title="Confirmed available for OT">✓</span>' : '<span class="faint">—</span>'}</td>`;
 
       if (confirmed) {
         // Stays confirmed and visible as such even after being amended —
@@ -7552,7 +7611,7 @@ function renderOtFiling() {
         // just PIP-tagged ones.
         const canAmendThis = (admin || isMe) && !isPip;
         const canDeleteThis = canDeleteOtEntry();
-        return `
+        return otCheckboxCell + `
           <td style="padding:8px; text-align:center; font-size:12.5px;">
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
@@ -7564,17 +7623,23 @@ function renderOtFiling() {
       }
 
       if (!canEdit) {
-        return `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>` + outputCell;
+        return otCheckboxCell + `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>` + outputCell;
       }
 
-      // Editable cell for the owner (or admin) — only reachable while
-      // still unconfirmed.
+      // Hours field stays LOCKED until availability is confirmed —
+      // that's the whole point of the "OT?" checkbox. Only once
+      // checked does the actual editable input (and its own Confirm
+      // button, for finalizing actual hours/output later) appear.
+      if (!availableForOt) {
+        return otCheckboxCell + `<td style="padding:8px; text-align:center; font-size:10.5px; color:var(--ink-faint); font-style:italic;" title="Confirm OT availability first">locked</td>` + outputCell;
+      }
+
       const inputVal = hasAssumed ? entry.assumed_hours : '';
       const badge = hasAssumed
         ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; font-size:10px; padding:2px 6px; color:var(--amber); white-space:nowrap;">Confirm</button>`
         : '';
 
-      return `
+      return otCheckboxCell + `
         <td style="padding:4px; text-align:center;">
           <div style="position:relative; display:inline-block;">
             <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
@@ -7606,11 +7671,11 @@ function renderOtFiling() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Log your assumed OT hours before your shift. After it ends, click "Confirm" to enter your actual time worked and total output — both lock together once confirmed.</p>
+      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Check "OT?" to confirm availability for a date — that unlocks your "No. of Hours" field, pre-filled with a suggested value split from Estimated Pending Leads. After your shift ends, click "Confirm" to enter your actual time worked and total output — both lock together once confirmed.</p>
       <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
           <col style="width:230px;">
-          ${dates.map(() => '<col style="width:90px;"><col style="width:90px;">').join('')}
+          ${dates.map(() => '<col style="width:44px;"><col style="width:90px;"><col style="width:90px;">').join('')}
         </colgroup>
         <thead>
           <tr class="ot-filing-header-row">
@@ -7637,6 +7702,13 @@ function renderOtFiling() {
               ${leadsRow}
             </tr>
             <tr style="border-top:2px solid var(--line);">
+              <td style="padding:8px 10px;">
+                <div style="font-weight:700; font-size:12px;">Estimated Pending Leads</div>
+                <div class="faint" style="font-size:10.5px; margin-top:2px;">Auto-split across everyone who's confirmed OT for that date.</div>
+              </td>
+              ${estimatedPendingLeadsRow}
+            </tr>
+            <tr>
               <td style="padding:8px 10px;">
                 <div style="font-weight:700; font-size:12px;">Total Leads Available</div>
                 <div class="faint" style="font-size:10.5px; margin-top:2px;">Set the starting total for each date.</div>
@@ -7670,8 +7742,14 @@ function renderOtFiling() {
     </style>
   `;
 
+  document.querySelectorAll('.ot-estimated-leads-input').forEach(input => {
+    input.addEventListener('change', () => saveOtEstimatedPendingLeads(input.dataset.date, input.value));
+  });
   document.querySelectorAll('.ot-total-leads-input').forEach(input => {
     input.addEventListener('change', () => saveOtTotalLeadsAvailable(input.dataset.date, input.value));
+  });
+  document.querySelectorAll('.ot-availability-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', () => saveOtAvailability(checkbox.dataset.empId, checkbox.dataset.date, checkbox.checked));
   });
   document.querySelectorAll('.ot-hours-input').forEach(input => {
     input.addEventListener('change', () => saveOtHours(input.dataset.empId, input.dataset.date, input.value));
@@ -8023,6 +8101,97 @@ async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
   renderOtFiling();
 }
 
+// Estimated Pending Leads — same open-access pattern as Total Leads
+// Available above (no role gate; anyone can set the forecast for a
+// date). This is what confirmedForOtCount()/suggestedHoursPerEmployee
+// in renderOtFiling divide across everyone who's confirmed OT that day.
+async function saveOtEstimatedPendingLeads(filingDate, rawValue) {
+  const value = rawValue === '' ? null : parseFloat(rawValue);
+  if (value !== null && (isNaN(value) || value < 0)) {
+    showToast('Enter a valid, non-negative number.', true);
+    renderOtFiling();
+    return;
+  }
+
+  const { error } = await writeOtFilingDateTotals(filingDate, {
+    estimated_pending_leads: value,
+    estimated_pending_leads_updated_by: value != null ? state.profile.display_name : null,
+  });
+  if (error) {
+    console.error('saveOtEstimatedPendingLeads failed:', error);
+    const msg = /column .*estimated_pending_leads.* does not exist/i.test(error.message || '')
+      ? 'Needs setup — run add_ot_availability_columns.sql in Supabase.'
+      : 'Could not save.';
+    showToast(msg, true);
+    return;
+  }
+  await loadOtFilingDates();
+  renderOtFiling();
+}
+
+// Toggles whether an employee has confirmed AVAILABILITY for OT on a
+// given date — this is the gate that unlocks the "No. of Hours" field
+// at all (see renderOtFiling's !availableForOt branch). The moment
+// someone newly confirms (checked=true) and hasn't already typed in an
+// hours value, this auto-fills a SUGGESTED value: Estimated Pending
+// Leads for that date, divided across everyone who's confirmed so far
+// (this employee included), then converted from leads to hours at the
+// fixed 100-leads-per-hour ratio. It's just a starting point — the
+// employee can still adjust it before their own final Confirm.
+async function saveOtAvailability(employeeId, filingDate, checked) {
+  if (!isAdmin() && employeeId !== state.profile.employee_id) {
+    showToast('You can only confirm your own OT availability.', true);
+    renderOtFiling();
+    return;
+  }
+  const empForPipCheck = state.employees.find(e => e.id === employeeId);
+  if (empForPipCheck && empForPipCheck.is_pip) {
+    showToast('This employee is on PIP and cannot confirm OT availability.', true);
+    renderOtFiling();
+    return;
+  }
+  const existing = getOtEntry(employeeId, filingDate);
+  if (existing && existing.confirmed) {
+    showToast('This entry has already been confirmed and can no longer be edited.', true);
+    renderOtFiling();
+    return;
+  }
+
+  const payload = {
+    employee_id: employeeId,
+    filing_date: filingDate,
+    available_for_ot: checked,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (checked && (!existing || existing.assumed_hours == null)) {
+    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === filingDate);
+    const estimated = dateRecord && dateRecord.estimated_pending_leads != null ? Number(dateRecord.estimated_pending_leads) : null;
+    if (estimated != null) {
+      // Count everyone ELSE already confirmed, then add this employee
+      // (confirming right now) exactly once — matches the same roster
+      // renderOtFiling's own confirmedForOtCount() uses.
+      const alreadyConfirmedElsewhere = activeRoster().reduce((count, emp) => {
+        if (emp.id === employeeId) return count;
+        const e = getOtEntry(emp.id, filingDate);
+        return count + (e && e.available_for_ot ? 1 : 0);
+      }, 0);
+      const newCount = alreadyConfirmedElsewhere + 1;
+      const leadsPerEmployee = round2(estimated / newCount);
+      payload.assumed_hours = round2(leadsPerEmployee / 100);
+    }
+  }
+
+  const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
+  if (error) {
+    console.error(error);
+    showToast(/column .*available_for_ot.* does not exist/i.test(error.message || '') ? 'Needs setup — run add_ot_availability_columns.sql in Supabase.' : 'Could not save.', true);
+    return;
+  }
+  await loadOtHoursEntries();
+  renderOtFiling();
+}
+
 async function saveOtHours(employeeId, filingDate, rawValue) {
   if (!isAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only log your own OT hours.', true);
@@ -8039,6 +8208,11 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
   const existingCheck = getOtEntry(employeeId, filingDate);
   if (existingCheck && existingCheck.confirmed) {
     showToast('This entry has already been confirmed and can no longer be edited.', true);
+    renderOtFiling();
+    return;
+  }
+  if (!existingCheck || !existingCheck.available_for_ot) {
+    showToast('Please confirm OT availability first.', true);
     renderOtFiling();
     return;
   }
