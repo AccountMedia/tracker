@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-21-credit-edit-future-leave-fix';
+const APP_VERSION = '2026-08-21-ips-target-hidden-sl-hours';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5250,7 +5250,11 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
     if (spillLeaveType && spillCoveredHours > 0) {
       // Convert the ENTIRE original row to the spill type, covering
       // only the shortfall — one clean entry, never split into two.
-      updates.push({ id: row.id, fields: { leave_type: spillLeaveType, hours: spillCoveredHours, note: appendAutoNote(row.note, coveredNote) } });
+      // sl_exhausted_hours_here rides along on this same row so
+      // ipsLeaveHoursOn can still reconstruct the TRUE total hours of
+      // leave that day (see its own comment) even though the SL/EL
+      // portion has no visible row of its own.
+      updates.push({ id: row.id, fields: { leave_type: spillLeaveType, hours: spillCoveredHours, note: appendAutoNote(row.note, coveredNote), sl_exhausted_hours_here: availableHours > 0 ? availableHours : null } });
       virtualUsed[spillKey] = round2((virtualUsed[spillKey] || 0) + spillCoveredHours / 8);
       if (trueOverflowHours > 0) {
         inserts.push({
@@ -5265,8 +5269,9 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
       // has zero balance — whatever the primary pool couldn't cover
       // becomes Leave Without Pay directly on this same row (in place —
       // the primary-pool-covered portion, if any, has no row of its
-      // own, so there's nothing left to split off separately).
-      updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: overflowHours, note: appendAutoNote(row.note, coveredNote) } });
+      // own, so there's nothing left to split off separately). Same
+      // sl_exhausted_hours_here treatment as above.
+      updates.push({ id: row.id, fields: { leave_type: noPayEquivalent(row.leave_type), hours: overflowHours, note: appendAutoNote(row.note, coveredNote), sl_exhausted_hours_here: availableHours > 0 ? availableHours : null } });
     }
   });
 
@@ -12500,14 +12505,26 @@ function ipsMdSum(employeeId, dates) {
 }
 // Hours an employee was on approved/cancellation-pending leave on a
 // given date. Mirrors entriesForEmployee + dayFractionForEntry exactly
-// (fraction-of-a-day × 8), so IPS and the Leave Tracker always agree.
+// (fraction-of-a-day × 8), so IPS and the Leave Tracker always agree —
+// PLUS whatever SL/EL was invisibly exhausted-and-spilled-to-VL that
+// day (see sl_exhausted_hours_here in planLeaveWithoutPayConversion).
+// That portion deliberately has no leave_entries row of its own (the
+// whole point of the single-VL-entry design), so without adding it
+// back in here, this function would undercount total leave hours for
+// that day — which was confirmed as a real bug: a 3-hour leave where
+// 0.08h came from SL and 2.92h from VL was only seen as 2.92h here,
+// inflating that day's IPS target to 508 instead of the correct 500.
 // Multiple leave rows on the same date (rare, but possible) are summed
 // and capped at a full 8-hour day.
 function ipsLeaveHoursOn(employeeId, dateIso) {
   const rows = entriesForEmployee(employeeId).filter(e => e.leave_date === dateIso);
   if (!rows.length) return 0;
-  const totalDayFraction = rows.reduce((s, e) => s + dayFractionForEntry(e), 0);
-  return Math.min(8, totalDayFraction * 8);
+  const totalHours = rows.reduce((s, e) => {
+    const ownHours = dayFractionForEntry(e) * 8;
+    const hiddenSl = e.sl_exhausted_hours_here != null ? Number(e.sl_exhausted_hours_here) : 0;
+    return s + ownHours + hiddenSl;
+  }, 0);
+  return Math.min(8, totalHours);
 }
 
 // The PO target for one day: normally 800, shrunk proportionally by
