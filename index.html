@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-filing-zero-hours-fix';
+const APP_VERSION = '2026-09-04-dashboard-ot-zero-hours-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2815,16 +2815,18 @@ function renderDashboard() {
   // nothing has been logged yet.
   const otDates = state.otFilingDates.map(d => d.filing_date).sort();
   const latestOtDate = otDates.length ? otDates[otDates.length - 1] : null;
-  // Denominator: anyone with a CURRENTLY ACTIVE number in their field —
-  // assumed_hours (still typing/estimating) or actual_hours (already
-  // confirmed). Someone who deleted their field is fully excluded here,
-  // not counted as "in progress" — this is the piece that was missing
-  // before (otEntryHasData also matched stale total_output/confirmed
-  // leftovers from OLD, already-cleared entries, which is what let a
-  // deleted person still count). Numerator: the subset of those who are
-  // confirmed.
+  // Denominator: anyone with GENUINELY ACTIVE data for that date, using
+  // the same shared otEntryHasData() the OT Filing tab's own sort and
+  // headcount already rely on — a confirmed entry only counts if
+  // actual_hours is a real positive number (confirming with 0h means
+  // no OT actually happened, so it shouldn't count as "logged" here
+  // either), and an unconfirmed entry counts only with a positive
+  // assumed_hours. Numerator: the subset of those who are confirmed —
+  // since otEntryHasData already requires actual_hours > 0 for any
+  // confirmed entry to pass, nothing with 0 confirmed hours can ever
+  // reach the numerator either.
   const otEntriesForDate = latestOtDate
-    ? state.otHoursEntries.filter(e => e.filing_date === latestOtDate && (e.assumed_hours != null || e.actual_hours != null))
+    ? state.otHoursEntries.filter(e => e.filing_date === latestOtDate && otEntryHasData(e))
     : [];
   const otLoggedCount = otEntriesForDate.length;
   const otConfirmedCount = otEntriesForDate.filter(e => e.confirmed === true).length;
