@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-filing-pip-tag';
+const APP_VERSION = '2026-09-04-ot-filing-pip-refinements';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7418,6 +7418,12 @@ function renderOtFiling() {
       // everyone else by logged-hours status.
       if (a.display_name === 'Kristina Mutia') return -1;
       if (b.display_name === 'Kristina Mutia') return 1;
+      // PIP employees always sink to the very bottom, below even
+      // people who haven't logged anything yet — they can't file OT
+      // at all, so there's nothing for them to be prioritized for.
+      const aPip = a.is_pip ? 1 : 0;
+      const bPip = b.is_pip ? 1 : 0;
+      if (aPip !== bPip) return aPip - bPip;
       const aHas = hasAnyLoggedHours(a.id) ? 0 : 1;
       const bHas = hasAnyLoggedHours(b.id) ? 0 : 1;
       return aHas - bHas;
@@ -7578,8 +7584,13 @@ function renderOtFiling() {
         <td style="padding:8px 10px; font-weight:700; color:var(--ink);">
           <div style="display:flex; align-items:center; gap:6px;">
             <span>${escapeHtml(emp.display_name)}</span>
-            ${isPip ? `<span title="On PIP — OT Filing locked" style="font-size:9px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--coral-wash); color:var(--coral); letter-spacing:0.02em;">PIP</span>` : ''}
-            ${admin ? `<button type="button" class="ot-pip-toggle-btn" data-emp-id="${emp.id}" data-currently-pip="${isPip ? '1' : '0'}" title="${isPip ? 'Remove PIP tag' : 'Tag as PIP'}" style="background:none; border:1px solid var(--line); border-radius:999px; padding:1px 8px; font-size:9px; font-weight:600; color:var(--ink-faint); cursor:pointer; white-space:nowrap;">${isPip ? 'Untag PIP' : '+ PIP'}</button>` : ''}
+            ${admin
+              ? `<button type="button" class="ot-pip-toggle-btn" data-emp-id="${emp.id}" data-currently-pip="${isPip ? '1' : '0'}" title="${isPip ? 'Tagged as PIP — click to remove' : 'Click to tag as PIP'}" style="
+                  font-size:9px; font-weight:700; padding:1px 8px; border-radius:999px; letter-spacing:0.02em; cursor:pointer; white-space:nowrap;
+                  border:1px solid ${isPip ? 'var(--coral)' : 'var(--line)'};
+                  background:${isPip ? 'var(--coral)' : 'transparent'};
+                  color:${isPip ? '#FFFFFF' : 'var(--ink-faint)'};">PIP</button>`
+              : (isPip ? `<span title="On PIP — OT Filing locked" style="font-size:9px; font-weight:700; padding:1px 8px; border-radius:999px; background:var(--coral-wash); color:var(--coral); letter-spacing:0.02em;">PIP</span>` : '')}
           </div>
         </td>
         ${cells}
