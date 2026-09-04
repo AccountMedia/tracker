@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-08-21-ips-target-hidden-sl-hours';
+const APP_VERSION = '2026-09-04-ot-filing-pip-tag';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7504,9 +7504,10 @@ function renderOtFiling() {
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
+    const isPip = !!emp.is_pip;
     const cells = dates.map(d => {
       const entry = getOtEntry(emp.id, d);
-      const canEdit = admin || isMe;
+      const canEdit = (admin || isMe) && !isPip;
       const hasAssumed = entry && entry.assumed_hours != null;
       const hasActual = entry && entry.actual_hours != null;
       const confirmed = entry && entry.confirmed;
@@ -7520,17 +7521,30 @@ function renderOtFiling() {
       const outputVal = entry && entry.total_output != null ? entry.total_output : '—';
       const outputCell = `<td style="padding:8px; text-align:center; font-size:12.5px; color:var(--ink-soft);">${outputVal}</td>`;
 
+      // PIP employees can't file NEW/unconfirmed OT — locked out
+      // entirely, shown as a plain indicator instead of any input.
+      // Already-CONFIRMED historical entries (from before they were
+      // tagged, or from before this feature existed) still display
+      // normally below rather than being hidden — being on PIP blocks
+      // future filing and editing, it doesn't erase past records.
+      if (isPip && !confirmed) {
+        return `<td style="padding:8px; text-align:center; font-size:11px; color:var(--ink-faint); font-style:italic;" title="This employee is on PIP and cannot file OT">PIP — locked</td>` + outputCell;
+      }
+
       if (confirmed) {
         // Stays confirmed and visible as such even after being amended —
         // Amend edits the values directly in one step rather than
         // unlocking the row for a separate later edit, so there's no
         // in-between state where it looks unconfirmed to anyone else.
+        // PIP employees keep their historical confirmed data visible,
+        // but lose the ability to Amend it — "no editing any fields"
+        // applies to already-confirmed records too, not just new ones.
         return `
           <td style="padding:8px; text-align:center; font-size:12.5px;">
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
-              ${(admin || isMe) ? `<button class="btn btn-ghost btn-sm ot-amend-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Amend</button>` : ''}
+              ${(admin || isMe) && !isPip ? `<button class="btn btn-ghost btn-sm ot-amend-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Amend</button>` : ''}
               ${canDeleteOtEntry() ? `<button class="btn btn-ghost btn-sm ot-delete-entry-btn" data-emp-id="${emp.id}" data-date="${d}" title="Delete this entry" style="font-size:11px; padding:1px 7px; color:var(--coral);">✕</button>` : ''}
             </div>
           </td>
@@ -7560,8 +7574,14 @@ function renderOtFiling() {
     }).join('');
 
     return `
-      <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:#E2EEF6;' : ''}">
-        <td style="padding:8px 10px; font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</td>
+      <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:#E2EEF6;' : ''} ${isPip ? 'opacity:0.6;' : ''}">
+        <td style="padding:8px 10px; font-weight:700; color:var(--ink);">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span>${escapeHtml(emp.display_name)}</span>
+            ${isPip ? `<span title="On PIP — OT Filing locked" style="font-size:9px; font-weight:700; padding:1px 7px; border-radius:999px; background:var(--coral-wash); color:var(--coral); letter-spacing:0.02em;">PIP</span>` : ''}
+            ${admin ? `<button type="button" class="ot-pip-toggle-btn" data-emp-id="${emp.id}" data-currently-pip="${isPip ? '1' : '0'}" title="${isPip ? 'Remove PIP tag' : 'Tag as PIP'}" style="background:none; border:1px solid var(--line); border-radius:999px; padding:1px 8px; font-size:9px; font-weight:600; color:var(--ink-faint); cursor:pointer; white-space:nowrap;">${isPip ? 'Untag PIP' : '+ PIP'}</button>` : ''}
+          </div>
+        </td>
         ${cells}
       </tr>
     `;
@@ -7648,6 +7668,9 @@ function renderOtFiling() {
   document.querySelectorAll('.ot-delete-entry-btn').forEach(btn => {
     btn.addEventListener('click', () => deleteOtEntry(btn.dataset.empId, btn.dataset.date));
   });
+  document.querySelectorAll('.ot-pip-toggle-btn').forEach(btn => {
+    btn.addEventListener('click', () => toggleEmployeePip(btn.dataset.empId, btn.dataset.currentlyPip === '1'));
+  });
 }
 
 // Amend replaces the old Unlock — instead of unlocking the field for a
@@ -7663,6 +7686,8 @@ function openOtAmendModal(employeeId, filingDate) {
   if (!entry) return;
   const isOwner = employeeId === state.profile.employee_id;
   if (!isAdmin() && !isOwner) { showToast('You can only amend your own OT entry.', true); return; }
+  const empForPipCheck = state.employees.find(e => e.id === employeeId);
+  if (empForPipCheck && empForPipCheck.is_pip) { showToast('This employee is on PIP and cannot have OT entries amended.', true); return; }
 
   const emp = state.employees.find(e => e.id === employeeId);
   const formHtml = `
@@ -7742,6 +7767,34 @@ async function deleteOtEntry(employeeId, filingDate) {
   pushOtFilingNotification(`Jeinna deleted ${name}'s OT entry for ${formatPrettyDate(filingDate)}.`);
 
   await loadOtHoursEntries();
+  renderOtFiling();
+}
+
+// Tags (or untags) an employee as being on a Performance Improvement
+// Plan for OT Filing purposes — while tagged, they can't file NEW OT
+// hours, can't Confirm an assumed entry, and can't Amend an
+// already-confirmed one, for anyone, admins included. Already-
+// confirmed historical entries stay visible as a record, just frozen.
+// Admin-only, since this is a disciplinary/HR designation, not a
+// day-to-day filing action.
+async function toggleEmployeePip(employeeId, currentlyPip) {
+  if (!isAdmin()) { showToast('Only admins can change PIP status.', true); return; }
+  const emp = state.employees.find(e => e.id === employeeId);
+  const name = emp ? emp.display_name : 'this employee';
+  const goingOnPip = !currentlyPip;
+  const msg = goingOnPip
+    ? `Tag ${name} as PIP? They won't be able to file, confirm, or amend any OT hours while tagged.`
+    : `Remove ${name}'s PIP tag? They'll be able to file OT normally again.`;
+  if (!confirm(msg)) return;
+
+  const { error } = await sb.from('employees').update({ is_pip: goingOnPip }).eq('id', employeeId);
+  if (error) {
+    console.error(error);
+    showToast(/column .*is_pip.* does not exist/i.test(error.message || '') ? 'Needs setup — run add_is_pip_column.sql in Supabase.' : 'Could not update PIP status.', true);
+    return;
+  }
+  showToast(goingOnPip ? `${name} tagged as PIP.` : `${name}'s PIP tag removed.`);
+  await loadEmployees();
   renderOtFiling();
 }
 
@@ -7898,6 +7951,12 @@ async function saveOtHours(employeeId, filingDate, rawValue) {
     renderOtFiling();
     return;
   }
+  const empForPipCheck = state.employees.find(e => e.id === employeeId);
+  if (empForPipCheck && empForPipCheck.is_pip) {
+    showToast('This employee is on PIP and cannot file OT hours.', true);
+    renderOtFiling();
+    return;
+  }
 
   const existingCheck = getOtEntry(employeeId, filingDate);
   if (existingCheck && existingCheck.confirmed) {
@@ -7968,6 +8027,10 @@ function openOtConfirmModal(employeeId, filingDate) {
 
   if (!isAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only confirm your own OT hours.', true);
+    return;
+  }
+  if (emp && emp.is_pip) {
+    showToast('This employee is on PIP and cannot confirm OT hours.', true);
     return;
   }
 
