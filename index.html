@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-filing-pip-refinements';
+const APP_VERSION = '2026-09-04-ot-filing-dots-menu';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7545,13 +7545,18 @@ function renderOtFiling() {
         // PIP employees keep their historical confirmed data visible,
         // but lose the ability to Amend it — "no editing any fields"
         // applies to already-confirmed records too, not just new ones.
+        // Amend and Delete now live behind a single ⋯ menu (same
+        // portal-dropdown pattern as Team Funds) instead of two inline
+        // buttons — applies uniformly for every employee's row, not
+        // just PIP-tagged ones.
+        const canAmendThis = (admin || isMe) && !isPip;
+        const canDeleteThis = canDeleteOtEntry();
         return `
           <td style="padding:8px; text-align:center; font-size:12.5px;">
             <div style="display:flex; align-items:center; justify-content:center; gap:6px;">
               <span>${displayVal}</span>
               <span style="font-size:10px; color:var(--green); font-weight:600;">✓ confirmed</span>
-              ${(admin || isMe) && !isPip ? `<button class="btn btn-ghost btn-sm ot-amend-btn" data-emp-id="${emp.id}" data-date="${d}" style="font-size:9.5px; padding:1px 6px; color:var(--ink-faint);">Amend</button>` : ''}
-              ${canDeleteOtEntry() ? `<button class="btn btn-ghost btn-sm ot-delete-entry-btn" data-emp-id="${emp.id}" data-date="${d}" title="Delete this entry" style="font-size:11px; padding:1px 7px; color:var(--coral);">✕</button>` : ''}
+              ${(canAmendThis || canDeleteThis) ? `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-amend="${canAmendThis ? '1' : '0'}" data-can-delete="${canDeleteThis ? '1' : '0'}" title="More actions" style="background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>` : ''}
             </div>
           </td>
         ` + outputCell;
@@ -7673,14 +7678,75 @@ function renderOtFiling() {
   document.querySelectorAll('.ot-confirm-btn').forEach(btn => {
     btn.addEventListener('click', () => openOtConfirmModal(btn.dataset.empId, btn.dataset.date));
   });
-  document.querySelectorAll('.ot-amend-btn').forEach(btn => {
-    btn.addEventListener('click', () => openOtAmendModal(btn.dataset.empId, btn.dataset.date));
-  });
-  document.querySelectorAll('.ot-delete-entry-btn').forEach(btn => {
-    btn.addEventListener('click', () => deleteOtEntry(btn.dataset.empId, btn.dataset.date));
+  document.querySelectorAll('.ot-menu-trigger').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showOtMenu(btn);
+    });
   });
   document.querySelectorAll('.ot-pip-toggle-btn').forEach(btn => {
     btn.addEventListener('click', () => toggleEmployeePip(btn.dataset.empId, btn.dataset.currentlyPip === '1'));
+  });
+  otRegisterOutsideClick();
+}
+
+// Shows the OT Filing ⋯ menu (Amend / Delete) as a fixed-position
+// portal dropdown, positioned against whichever trigger button was
+// clicked — same reasoning as Team Funds' own portal dropdown: this
+// table is wide with many date columns, so an inline dropdown risks
+// getting clipped or causing the row to shift when it opens.
+function showOtMenu(triggerBtn) {
+  const portal = document.getElementById('ot-portal-menu');
+  if (!portal) return;
+  const empId = triggerBtn.dataset.empId;
+  const date = triggerBtn.dataset.date;
+  const canAmend = triggerBtn.dataset.canAmend === '1';
+  const canDelete = triggerBtn.dataset.canDelete === '1';
+
+  const items = [];
+  if (canAmend) items.push({ action: 'amend', label: 'Amend' });
+  if (canDelete) items.push({ action: 'delete', label: 'Delete', danger: true });
+  if (!items.length) return;
+
+  portal.innerHTML = items.map(item => `
+    <div class="ot-menu-item" data-action="${item.action}" style="padding:7px 10px; border-radius:6px; font-size:12.5px; font-weight:500; cursor:pointer; color:${item.danger ? 'var(--coral)' : 'inherit'}; white-space:nowrap;">
+      ${item.label}
+    </div>
+  `).join('');
+
+  const rect = triggerBtn.getBoundingClientRect();
+  portal.style.display = 'block';
+  const menuWidth = 140;
+  let left = rect.right - menuWidth;
+  if (left < 8) left = 8;
+  portal.style.left = left + 'px';
+  portal.style.top = (rect.bottom + 4) + 'px';
+
+  portal.querySelectorAll('.ot-menu-item').forEach(el => {
+    el.addEventListener('mouseenter', () => { el.style.background = el.dataset.action === 'delete' ? 'var(--coral-wash)' : 'var(--line-soft)'; });
+    el.addEventListener('mouseleave', () => { el.style.background = 'transparent'; });
+    el.addEventListener('click', () => {
+      hideOtMenu();
+      if (el.dataset.action === 'amend') openOtAmendModal(empId, date);
+      if (el.dataset.action === 'delete') deleteOtEntry(empId, date);
+    });
+  });
+}
+
+function hideOtMenu() {
+  const portal = document.getElementById('ot-portal-menu');
+  if (portal) { portal.style.display = 'none'; portal.innerHTML = ''; }
+}
+
+// Registered once per app lifetime (guarded so re-renders don't stack
+// up duplicate listeners) — closes the OT Filing ⋯ menu on any click
+// outside it, same pattern as Team Funds' own portal menu.
+function otRegisterOutsideClick() {
+  if (window._otOutsideClickBound) return;
+  window._otOutsideClickBound = true;
+  document.addEventListener('click', () => {
+    if (state.currentView !== 'ot-filing') return;
+    hideOtMenu();
   });
 }
 
@@ -15885,6 +15951,11 @@ setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
 <!-- Portal dropdown for Team Funds ⋯ menus — lives outside all tables
      so it never affects table layout or causes row shifting when opened -->
 <div id="tf-portal-menu" style="display:none; position:fixed; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:1000; min-width:148px;"></div>
+
+<!-- Portal dropdown for OT Hours Filing ⋯ menus — same reasoning as
+     Team Funds' portal above: this table is wide with many date
+     columns, so an inline dropdown risks clipping/scroll issues. -->
+<div id="ot-portal-menu" style="display:none; position:fixed; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:1000; min-width:140px;"></div>
 
 <!-- Leave Tracker notification panel — fixed portal outside the page flow -->
 <div id="leave-notif-panel" style="display:none; position:fixed; top:0; right:0; background:var(--paper-raised); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow-md); z-index:1001; width:360px; max-height:480px; display:none; flex-direction:column; overflow:hidden;"></div>
