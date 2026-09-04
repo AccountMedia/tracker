@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-estimated-leads-availability';
+const APP_VERSION = '2026-09-04-ot-availability-no-autofill';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7560,7 +7560,7 @@ function renderOtFiling() {
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
     const isPip = !!emp.is_pip;
-    const cells = dates.map(d => {
+    const cells = dates.map((d, i) => {
       const entry = getOtEntry(emp.id, d);
       const canEdit = (admin || isMe) && !isPip;
       const hasAssumed = entry && entry.assumed_hours != null;
@@ -7639,6 +7639,16 @@ function renderOtFiling() {
         ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; font-size:10px; padding:2px 6px; color:var(--amber); white-space:nowrap;">Confirm</button>`
         : '';
 
+      // The suggested split (Estimated Pending Leads ÷ confirmed count
+      // ÷ 100) is shown here purely as GUIDANCE text — never written
+      // into inputVal/the field itself. The employee always types
+      // their own number; this just tells them what that number could
+      // reasonably be.
+      const suggestedHours = suggestedHoursPerEmployeePerDate[i];
+      const suggestionHint = (!hasAssumed && suggestedHours != null)
+        ? `<div class="faint" style="font-size:8.5px; margin-top:3px; line-height:1.2;" title="${suggestedHours} hours of OT available for each agent">${suggestedHours}h available</div>`
+        : '';
+
       return otCheckboxCell + `
         <td style="padding:4px; text-align:center;">
           <div style="position:relative; display:inline-block;">
@@ -7646,6 +7656,7 @@ function renderOtFiling() {
               style="width:52px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
             ${badge}
           </div>
+          ${suggestionHint}
         </td>
       ` + outputCell;
     }).join('');
@@ -8131,13 +8142,15 @@ async function saveOtEstimatedPendingLeads(filingDate, rawValue) {
 
 // Toggles whether an employee has confirmed AVAILABILITY for OT on a
 // given date — this is the gate that unlocks the "No. of Hours" field
-// at all (see renderOtFiling's !availableForOt branch). The moment
-// someone newly confirms (checked=true) and hasn't already typed in an
-// hours value, this auto-fills a SUGGESTED value: Estimated Pending
-// Leads for that date, divided across everyone who's confirmed so far
-// (this employee included), then converted from leads to hours at the
-// fixed 100-leads-per-hour ratio. It's just a starting point — the
-// employee can still adjust it before their own final Confirm.
+// at all (see renderOtFiling's !availableForOt branch). Marking
+// available never writes a value into assumed_hours — the field stays
+// genuinely blank for the employee to type their own number; the
+// suggested split (Estimated Pending Leads ÷ confirmed count ÷ 100)
+// is shown as a MESSAGE next to the field, never written as data (see
+// renderOtFiling's suggestedHoursPerEmployeePerDate). Unmarking clears
+// the entry entirely (deletes the row if nothing else is on it) — a
+// day that's no longer confirmed for OT shouldn't leave a stale hours
+// number sitting around still counting toward headcount/leads totals.
 async function saveOtAvailability(employeeId, filingDate, checked) {
   if (!isAdmin() && employeeId !== state.profile.employee_id) {
     showToast('You can only confirm your own OT availability.', true);
@@ -8157,30 +8170,26 @@ async function saveOtAvailability(employeeId, filingDate, checked) {
     return;
   }
 
+  if (!checked) {
+    // Unmarking wipes the day clean — deletes the row outright rather
+    // than just flipping the flag, so no leftover assumed_hours value
+    // (auto-filled or manually typed) keeps counting toward headcount
+    // or leads-to-validate after someone is no longer confirmed.
+    if (existing) {
+      const { error } = await sb.from('ot_hours_entries').delete().eq('id', existing.id);
+      if (error) { showToast('Could not update availability.', true); return; }
+    }
+    await loadOtHoursEntries();
+    renderOtFiling();
+    return;
+  }
+
   const payload = {
     employee_id: employeeId,
     filing_date: filingDate,
-    available_for_ot: checked,
+    available_for_ot: true,
     updated_at: new Date().toISOString(),
   };
-
-  if (checked && (!existing || existing.assumed_hours == null)) {
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === filingDate);
-    const estimated = dateRecord && dateRecord.estimated_pending_leads != null ? Number(dateRecord.estimated_pending_leads) : null;
-    if (estimated != null) {
-      // Count everyone ELSE already confirmed, then add this employee
-      // (confirming right now) exactly once — matches the same roster
-      // renderOtFiling's own confirmedForOtCount() uses.
-      const alreadyConfirmedElsewhere = activeRoster().reduce((count, emp) => {
-        if (emp.id === employeeId) return count;
-        const e = getOtEntry(emp.id, filingDate);
-        return count + (e && e.available_for_ot ? 1 : 0);
-      }, 0);
-      const newCount = alreadyConfirmedElsewhere + 1;
-      const leadsPerEmployee = round2(estimated / newCount);
-      payload.assumed_hours = round2(leadsPerEmployee / 100);
-    }
-  }
 
   const { error } = await sb.from('ot_hours_entries').upsert(payload, { onConflict: 'employee_id,filing_date' });
   if (error) {
