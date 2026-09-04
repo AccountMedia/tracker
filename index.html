@@ -1742,7 +1742,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-filing-dots-menu';
+const APP_VERSION = '2026-09-04-ot-filing-zero-hours-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7342,24 +7342,23 @@ function getOtEntry(employeeId, filingDate) {
   return state.otHoursEntries.find(e => e.employee_id === employeeId && e.filing_date === filingDate);
 }
 
-// The single source of truth for "does this OT entry still represent
-// real, currently-visible data" — checked against EVERY field that
-// could indicate something was logged, not just assumed/actual hours.
-// This exists because deleting the hours value alone used to leave
-// total_output (or a stale confirmed flag) behind, which made an
-// otherwise-empty row still count as "logged" in the sort, the "# of
-// Heads Working" count, and the dashboard's OT Confirmed card — so a
-// fully-cleared entry kept showing up everywhere even though the
-// employee had removed everything. Every place that needs to answer
-// "has this person logged anything for this date" should call this,
-// not re-implement the check inline.
+// The single source of truth for "does this OT entry represent
+// genuinely active data" — used for sort priority (who shows up first)
+// and headcount ("# of Heads working"). A confirmed entry only counts
+// if actual_hours is a real positive number — confirming with 0h means
+// no OT actually happened that day, so it shouldn't be treated as
+// active just because the row exists and is technically "confirmed".
+// An unconfirmed entry counts if assumed_hours is positive — still
+// mid-way through logging, genuinely in progress. Every place that
+// needs to answer "has this person logged anything active for this
+// date" should call this, not re-implement the check inline.
 function otEntryHasData(entry) {
-  return !!entry && (
-    entry.assumed_hours != null ||
-    entry.actual_hours != null ||
-    entry.total_output != null ||
-    entry.confirmed === true
-  );
+  if (!entry) return false;
+  if (entry.confirmed) {
+    return entry.actual_hours != null && Number(entry.actual_hours) > 0;
+  }
+  return (entry.assumed_hours != null && Number(entry.assumed_hours) > 0)
+    || (entry.total_output != null && Number(entry.total_output) > 0);
 }
 
 function formatOtDateHeader(isoStr) {
