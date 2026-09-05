@@ -1741,7 +1741,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-confirmed-box-locked';
+const APP_VERSION = '2026-09-04-ot-confirm-in-dots-menu';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7611,8 +7611,9 @@ function renderOtFiling() {
       }
 
       const inputVal = hasAssumed ? entry.assumed_hours : '';
-      const badge = hasAssumed
-        ? `<button class="btn btn-ghost btn-sm ot-confirm-btn" data-emp-id="${emp.id}" data-date="${d}" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; font-size:10px; padding:2px 6px; color:var(--amber); white-space:nowrap;">Confirm</button>`
+      const canDeleteThisEntry = canDeleteOtEntry();
+      const badge = (hasAssumed || canDeleteThisEntry)
+        ? `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-confirm="${hasAssumed ? '1' : '0'}" data-can-delete="${canDeleteThisEntry ? '1' : '0'}" title="More actions" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>`
         : '';
 
       // The suggested split (Estimated Pending Leads ÷ confirmed count
@@ -7740,9 +7741,6 @@ function renderOtFiling() {
   document.querySelectorAll('.ot-hours-input').forEach(input => {
     input.addEventListener('change', () => saveOtHours(input.dataset.empId, input.dataset.date, input.value));
   });
-  document.querySelectorAll('.ot-confirm-btn').forEach(btn => {
-    btn.addEventListener('click', () => openOtConfirmModal(btn.dataset.empId, btn.dataset.date));
-  });
   document.querySelectorAll('.ot-menu-trigger').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -7765,10 +7763,12 @@ function showOtMenu(triggerBtn) {
   if (!portal) return;
   const empId = triggerBtn.dataset.empId;
   const date = triggerBtn.dataset.date;
+  const canConfirm = triggerBtn.dataset.canConfirm === '1';
   const canAmend = triggerBtn.dataset.canAmend === '1';
   const canDelete = triggerBtn.dataset.canDelete === '1';
 
   const items = [];
+  if (canConfirm) items.push({ action: 'confirm', label: 'Confirm' });
   if (canAmend) items.push({ action: 'amend', label: 'Amend' });
   if (canDelete) items.push({ action: 'delete', label: 'Delete', danger: true });
   if (!items.length) return;
@@ -7792,6 +7792,7 @@ function showOtMenu(triggerBtn) {
     el.addEventListener('mouseleave', () => { el.style.background = 'transparent'; });
     el.addEventListener('click', () => {
       hideOtMenu();
+      if (el.dataset.action === 'confirm') openOtConfirmModal(empId, date);
       if (el.dataset.action === 'amend') openOtAmendModal(empId, date);
       if (el.dataset.action === 'delete') deleteOtEntry(empId, date);
     });
