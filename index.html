@@ -715,7 +715,6 @@ const state = {
   leaveNotifPanelOpen: false,
   accountHubTab: 'leave-tracker', // active tab in Account Hub
   otFilingDates: [],   // open OT filing dates (admin-managed)
-  otFilingSettings: { total_leads_available: null, total_leads_updated_by: null }, // the single shared "Total Leads Available" figure
   otHoursEntries: [],  // OT hours entries
   calendarMonth: new Date().getMonth(),
   calendarYear: new Date().getFullYear(),
@@ -1742,7 +1741,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-availability-no-autofill';
+const APP_VERSION = '2026-09-04-ot-remove-duplicate-banner';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7487,12 +7486,14 @@ function renderOtFiling() {
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
 
   // Estimated Pending Leads: a rough forecast an admin types in per
-  // date, independent of the confirmed "Total Leads Available" figure
-  // below it. Automatically divided across everyone who's clicked to
+  // date. Automatically divided across everyone who's clicked to
   // confirm OT availability that date, then converted to hours at the
-  // fixed 100-leads-per-hour ratio — this is what auto-fills a
-  // suggested "No. of Hours" the moment someone confirms availability
-  // (see saveOtAvailability).
+  // fixed 100-leads-per-hour ratio — shown as a live banner (never
+  // written into anyone's hours field, see saveOtHours/renderOtFiling's
+  // per-employee hint). This is now also what "Pending Leads Available
+  // to Work On" is calculated FROM directly (Total Leads Available has
+  // been removed entirely — Estimated Pending Leads is the only lead
+  // figure this page tracks per date now).
   const estimatedPendingLeadsPerDate = dates.map(d => {
     const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
     return dateRecord && dateRecord.estimated_pending_leads != null ? Number(dateRecord.estimated_pending_leads) : null;
@@ -7513,47 +7514,23 @@ function renderOtFiling() {
   const estimatedPendingLeadsRow = dates.map((d, i) => {
     const val = estimatedPendingLeadsPerDate[i];
     const editedBy = estimatedPendingLeadsEditedByPerDate[i];
-    const count = confirmedForOtCountPerDate[i];
-    const suggestedHours = suggestedHoursPerEmployeePerDate[i];
     return `<td colspan="3" style="padding:6px;">
-      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
+      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;">
         <input type="number" min="0" step="1" class="priolist-input ot-estimated-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Estimated"
           style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-        ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
-        ${val != null ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">${count} confirmed${count > 0 ? ` → ${suggestedHours}h each` : ''}</div>` : ''}
+        ${editedBy ? `<div class="faint" style="font-size:9.5px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
       </div>
     </td>`;
   }).join('');
 
-  // Total Leads Available is shown for every open date, independently
-  // editable per date. Pending Leads for each date = that date's own
-  // total minus that date's own "# of Leads to Validate".
-  const totalLeadsPerDate = dates.map(d => {
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    return dateRecord && dateRecord.total_leads_available != null ? Number(dateRecord.total_leads_available) : null;
-  });
-
-  const totalLeadsEditedByPerDate = dates.map(d => {
-    const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    return dateRecord ? dateRecord.total_leads_updated_by : null;
-  });
-
+  // Pending Leads Available to Work On = Estimated Pending Leads minus
+  // that same date's own "# of Leads to Validate" — Total Leads
+  // Available has been removed entirely; Estimated Pending Leads is
+  // now the only lead figure this formula draws from.
   const pendingBalancesPerDate = dates.map((d, i) => {
-    if (totalLeadsPerDate[i] == null) return null;
-    return round2(totalLeadsPerDate[i] - leadsToValidatePerDate[i]);
+    if (estimatedPendingLeadsPerDate[i] == null) return null;
+    return round2(estimatedPendingLeadsPerDate[i] - leadsToValidatePerDate[i]);
   });
-
-  const totalLeadsRow = dates.map((d, i) => {
-    const val = totalLeadsPerDate[i];
-    const editedBy = totalLeadsEditedByPerDate[i];
-    return `<td colspan="3" style="padding:6px;">
-      <div style="display:flex; flex-direction:column; align-items:center; justify-content:center;">
-        <input type="number" min="0" step="1" class="priolist-input ot-total-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Total"
-          style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
-        ${editedBy ? `<div class="faint" style="font-size:9.5px; margin-top:3px;">edited by ${escapeHtml(editedBy)}</div>` : ''}
-      </div>
-    </td>`;
-  }).join('');
 
   const pendingRow = pendingBalancesPerDate.map(bal => `<td colspan="3" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
 
@@ -7680,9 +7657,18 @@ function renderOtFiling() {
     `;
   }).join('');
 
+  const latestDateIdx = dates.length - 1;
+  const latestBannerCount = latestDateIdx >= 0 ? confirmedForOtCountPerDate[latestDateIdx] : 0;
+  const latestBannerHours = latestDateIdx >= 0 ? suggestedHoursPerEmployeePerDate[latestDateIdx] : null;
+  const topBannerText = (latestBannerCount > 0 && latestBannerHours != null)
+    ? `${latestBannerCount} agent${latestBannerCount === 1 ? '' : 's'} confirmed for OT — ${latestBannerHours}h available for each`
+    : 'No agents confirmed for OT yet';
+
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <p class="faint" style="font-size:11.5px; margin:0 0 14px;">Check "OT?" to confirm availability for a date — that unlocks your "No. of Hours" field, pre-filled with a suggested value split from Estimated Pending Leads. After your shift ends, click "Confirm" to enter your actual time worked and total output — both lock together once confirmed.</p>
+      <div style="background:#0A1F14; color:#7FCFA0; border:1px solid #1F5C3A; border-radius:8px; padding:12px 16px; font-size:13px; font-weight:700; font-family:'Courier New', monospace; letter-spacing:0.03em; line-height:1.5; margin:0 0 16px; text-shadow:0 0 4px rgba(127,207,160,0.3); box-shadow:0 0 10px rgba(127,207,160,0.08) inset;">
+        ${topBannerText}
+      </div>
       <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
           <col style="width:230px;">
@@ -7720,16 +7706,9 @@ function renderOtFiling() {
               ${estimatedPendingLeadsRow}
             </tr>
             <tr>
-              <td style="padding:8px 10px;">
-                <div style="font-weight:700; font-size:12px;">Total Leads Available</div>
-                <div class="faint" style="font-size:10.5px; margin-top:2px;">Set the starting total for each date.</div>
-              </td>
-              ${totalLeadsRow}
-            </tr>
-            <tr>
               <td style="padding:8px 10px; font-weight:700; font-size:12px;">
                 Pending Leads Available to Work On
-                <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Each date's own total minus its leads to validate</div>
+                <div class="faint" style="font-weight:500; font-size:10.5px; margin-top:2px;">Estimated Pending Leads minus that date's own leads to validate</div>
               </td>
               ${pendingRow}
             </tr>
@@ -7755,9 +7734,6 @@ function renderOtFiling() {
 
   document.querySelectorAll('.ot-estimated-leads-input').forEach(input => {
     input.addEventListener('change', () => saveOtEstimatedPendingLeads(input.dataset.date, input.value));
-  });
-  document.querySelectorAll('.ot-total-leads-input').forEach(input => {
-    input.addEventListener('change', () => saveOtTotalLeadsAvailable(input.dataset.date, input.value));
   });
   document.querySelectorAll('.ot-availability-checkbox').forEach(checkbox => {
     checkbox.addEventListener('change', () => saveOtAvailability(checkbox.dataset.empId, checkbox.dataset.date, checkbox.checked));
@@ -7967,7 +7943,7 @@ async function toggleEmployeePip(employeeId, currentlyPip) {
 
 async function resetOtFiling() {
   if (!isAdmin()) { showToast('Only admins can reset OT Hours Filing.', true); return; }
-  if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and every date\'s "Total Leads Available" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.')) return;
+  if (!confirm('Reset OT Hours Filing? Every logged hour (assumed, actual, and confirmed status) and every date\'s "Estimated Pending Leads" figure will be cleared. The open filing dates themselves will stay. This cannot be undone.')) return;
 
   const { error: hoursError } = await sb
     .from('ot_hours_entries')
@@ -7977,13 +7953,13 @@ async function resetOtFiling() {
   if (hoursError) { showToast('Could not reset OT Hours Filing.', true); return; }
 
   const results = await Promise.all(
-    state.otFilingDates.map(rec => writeOtFilingDateTotals(rec.filing_date, { total_leads_available: null, total_leads_updated_by: null }))
+    state.otFilingDates.map(rec => writeOtFilingDateTotals(rec.filing_date, { estimated_pending_leads: null, estimated_pending_leads_updated_by: null }))
   );
   const totalsError = results.find(r => r.error);
 
   if (totalsError) {
-    console.error('Resetting Total Leads Available failed:', totalsError.error);
-    showToast('Could not reset Total Leads Available — check the console for details.', true);
+    console.error('Resetting Estimated Pending Leads failed:', totalsError.error);
+    showToast('Could not reset Estimated Pending Leads — check the console for details.', true);
     return;
   }
 
@@ -8046,7 +8022,7 @@ function downloadOtFilingReport() {
 
   csvRows.push([]);
   csvRows.push(['Summary']);
-  csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Total Leads Available', 'Pending Leads Available']);
+  csvRows.push(['Date', '# of Heads Working', '# of Leads to Validate', 'Estimated Pending Leads', 'Pending Leads Available']);
   dates.forEach(d => {
     const heads = roster.reduce((count, emp) => count + (otEntryHasData(getOtEntry(emp.id, d)) ? 1 : 0), 0);
     const hours = roster.reduce((sum, emp) => {
@@ -8057,16 +8033,16 @@ function downloadOtFilingReport() {
     }, 0);
     const leads = round2(hours * 100);
     const dateRecord = state.otFilingDates.find(rec => rec.filing_date === d);
-    const total = dateRecord && dateRecord.total_leads_available != null ? Number(dateRecord.total_leads_available) : null;
-    const pending = total != null ? round2(total - leads) : '';
-    csvRows.push([formatPrettyDate(d), heads, leads, total != null ? total : '', pending]);
+    const estimated = dateRecord && dateRecord.estimated_pending_leads != null ? Number(dateRecord.estimated_pending_leads) : null;
+    const pending = estimated != null ? round2(estimated - leads) : '';
+    csvRows.push([formatPrettyDate(d), heads, leads, estimated != null ? estimated : '', pending]);
   });
 
   const filename = `OT Hours Filing Report - ${isoDate(new Date())}.csv`;
   openReportInNewTab(csvRows, filename);
 }
 
-// Writes a date's total_leads_available without relying on
+// Writes a date's estimated_pending_leads without relying on
 // upsert/onConflict, since that requires a real unique constraint on
 // the target column — which may not exist depending on how the table
 // was originally created. Tries an update first; if nothing was
@@ -8088,34 +8064,11 @@ async function writeOtFilingDateTotals(filingDate, fields) {
   return { error: insertError };
 }
 
-async function saveOtTotalLeadsAvailable(filingDate, rawValue) {
-  const value = rawValue === '' ? null : parseFloat(rawValue);
-  if (value !== null && (isNaN(value) || value < 0)) {
-    showToast('Enter a valid, non-negative number.', true);
-    renderOtFiling();
-    return;
-  }
-
-  const { error } = await writeOtFilingDateTotals(filingDate, {
-    total_leads_available: value,
-    total_leads_updated_by: value != null ? state.profile.display_name : null,
-  });
-  if (error) {
-    console.error('saveOtTotalLeadsAvailable failed:', error);
-    const msg = error.message && error.message.toLowerCase().includes('relation')
-      ? 'Could not save — the database is missing a required table. Ask your admin to run the latest setup SQL.'
-      : 'Could not save.';
-    showToast(msg, true);
-    return;
-  }
-  await loadOtFilingDates();
-  renderOtFiling();
-}
-
-// Estimated Pending Leads — same open-access pattern as Total Leads
-// Available above (no role gate; anyone can set the forecast for a
-// date). This is what confirmedForOtCount()/suggestedHoursPerEmployee
-// in renderOtFiling divide across everyone who's confirmed OT that day.
+// Estimated Pending Leads — the only lead figure this page tracks per
+// date now (Total Leads Available has been removed entirely). No role
+// gate; anyone can set the forecast for a date. This is what
+// confirmedForOtCount()/suggestedHoursPerEmployee in renderOtFiling
+// divide across everyone who's confirmed OT that day.
 async function saveOtEstimatedPendingLeads(filingDate, rawValue) {
   const value = rawValue === '' ? null : parseFloat(rawValue);
   if (value !== null && (isNaN(value) || value < 0)) {
