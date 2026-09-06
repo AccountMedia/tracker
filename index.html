@@ -1741,7 +1741,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-banner-match-card-style';
+const APP_VERSION = '2026-09-04-ot-remove-redundant-hint';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7439,9 +7439,8 @@ function renderOtFiling() {
     return;
   }
 
-  const headerCells = dates.map(d => `<th colspan="3" style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">${formatOtDateHeader(d)}</th>`).join('');
+  const headerCells = dates.map(d => `<th colspan="2" style="padding:10px 8px; text-align:center; font-size:11px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em;">${formatOtDateHeader(d)}</th>`).join('');
   const subHeaderCells = dates.map(() => `
-    <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">OT?</th>
     <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">No. of Hours</th>
     <th style="padding:4px 6px; text-align:center; font-size:9.5px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.02em;">Total Output</th>
   `).join('');
@@ -7474,13 +7473,13 @@ function renderOtFiling() {
 
   const headsRow = dates.map(d => {
     const heads = headsForDate(d);
-    return `<td colspan="3" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
+    return `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${heads}</div></td>`;
   }).join('');
 
   const leadsToValidatePerDate = dates.map(d => round2(hoursForDate(d) * 100));
 
   const leadsRow = dates.map((d, i) => {
-    return `<td colspan="3" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
+    return `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${leadsToValidatePerDate[i]}</div></td>`;
   }).join('');
 
   const totalLeadsToValidate = round2(leadsToValidatePerDate.reduce((sum, n) => sum + n, 0));
@@ -7514,7 +7513,7 @@ function renderOtFiling() {
   const estimatedPendingLeadsRow = dates.map((d, i) => {
     const val = estimatedPendingLeadsPerDate[i];
     const editedBy = estimatedPendingLeadsEditedByPerDate[i];
-    return `<td colspan="3" style="padding:6px;">
+    return `<td colspan="2" style="padding:6px;">
       <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;">
         <input type="number" min="0" step="1" class="priolist-input ot-estimated-leads-input" data-date="${d}" value="${val != null ? val : ''}" placeholder="Estimated"
           style="width:90px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
@@ -7532,7 +7531,7 @@ function renderOtFiling() {
     return round2(estimatedPendingLeadsPerDate[i] - leadsToValidatePerDate[i]);
   });
 
-  const pendingRow = pendingBalancesPerDate.map(bal => `<td colspan="3" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
+  const pendingRow = pendingBalancesPerDate.map(bal => `<td colspan="2" style="padding:8px;"><div style="display:flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:600;">${bal != null ? bal : '—'}</div></td>`).join('');
 
   const bodyRows = roster.map(emp => {
     const isMe = emp.id === state.profile.employee_id;
@@ -7561,18 +7560,8 @@ function renderOtFiling() {
       // normally below rather than being hidden — being on PIP blocks
       // future filing and editing, it doesn't erase past records.
       if (isPip && !confirmed) {
-        return `<td colspan="2" style="padding:8px; text-align:center; font-size:11px; color:var(--ink-faint); font-style:italic;" title="This employee is on PIP and cannot file OT">PIP — locked</td>` + outputCell;
+        return `<td style="padding:8px; text-align:center; font-size:11px; color:var(--ink-faint); font-style:italic;" title="This employee is on PIP and cannot file OT">PIP — locked</td>` + outputCell;
       }
-
-      // The "OT?" availability checkbox — this is the gate: the hours
-      // field stays locked until this is checked. Frozen (read-only)
-      // once the entry is confirmed, editable by the owner/admin
-      // beforehand, and read-only for anyone else the whole time.
-      const otCheckboxCell = confirmed
-        ? `<td style="padding:8px; text-align:center;">${availableForOt ? '<span style="color:var(--green); font-weight:700;" title="Confirmed available for OT">✓</span>' : '<span class="faint">—</span>'}</td>`
-        : canEdit
-          ? `<td style="padding:8px; text-align:center;"><input type="checkbox" class="ot-availability-checkbox" data-emp-id="${emp.id}" data-date="${d}" ${availableForOt ? 'checked' : ''} title="Confirm availability for OT" style="width:16px; height:16px; cursor:pointer;"></td>`
-          : `<td style="padding:8px; text-align:center;">${availableForOt ? '<span style="color:var(--green); font-weight:700;" title="Confirmed available for OT">✓</span>' : '<span class="faint">—</span>'}</td>`;
 
       if (confirmed) {
         // Stays confirmed and visible as such even after being amended —
@@ -7588,7 +7577,7 @@ function renderOtFiling() {
         // just PIP-tagged ones.
         const canAmendThis = (admin || isMe) && !isPip;
         const canDeleteThis = canDeleteOtEntry();
-        return otCheckboxCell + `
+        return `
           <td style="padding:4px; text-align:center;">
             <div style="position:relative; display:inline-block;">
               <div style="width:52px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--green); background:var(--green-wash); color:var(--green); font-weight:700; font-size:12.5px;" title="Confirmed — locked">${displayVal}</div>
@@ -7599,41 +7588,42 @@ function renderOtFiling() {
       }
 
       if (!canEdit) {
-        return otCheckboxCell + `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>` + outputCell;
+        return `<td style="padding:8px; text-align:center; font-size:12.5px;">${displayVal}</td>` + outputCell;
       }
 
-      // Hours field stays LOCKED until availability is confirmed —
-      // that's the whole point of the "OT?" checkbox. Only once
-      // checked does the actual editable input (and its own Confirm
-      // button, for finalizing actual hours/output later) appear.
+      // No separate "OT?" column anymore — the checkbox and the hours
+      // input now share ONE cell. Before availability is confirmed,
+      // this cell shows JUST a checkbox (same ot-availability-checkbox
+      // class, same saveOtAvailability handler, completely unchanged
+      // underneath). The instant it's checked, this same cell switches
+      // to the hours input instead — exactly the same available_for_ot
+      // gate as before, just visually merged into a single column.
       if (!availableForOt) {
-        return otCheckboxCell + `<td style="padding:8px; text-align:center; font-size:10.5px; color:var(--ink-faint); font-style:italic;" title="Confirm OT availability first">locked</td>` + outputCell;
+        return `<td style="padding:8px; text-align:center;"><input type="checkbox" class="ot-availability-checkbox" data-emp-id="${emp.id}" data-date="${d}" title="Confirm availability for OT" style="width:16px; height:16px; cursor:pointer;"></td>` + outputCell;
       }
 
       const inputVal = hasAssumed ? entry.assumed_hours : '';
       const canDeleteThisEntry = canDeleteOtEntry();
-      const badge = (hasAssumed || canDeleteThisEntry)
-        ? `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-confirm="${hasAssumed ? '1' : '0'}" data-can-delete="${canDeleteThisEntry ? '1' : '0'}" title="More actions" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>`
-        : '';
+      // canEdit is guaranteed true in this branch (we already returned
+      // for !canEdit above), so the menu is always shown here — it's
+      // what lets someone back out of a mistaken OT check-in via
+      // "Remove OT availability" even after the checkbox itself has
+      // been replaced by this input cell.
+      const badge = `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-confirm="${hasAssumed ? '1' : '0'}" data-can-uncheck="1" data-can-delete="${canDeleteThisEntry ? '1' : '0'}" title="More actions" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>`;
 
       // The suggested split (Estimated Pending Leads ÷ confirmed count
-      // ÷ 100) is shown here purely as GUIDANCE text — never written
-      // into inputVal/the field itself. The employee always types
-      // their own number; this just tells them what that number could
-      // reasonably be.
+      // ÷ 100) still caps what can be typed in (via the max attribute
+      // below), but is no longer repeated here as text — it's already
+      // shown once, live, in the banner above the table.
       const suggestedHours = suggestedHoursPerEmployeePerDate[i];
-      const suggestionHint = (!hasAssumed && suggestedHours != null)
-        ? `<div class="faint" style="font-size:8.5px; margin-top:3px; line-height:1.2;" title="${suggestedHours} hours of OT available for each agent">${suggestedHours}h available</div>`
-        : '';
 
-      return otCheckboxCell + `
+      return `
         <td style="padding:4px; text-align:center;">
           <div style="position:relative; display:inline-block;">
-            <input type="number" min="0" class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
+            <input type="number" min="0" ${(!hasAssumed && suggestedHours != null) ? `max="${suggestedHours}"` : ''} class="priolist-input ot-hours-input" data-emp-id="${emp.id}" data-date="${d}" value="${inputVal}"
               style="width:52px; padding:5px 4px; text-align:center; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
             ${badge}
           </div>
-          ${suggestionHint}
         </td>
       ` + outputCell;
     }).join('');
@@ -7672,7 +7662,7 @@ function renderOtFiling() {
       <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
           <col style="width:230px;">
-          ${dates.map(() => '<col style="width:44px;"><col style="width:90px;"><col style="width:90px;">').join('')}
+          ${dates.map(() => '<col style="width:90px;"><col style="width:90px;">').join('')}
         </colgroup>
         <thead>
           <tr class="ot-filing-header-row">
@@ -7766,10 +7756,12 @@ function showOtMenu(triggerBtn) {
   const canConfirm = triggerBtn.dataset.canConfirm === '1';
   const canAmend = triggerBtn.dataset.canAmend === '1';
   const canDelete = triggerBtn.dataset.canDelete === '1';
+  const canUncheck = triggerBtn.dataset.canUncheck === '1';
 
   const items = [];
   if (canConfirm) items.push({ action: 'confirm', label: 'Confirm' });
   if (canAmend) items.push({ action: 'amend', label: 'Amend' });
+  if (canUncheck) items.push({ action: 'uncheck', label: 'Remove OT availability', danger: true });
   if (canDelete) items.push({ action: 'delete', label: 'Delete', danger: true });
   if (!items.length) return;
 
@@ -7788,12 +7780,13 @@ function showOtMenu(triggerBtn) {
   portal.style.top = (rect.bottom + 4) + 'px';
 
   portal.querySelectorAll('.ot-menu-item').forEach(el => {
-    el.addEventListener('mouseenter', () => { el.style.background = el.dataset.action === 'delete' ? 'var(--coral-wash)' : 'var(--line-soft)'; });
+    el.addEventListener('mouseenter', () => { el.style.background = (el.dataset.action === 'delete' || el.dataset.action === 'uncheck') ? 'var(--coral-wash)' : 'var(--line-soft)'; });
     el.addEventListener('mouseleave', () => { el.style.background = 'transparent'; });
     el.addEventListener('click', () => {
       hideOtMenu();
       if (el.dataset.action === 'confirm') openOtConfirmModal(empId, date);
       if (el.dataset.action === 'amend') openOtAmendModal(empId, date);
+      if (el.dataset.action === 'uncheck') saveOtAvailability(empId, date, false);
       if (el.dataset.action === 'delete') deleteOtEntry(empId, date);
     });
   });
