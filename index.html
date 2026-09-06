@@ -1819,7 +1819,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ips-report-auto-current-month';
+const APP_VERSION = '2026-09-04-ips-remove-workday-caption';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13178,7 +13178,6 @@ function renderIpsTables() {
           <button class="btn btn-ghost btn-sm" id="ips-day-prev" ${isFirst ? 'disabled' : ''}>←</button>
           <div style="text-align:center; min-width:170px;">
             <div style="font-family:var(--font-display); font-size:17px; font-weight:600; color:var(--teal);">${formatPrettyDate(day)}</div>
-            <div class="faint" style="font-size:10.5px;">Workday ${dayIdx + 1} of ${dates.length}</div>
             ${dayKind === 'future'
               ? `<div style="margin-top:2px; font-size:9.5px; font-weight:700; color:var(--ink-faint);">🔒 Locked</div>`
               : dayKind === 'past'
