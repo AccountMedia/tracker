@@ -367,9 +367,82 @@
   #toast.show{ transform: translateY(0); opacity: 1; }
   #toast.error{ background: var(--coral); }
 
+  .mobile-nav-toggle{
+    display: none;
+  }
+  .mobile-nav-backdrop{
+    display: none;
+  }
   @media (max-width: 900px){
-    .sidebar{ display:none; }
-    .main{ padding: 20px 18px 60px; margin-left: 0; }
+    .mobile-nav-toggle{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: fixed;
+      top: 14px;
+      left: 14px;
+      z-index: 210;
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--teal);
+      color: #FFFFFF;
+      border: none;
+      box-shadow: var(--shadow-md);
+      cursor: pointer;
+    }
+    .sidebar{
+      z-index: 200;
+      transform: translateX(-100%);
+      transition: transform 0.22s ease;
+      box-shadow: var(--shadow-lg);
+    }
+    .sidebar.mobile-open{
+      transform: translateX(0);
+    }
+    .mobile-nav-backdrop.show{
+      display: block;
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 14, 30, 0.45);
+      z-index: 190;
+    }
+    .main{ padding: 72px 18px 60px; margin-left: 0; }
+
+    /* Wide, fixed-width tables (OT Filing, IPS, Leave Credits, Team
+       Funds ledgers, etc.) can't sensibly reflow their columns on a
+       phone screen — the standard, safe pattern is to let them scroll
+       horizontally within their own row instead of breaking the page
+       layout or becoming unreadable. This is a single global rule
+       rather than reworking every individual table's markup, so it
+       covers every feature at once without risking each one's own
+       column logic. Tables already wrapped in their own scroll
+       container are unaffected — this only matters for ones that
+       weren't.
+       Also nudges the page's own horizontal scrollbar out of the way
+       so a wide table's own scrollbar is the one that's actually used. */
+    table{ display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    table thead, table tbody, table tfoot{ display:table; width:100%; }
+
+    /* Buttons, checkboxes, and text inputs get a larger minimum touch
+       target on mobile — the desktop sizing throughout this app (many
+       small icon buttons, ⋯ menus, checkboxes) assumes a mouse
+       pointer's precision, which doesn't hold up well for a thumb. */
+    button, .btn, input[type="checkbox"], input[type="radio"]{
+      min-height: 34px;
+    }
+    input[type="checkbox"], input[type="radio"]{
+      min-width: 20px; min-height: 20px;
+    }
+    input[type="text"], input[type="number"], input[type="date"],
+    input[type="password"], input[type="email"], select, textarea{
+      font-size: 16px; /* prevents iOS Safari's automatic zoom-on-focus */
+    }
+
+    /* Cards and modals get tighter padding on small screens so more
+       actual content fits without needing to scroll as much. */
+    .card{ padding: 16px !important; }
+    #modal-overlay .card{ padding: 18px !important; max-height: 88vh !important; }
   }
 </style>
 </head>
@@ -396,6 +469,10 @@
 </div>
 
 <div id="app" class="hidden">
+  <button id="mobile-nav-toggle" class="mobile-nav-toggle" title="Menu" aria-label="Open menu">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"></line><line x1="4" y1="12" x2="20" y2="12"></line><line x1="4" y1="17" x2="20" y2="17"></line></svg>
+  </button>
+  <div id="mobile-nav-backdrop" class="mobile-nav-backdrop"></div>
   <aside class="sidebar">
     <div class="brand" style="display:flex; align-items:center; justify-content:space-between; gap:4px;">
       <span style="white-space:nowrap; font-size:20px;">Account Media</span>
@@ -1339,6 +1416,7 @@ function switchView(viewName) {
   state.currentView = viewName;
   sessionStorage.setItem('registry_active_view', viewName);
   updateUrlHashForView(viewName);
+  closeMobileSidebar();
   document.querySelectorAll('.nav-item[data-view]').forEach(item => {
     item.classList.toggle('active', item.getAttribute('data-view') === viewName);
   });
@@ -1741,7 +1819,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-uncheck-only-when-empty';
+const APP_VERSION = '2026-09-04-ips-report-auto-current-month';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2971,13 +3049,46 @@ function renderAccountHub() {
   const ltOn = activeId === 'leave-tracker';
   const emOn = activeId === 'employee-management';
 
-  // Context buttons rendered conditionally — no hidden elements eating space.
-  // The toggle is always first; the right-side buttons swap cleanly.
+  // Context buttons for the Leave Tracker tab only — the Employee
+  // Management tab's layout is composed directly further down instead
+  // (search / dropdown / add-employee, in that specific order), since
+  // it needs the dropdown positioned in the MIDDLE rather than first.
   const contextBtns = ltOn ? `
-    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
-    ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download Report</button>` : ''}
     <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
-  ` : emOn ? `
+  ` : '';
+
+  // The Leave Tracker / Employees switch is a dropdown now — same
+  // clickable-label-plus-chevron pattern as the sidebar's "Team Hub /
+  // Operations Hub" switcher (hub-switcher-toggle/-menu), not a
+  // segmented pill pair. Consistent on both web and mobile — this
+  // isn't a device-conditional layout, it's just the one layout.
+  // Download Report rides along as a third menu item (data-action,
+  // not data-tab, so the click handler below routes it differently —
+  // it triggers the report instead of switching tabs) — only shown
+  // while Leave Tracker is the active tab, and only for admins.
+  const tabDropdownHtml = `
+    <div style="position:relative; flex-shrink:0;" id="account-hub-tab-wrap">
+      <button type="button" id="account-hub-tab-toggle" style="
+        display:flex; align-items:center; gap:6px; padding:9px 14px;
+        border:1px solid var(--line); border-radius:999px; background:var(--paper);
+        font-size:13px; font-weight:600; color:var(--ink); cursor:pointer; font-family:inherit; white-space:nowrap;">
+        ${ltOn ? 'Leave Tracker' : 'Employees'}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6; flex-shrink:0;"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      </button>
+      <div id="account-hub-tab-menu" style="display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:50; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
+        <div class="account-hub-tab-option" data-tab="leave-tracker" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; background:${ltOn ? 'var(--teal-wash)' : 'transparent'};">Leave Tracker</div>
+        <div class="account-hub-tab-option" data-tab="employee-management" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; background:${emOn ? 'var(--teal-wash)' : 'transparent'};">Employees</div>
+        ${(ltOn && isAdmin()) ? `<div class="account-hub-tab-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; border-top:1px solid var(--line-soft);">Download Report</div>` : ''}
+      </div>
+    </div>
+  `;
+
+  // Leave Tracker tab: dropdown first, then "+ Request leave" — unchanged.
+  // Employee Management tab: Search on the LEFT, the dropdown in the
+  // MIDDLE, "+ Add employee" on the right — a different order from the
+  // Leave Tracker tab, so this is composed separately rather than
+  // reusing one shared "dropdown + contextBtns" layout for both.
+  const searchHtml = `
     <div style="position:relative;">
       <input type="text" id="em-search" placeholder="Search employees…" autocomplete="off"
         style="padding:9px 12px 9px 34px; border-radius:999px; border:1px solid var(--line);
@@ -2985,33 +3096,43 @@ function renderAccountHub() {
       <span style="position:absolute; left:12px; top:50%; transform:translateY(-50%);
                    color:var(--ink-faint); font-size:13px; pointer-events:none;">⌕</span>
     </div>
-    <button class="btn btn-primary" id="btn-add-employee">+ Add employee</button>
-  ` : '';
+  `;
+  const addEmployeeBtnHtml = `<button class="btn btn-primary" id="btn-add-employee">+ Add employee</button>`;
 
-  hubActions.innerHTML = showEmployees ? `
-    <div style="display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; flex-shrink:0;">
-      <button type="button" class="account-hub-tab" data-tab="leave-tracker" style="
-        padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit;
-        border:none; cursor:pointer; line-height:1; white-space:nowrap;
-        background:${ltOn ? 'var(--teal)' : 'transparent'};
-        color:${ltOn ? '#FFFFFF' : 'var(--ink-soft)'};
-        transition:background 0.15s, color 0.15s;">Leave Tracker</button>
-      <span style="width:1px; background:var(--line); align-self:stretch;"></span>
-      <button type="button" class="account-hub-tab" data-tab="employee-management" style="
-        padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit;
-        border:none; cursor:pointer; line-height:1; white-space:nowrap;
-        background:${emOn ? 'var(--teal)' : 'transparent'};
-        color:${emOn ? '#FFFFFF' : 'var(--ink-soft)'};
-        transition:background 0.15s, color 0.15s;">Employees</button>
-    </div>
-    ${contextBtns}
-  ` : contextBtns;
+  hubActions.innerHTML = showEmployees
+    ? (emOn
+        ? `${searchHtml} ${tabDropdownHtml} ${addEmployeeBtnHtml}`
+        : `${tabDropdownHtml} ${contextBtns}`)
+    : contextBtns;
 
   document.getElementById('btn-new-request')?.addEventListener('click', openRequestModal);
-  document.getElementById('btn-download-report')?.addEventListener('click', () => buildAndOpenLeaveReport());
-  document.getElementById('btn-todays-approvals')?.addEventListener('click', openTodaysApprovalsReport);
   document.getElementById('btn-add-employee')?.addEventListener('click', openAddEmployeeModal);
   document.getElementById('em-search')?.addEventListener('input', renderEmployeeManagementTable);
+
+  // Re-wired every render since hubActions.innerHTML is fully replaced
+  // above — same open/close/outside-click pattern as the hub switcher.
+  const tabToggle = document.getElementById('account-hub-tab-toggle');
+  const tabMenu = document.getElementById('account-hub-tab-menu');
+  if (tabToggle && tabMenu) {
+    tabToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      tabMenu.style.display = tabMenu.style.display === 'none' ? 'block' : 'none';
+    });
+    tabMenu.querySelectorAll('.account-hub-tab-option').forEach(opt => {
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tabMenu.style.display = 'none';
+        if (opt.dataset.action === 'download-report') { buildAndOpenLeaveReport(); return; }
+        if (opt.dataset.tab === state.accountHubTab) return;
+        state.accountHubTab = opt.dataset.tab;
+        updateUrlHashForView('account-hub');
+        renderAccountHub();
+      });
+      opt.addEventListener('mouseenter', () => { if (opt.dataset.tab !== state.accountHubTab) opt.style.background = 'var(--line-soft)'; });
+      opt.addEventListener('mouseleave', () => { if (opt.dataset.tab !== state.accountHubTab) opt.style.background = 'transparent'; });
+    });
+    document.addEventListener('click', () => { tabMenu.style.display = 'none'; });
+  }
 
   // ── Content ───────────────────────────────────────────────────────
   if (activeId === 'leave-tracker') {
@@ -3057,15 +3178,6 @@ function renderAccountHub() {
     stopLeaveTrackerPolling();
     renderEmployeeManagement();
   }
-
-  // Toggle click handlers
-  document.querySelectorAll('.account-hub-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.accountHubTab = btn.dataset.tab;
-      updateUrlHashForView('account-hub');
-      renderAccountHub();
-    });
-  });
 }
 
 // Renders only the Leave Tracker calendar/pending/credits grid —
@@ -3087,14 +3199,12 @@ function renderLeaveTracker() {
     actionsEl.style.marginBottom = '6px';
     actionsEl.innerHTML = `
       <div style="display:flex; align-items:center; gap:8px;">
-        ${isAdmin() ? `<button class="btn btn-ghost" id="btn-todays-approvals">Today's approvals</button>` : ''}
         ${isAdmin() ? `<button class="btn btn-ghost" id="btn-download-report">Download Report</button>` : ''}
         <button class="btn btn-primary" id="btn-new-request">+ Request leave</button>
       </div>
     `;
     document.getElementById('btn-new-request')?.addEventListener('click', openRequestModal);
     document.getElementById('btn-download-report')?.addEventListener('click', () => buildAndOpenLeaveReport());
-    document.getElementById('btn-todays-approvals')?.addEventListener('click', openTodaysApprovalsReport);
   }
 
   // Render the bell icon in the page head slot beside "Leave Tracker"
@@ -3394,31 +3504,9 @@ async function approveCancellation(id) {
 
   if (!confirm(groupCount > 1 ? `Approve this cancellation? ${groupCount} days of leave will be permanently removed.` : 'Approve this cancellation? This leave will be permanently removed.')) return;
 
-  // Write the audit log BEFORE deleting — once the rows are gone,
-  // this information is unrecoverable, and Today's Approvals needs it.
   const groupRows = groupId
     ? state.leaveEntries.filter(e => e.request_group_id === groupId)
     : [entry];
-  const leaveDates = groupRows.map(e => e.leave_date).sort().join(',');
-  const { error: logError } = await sb.from('leave_cancellation_log').insert({
-    employee_id: entry.employee_id,
-    leave_type: entry.leave_type,
-    leave_dates: leaveDates,
-    note: entry.note || null,
-    cancel_note: entry.cancel_note || null,
-    approved_by: state.profile.display_name,
-    decided_at: new Date().toISOString(),
-  });
-
-  if (logError) {
-    // The log write failed — most likely the table doesn't exist yet.
-    // Warn the admin and abort rather than silently deleting the record
-    // with no trace of it, since that's exactly what this feature is
-    // designed to prevent.
-    console.error('Could not write cancellation log:', logError);
-    showToast('Could not record this cancellation — please run add_todays_approvals_support.sql in Supabase first, then try again.', true);
-    return;
-  }
 
   // Capture credits BEFORE deleting — a leave awaiting cancellation
   // still counts against the balance, so this is the pre-restore figure.
@@ -3639,338 +3727,23 @@ function shiftMonth(delta) {
 
 // ---- Monthly report export -------------------------------------------
 
-// Core report builder, shared by the plain "Download Report"
-// button (current calendar month, every leave type) and the new
-// "Filter report" flow (a custom date range and/or a specific set of
-// leave types). Leaving either parameter unset reproduces the exact
-// original default behavior.
-async function openTodaysApprovalsReport() {
-  if (!isAdmin()) { showToast('Only admins can view approval reports.', true); return; }
-
-  const today = isoDate(new Date());
-  // Use local midnight boundaries so the query correctly captures the
-  // admin's local "today" regardless of their timezone offset from UTC.
-  const todayLocalStart = new Date(today + 'T00:00:00');
-  const todayLocalEnd = new Date(today + 'T23:59:59.999');
-  const todayStart = todayLocalStart.toISOString();
-  const todayEnd = todayLocalEnd.toISOString();
-
-  // Open the tab IMMEDIATELY so the user sees instant feedback (and the
-  // popup isn't blocked); fetch in parallel while the placeholder shows.
-  const win = window.open('', '_blank');
-  if (!win) { showToast('Could not open a new tab — your browser may have blocked the pop-up.', true); return; }
-  win.document.write(`<!DOCTYPE html><html><head><title>Today's Approvals</title></head>
-    <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,sans-serif;background:#F8F9FB;color:#9199AC;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
-    Preparing today's approvals…</body></html>`);
-
-  // Both queries run in parallel instead of one after the other
-  const [approvedRes, cancelRes] = await Promise.all([
-    sb.from('leave_entries').select('*')
-      .gte('decided_at', todayStart).lte('decided_at', todayEnd)
-      .eq('status', STATUS.APPROVED).order('decided_at', { ascending: true }),
-    sb.from('leave_cancellation_log').select('*')
-      .gte('decided_at', todayStart).lte('decided_at', todayEnd)
-      .order('decided_at', { ascending: true }),
-  ]);
-  const approvedEntries = approvedRes.data;
-  const cancellations = cancelRes.data;
-  const e1 = approvedRes.error, e2 = cancelRes.error;
-
-  if (e1 || e2) { win.close(); showToast('Could not load today\'s approvals.', true); return; }
-
-  // Reset the document for the real report content
-  win.document.open();
-
-  const todayLabel = formatPrettyDate(today);
-
-  // Build approved leave rows
-  // Group entries by request_group_id so multi-day blocks appear as one row
-  const groupedApproved = [];
-  const seenGroups = new Set();
-  (approvedEntries || []).forEach(e => {
-    const key = e.request_group_id || e.id;
-    if (seenGroups.has(key)) return;
-    seenGroups.add(key);
-    const groupRows = e.request_group_id
-      ? (approvedEntries || []).filter(r => r.request_group_id === e.request_group_id)
-      : [e];
-    const dates = groupRows.map(r => r.leave_date).sort();
-    groupedApproved.push({
-      employee: employeeName(e.employee_id),
-      leaveType: LEAVE_TYPES[e.leave_type] ? LEAVE_TYPES[e.leave_type].label : e.leave_type,
-      dateRange: dates.length > 1 ? formatDateRange(dates[0], dates[dates.length - 1]) : formatPrettyDate(dates[0]),
-      days: dates.length,
-      note: e.note || '',
-      approvedBy: e.approved_by || '',
-      decidedAt: e.decided_at ? new Date(e.decided_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '',
-      type: 'approval',
-    });
-  });
-
-  // Build cancellation log rows
-  const cancellationRows = (cancellations || []).map(c => ({
-    employee: employeeName(c.employee_id),
-    leaveType: LEAVE_TYPES[c.leave_type] ? LEAVE_TYPES[c.leave_type].label : (c.leave_type || ''),
-    dateRange: c.leave_dates ? (() => {
-      const dates = c.leave_dates.split(',').sort();
-      return dates.length > 1 ? formatDateRange(dates[0], dates[dates.length - 1]) : formatPrettyDate(dates[0]);
-    })() : '',
-    days: c.leave_dates ? c.leave_dates.split(',').length : 1,
-    note: c.cancel_note || c.note || '',
-    approvedBy: c.approved_by || '',
-    decidedAt: c.decided_at ? new Date(c.decided_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '',
-    type: 'cancellation',
-  }));
-
-  const allRows = [...groupedApproved, ...cancellationRows]
-    .sort((a, b) => a.decidedAt.localeCompare(b.decidedAt));
-
-  const hasRows = allRows.length > 0;
-
-  // Distinct values for filter dropdowns — derived from actual data
-  const employeeOptions  = [...new Set(allRows.map(r => r.employee).filter(Boolean))].sort();
-  const leaveTypeOptions = [...new Set(allRows.map(r => r.leaveType).filter(Boolean))].sort();
-  const actionOptions    = [...new Set(allRows.map(r => r.type === 'cancellation' ? 'Cancellation approved' : 'Approved'))].sort();
-  const approvedByOptions = [...new Set(allRows.map(r => r.approvedBy).filter(Boolean))].sort();
-
-  const optTags = (values) => values.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
-
-  // Each row carries data-* attributes for every filterable dimension so
-  // the in-page JS can filter without re-parsing the cell text
-  const tableRowsHtml = allRows.map((r, i) => `
-    <tr data-row-index="${i}"
-        data-employee="${escapeHtml(r.employee)}"
-        data-leave-type="${escapeHtml(r.leaveType)}"
-        data-action="${r.type === 'cancellation' ? 'Cancellation approved' : 'Approved'}"
-        data-approved-by="${escapeHtml(r.approvedBy)}">
-      <td>${escapeHtml(r.decidedAt)}</td>
-      <td>${escapeHtml(r.employee)}</td>
-      <td>${escapeHtml(r.dateRange)}${r.days > 1 ? ` <span style="color:#9199AC;font-size:11px;">(${r.days} days)</span>` : ''}</td>
-      <td>${escapeHtml(r.leaveType)}</td>
-      <td>${r.type === 'cancellation'
-        ? `<span style="color:#C0392B;font-weight:600;">Cancellation approved</span>`
-        : `<span style="color:#1F6B4F;font-weight:600;">Approved</span>`}</td>
-      <td>${escapeHtml(r.approvedBy)}</td>
-      <td>${escapeHtml(r.note)}</td>
-    </tr>
-  `).join('');
-
-  const allRowsJson = JSON.stringify(allRows).replace(/</g, '\\u003c');
-  const filename = `Todays Approvals - ${today}.csv`;
-
-  win.document.write(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <title>Today's Approvals — ${escapeHtml(todayLabel)}</title>
-      <style>
-        body{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Roboto,sans-serif; background:#F8F9FB; color:#14161C; margin:0; padding:32px 40px 60px; }
-        h1{ font-size:20px; font-weight:700; color:#1A2340; margin:0 0 4px; }
-        .sub{ font-size:13px; color:#9199AC; margin:0 0 20px; }
-        .toolbar{ display:flex; justify-content:flex-end; margin-bottom:16px; }
-        .toolbar button{ font-family:inherit; font-size:13px; font-weight:600; padding:9px 16px; border-radius:999px; border:1px solid #1A2340; background:#1A2340; color:#FFFFFF; cursor:pointer; }
-        .toolbar button:hover{ background:#29335C; }
-        .filter-bar{ display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end; background:#FFFFFF; border:1px solid #E2E5EB; border-radius:10px; padding:14px; margin-bottom:16px; }
-        .filter-field{ display:flex; flex-direction:column; gap:4px; }
-        .filter-field label{ font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; color:#9199AC; }
-        .filter-field select{ font-family:inherit; font-size:12.5px; padding:7px 9px; border-radius:6px; border:1px solid #E2E5EB; background:#F8F9FB; min-width:160px; }
-        #clear-filters-btn{ font-family:inherit; font-size:12.5px; font-weight:600; padding:8px 14px; border-radius:6px; border:1px solid #E2E5EB; background:transparent; color:#545A6B; cursor:pointer; }
-        #clear-filters-btn:hover{ background:#EDEFF3; }
-        #result-count{ font-size:11.5px; color:#9199AC; margin-bottom:8px; }
-        table{ border-collapse:collapse; width:100%; background:#fff; border:1px solid #E2E5EB; border-radius:10px; overflow:hidden; }
-        th{ text-align:left; padding:8px 14px; font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:#9199AC; border-bottom:2px solid #E2E5EB; }
-        td{ padding:8px 14px; font-size:13px; border-bottom:1px solid #EDEFF3; vertical-align:top; }
-        tr:last-child td{ border-bottom:none; }
-        .row-hidden{ display:none; }
-        .empty{ text-align:center; color:#9199AC; padding:40px; font-size:14px; }
-      </style>
-    </head>
-    <body>
-      <h1>Today's Approvals</h1>
-      <p class="sub">${escapeHtml(todayLabel)}</p>
-
-      <div class="toolbar">
-        <button id="dl-btn">Download as CSV</button>
-      </div>
-
-      <div class="filter-bar">
-        <div class="filter-field">
-          <label>Employee</label>
-          <select id="filter-employee">
-            <option value="">All employees</option>
-            ${optTags(employeeOptions)}
-          </select>
-        </div>
-        <div class="filter-field">
-          <label>Leave Type</label>
-          <select id="filter-leave-type">
-            <option value="">All types</option>
-            ${optTags(leaveTypeOptions)}
-          </select>
-        </div>
-        <div class="filter-field">
-          <label>Action</label>
-          <select id="filter-action">
-            <option value="">All actions</option>
-            ${optTags(actionOptions)}
-          </select>
-        </div>
-        <div class="filter-field">
-          <label>Approved By</label>
-          <select id="filter-approved-by">
-            <option value="">All</option>
-            ${optTags(approvedByOptions)}
-          </select>
-        </div>
-        <button id="clear-filters-btn">Clear filters</button>
-      </div>
-
-      <div id="result-count"></div>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Employee</th>
-            <th>Date Range</th>
-            <th>Leave Type</th>
-            <th>Action</th>
-            <th>Approved By</th>
-            <th>Note</th>
-          </tr>
-        </thead>
-        <tbody id="report-tbody">
-          ${hasRows ? tableRowsHtml : '<tr><td colspan="7" class="empty">No approvals recorded today.</td></tr>'}
-        </tbody>
-      </table>
-
-      <script>
-        const ALL_ROWS = ${allRowsJson};
-        const totalCount = ALL_ROWS.length;
-
-        function currentFilters() {
-          return {
-            employee:   document.getElementById('filter-employee').value,
-            leaveType:  document.getElementById('filter-leave-type').value,
-            action:     document.getElementById('filter-action').value,
-            approvedBy: document.getElementById('filter-approved-by').value,
-          };
-        }
-
-        function rowMatches(tr, f) {
-          if (f.employee   && tr.dataset.employee   !== f.employee)   return false;
-          if (f.leaveType  && tr.dataset.leaveType  !== f.leaveType)  return false;
-          if (f.action     && tr.dataset.action     !== f.action)     return false;
-          if (f.approvedBy && tr.dataset.approvedBy !== f.approvedBy) return false;
-          return true;
-        }
-
-        function applyFilters() {
-          const f = currentFilters();
-          const rows = Array.from(document.querySelectorAll('#report-tbody tr[data-row-index]'));
-          let visibleCount = 0;
-          rows.forEach(tr => {
-            const matches = rowMatches(tr, f);
-            tr.classList.toggle('row-hidden', !matches);
-            if (matches) visibleCount++;
-          });
-          const anyActive = f.employee || f.leaveType || f.action || f.approvedBy;
-          document.getElementById('result-count').textContent = anyActive
-            ? \`Showing \${visibleCount} of \${totalCount} entries\`
-            : \`Showing all \${totalCount} entries\`;
-        }
-
-        ['filter-employee','filter-leave-type','filter-action','filter-approved-by'].forEach(id => {
-          document.getElementById(id).addEventListener('change', applyFilters);
-        });
-
-        document.getElementById('clear-filters-btn').addEventListener('click', () => {
-          ['filter-employee','filter-leave-type','filter-action','filter-approved-by'].forEach(id => {
-            document.getElementById(id).value = '';
-          });
-          applyFilters();
-        });
-
-        function esc(v) {
-          const s = String(v ?? '');
-          if (/[",\\r\\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-          return s;
-        }
-
-        document.getElementById('dl-btn').addEventListener('click', () => {
-          const f = currentFilters();
-          const visibleRows = ALL_ROWS.filter((_, i) => {
-            const tr = document.querySelector('#report-tbody tr[data-row-index="' + i + '"]');
-            return tr && !tr.classList.contains('row-hidden');
-          });
-          const csvRows = [
-            ["Today's Approvals \u2014 ${escapeHtml(todayLabel)}"],
-            [],
-            ['Time', 'Employee', 'Date Range', 'Leave Type', 'Action', 'Approved By', 'Note'],
-            ...visibleRows.map(r => [
-              r.decidedAt, r.employee, r.dateRange, r.leaveType,
-              r.type === 'cancellation' ? 'Cancellation approved' : 'Approved',
-              r.approvedBy, r.note,
-            ]),
-          ];
-          const csv = csvRows.map(row => row.map(esc).join(',')).join('\\r\\n');
-          const blob = new Blob(['\\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = "Todays Approvals - ${today}.csv";
-          document.body.appendChild(a); a.click();
-          document.body.removeChild(a); URL.revokeObjectURL(url);
-        });
-
-        // Run filters on page load to set the initial count label
-        applyFilters();
-      <\/script>
-    </body>
-    </html>
-  `);
-  win.document.close();
-}
-
-// Opens a small date-range picker so the report can cover any span —
-// a single month, a quarter, half a year, whatever's needed — instead
-// of being locked to whichever month the calendar happens to be on.
+// Generates the Leave Tracker report for the CURRENT calendar month,
+// immediately, with no date-range prompt beforehand — the report's own
+// filter controls (leave type, etc.) still apply once it's open, see
+// generateLeaveReport / openFilterableLeaveReportTab.
 function buildAndOpenLeaveReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
+  // Generates immediately for the current calendar month — no
+  // date-range prompt beforehand. The report itself still has its own
+  // filter controls once opened (see openFilterableLeaveReportTab),
+  // completely unchanged; this only removes the picker step that used
+  // to run BEFORE the report was generated.
   const year = state.calendarYear;
   const month = state.calendarMonth;
-  const defaultStart = isoDate(new Date(year, month, 1));
-  const defaultEnd = isoDate(new Date(year, month + 1, 0));
-
-  openModal('Download Report', `
-    <form id="leave-report-range-form" style="display:flex; flex-direction:column; gap:14px;">
-      <p class="muted" style="font-size:12.5px; margin:0;">Choose the date range to include — anywhere from a single month up to several.</p>
-      <div style="display:flex; gap:12px;">
-        <div class="field" style="flex:1;">
-          <label for="leave-report-start">From</label>
-          <input type="date" id="leave-report-start" value="${defaultStart}" required
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-        <div class="field" style="flex:1;">
-          <label for="leave-report-end">To</label>
-          <input type="date" id="leave-report-end" value="${defaultEnd}" required
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-      </div>
-      <button type="submit" class="btn btn-primary" style="justify-content:center;">Generate report</button>
-    </form>
-  `);
-
-  document.getElementById('leave-report-range-form').addEventListener('submit', (e) => {
-    e.preventDefault();
-    const rangeStart = document.getElementById('leave-report-start').value;
-    const rangeEnd = document.getElementById('leave-report-end').value;
-    if (!rangeStart || !rangeEnd) { showToast('Please select both dates.', true); return; }
-    if (rangeStart > rangeEnd) { showToast('The start date must be before the end date.', true); return; }
-    closeModal();
-    generateLeaveReport(rangeStart, rangeEnd);
-  });
+  const rangeStart = isoDate(new Date(year, month, 1));
+  const rangeEnd = isoDate(new Date(year, month + 1, 0));
+  generateLeaveReport(rangeStart, rangeEnd);
 }
 
 function generateLeaveReport(rangeStart, rangeEnd) {
@@ -5653,7 +5426,6 @@ function renderPayrollConfirmation() {
   const admin = isAdmin();
   actionsEl.innerHTML = admin ? `
     <button class="btn btn-ghost" id="payroll-download" style="margin-right:8px;">Download report</button>
-    <button class="btn btn-ghost" id="payroll-reset" style="color:var(--coral); border-color:var(--coral-wash);">Reset</button>
   ` : '';
 
   const el = document.getElementById('payroll-confirmation-content');
@@ -5726,8 +5498,6 @@ function renderPayrollConfirmation() {
   });
   const downloadBtn = document.getElementById('payroll-download');
   if (downloadBtn) downloadBtn.addEventListener('click', downloadPayrollReport);
-  const resetBtn = document.getElementById('payroll-reset');
-  if (resetBtn) resetBtn.addEventListener('click', resetPayrollPeriod);
 }
 
 function renderPayrollCell(employeeId, year, month, half, confirmation, canMark) {
@@ -5782,29 +5552,6 @@ async function undoPayrollReceived(confirmationId) {
   const { error } = await sb.from('payroll_confirmations').delete().eq('id', confirmationId);
   if (error) { showToast('Could not undo the confirmation.', true); return; }
   showToast('Confirmation removed.');
-  await loadPayrollConfirmations();
-  renderPayrollConfirmation();
-}
-
-async function resetPayrollPeriod() {
-  if (!isAdmin()) { showToast('Only admins can reset payroll confirmations.', true); return; }
-
-  const year = state.payrollPeriodYear;
-  const month = state.payrollPeriodMonth;
-  const monthLabel = `${PAYROLL_MONTH_NAMES[month - 1]} ${year}`;
-
-  if (!confirm(`Reset all payroll confirmations for ${monthLabel}? Every "Received" mark for this month will be cleared, and everyone will go back to "Mark received." This cannot be undone.`)) {
-    return;
-  }
-
-  const { error } = await sb
-    .from('payroll_confirmations')
-    .delete()
-    .eq('period_year', year)
-    .eq('period_month', month);
-
-  if (error) { showToast('Could not reset this period.', true); return; }
-  showToast(`${monthLabel} confirmations reset.`);
   await loadPayrollConfirmations();
   renderPayrollConfirmation();
 }
@@ -5986,8 +5733,7 @@ function renderPrioList() {
   renderPriolistEyeIcon();
   actionsEl.innerHTML = `
     <div style="display:flex; align-items:center; gap:8px;">
-      ${!onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset PrioList</button>` : ''}
-      ${onRedFiles && isAdmin() ? `<button class="btn btn-ghost" id="red-files-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset Red Files</button>` : ''}
+      ${isAdmin() ? `<button class="btn btn-ghost" id="priolist-reset-btn" style="color:var(--coral); border-color:var(--coral-wash);">Reset</button>` : ''}
       <div style="display:inline-flex; border:1px solid var(--line); border-radius:999px; overflow:hidden;">
         <button type="button" class="priolist-view-tab" data-tab="priolist" style="
           padding:9px 16px; font-size:13px; font-weight:600; font-family:inherit; border:none; cursor:pointer; line-height:1; white-space:nowrap;
@@ -6006,9 +5752,7 @@ function renderPrioList() {
       renderPrioList();
     });
   });
-  const resetBtn = document.getElementById('priolist-reset-btn');
-  if (resetBtn) resetBtn.addEventListener('click', resetAllPriolistOutput);
-  document.getElementById('red-files-reset-btn')?.addEventListener('click', resetRedFiles);
+  document.getElementById('priolist-reset-btn')?.addEventListener('click', resetPriolistAndRedFiles);
 
   if (onRedFiles) { renderRedFiles(); return; }
 
@@ -6358,19 +6102,31 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
   renderPrioList();
 }
 
-async function resetAllPriolistOutput() {
+// Resets PrioList output AND Red Files together, in one action — the
+// two used to be separate buttons/confirmations (one per sub-tab), now
+// merged into a single "Reset" that clears both at once regardless of
+// which sub-tab is currently active.
+async function resetPriolistAndRedFiles() {
   if (!isAdmin()) { showToast('Only admins can reset the PrioList.', true); return; }
-  if (!confirm('Reset everyone\'s PrioList? Peer Review, MD Task, Leads, Total, Status, File color, and Note will all be cleared. This cannot be undone.')) return;
+  if (!confirm('Reset PrioList? Peer Review, MD Task, Leads, Total, Status, File color, and Note will all be cleared for everyone, AND every Red Files CampID — open, claimed, and completed — will be permanently deleted too. This cannot be undone.')) return;
 
   const today = isoDate(new Date());
-  const { error } = await sb
-    .from('priolist_entries')
-    .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', peer_review: 0, last_reset_date: today })
-    .gte('rank', 0); // matches all rows; Supabase requires a filter on update-all
+  const [priolistRes, redFilesRes] = await Promise.all([
+    sb.from('priolist_entries')
+      .update({ md_output: 0, leads: 0, status: '', file_color: null, note: '', peer_review: 0, last_reset_date: today })
+      .gte('rank', 0), // matches all rows; Supabase requires a filter on update-all
+    sb.from('priolist_red_files')
+      .delete()
+      .gte('created_at', '1900-01-01'), // matches all rows; Supabase requires a filter on delete-all
+  ]);
 
-  if (error) { showToast('Could not reset the PrioList.', true); return; }
-  showToast('PrioList reset.');
-  await loadPriolistEntries();
+  if (priolistRes.error || redFilesRes.error) {
+    console.error('Reset failed:', priolistRes.error, redFilesRes.error);
+    showToast('Could not fully reset — check the console for details.', true);
+    return;
+  }
+  showToast('PrioList and Red Files reset.');
+  await Promise.all([loadPriolistEntries(), loadRedFiles()]);
   renderPrioList();
 }
 
@@ -6735,21 +6491,6 @@ async function deleteRedFile(id) {
   renderRedFilesView();
 }
 
-async function resetRedFiles() {
-  if (!isAdmin()) { showToast('Only admins can reset Red Files.', true); return; }
-  if (!confirm('Reset Red Files? EVERY CampID — open, claimed, and completed — will be permanently deleted for the whole team. This cannot be undone.')) return;
-
-  const { error } = await sb
-    .from('priolist_red_files')
-    .delete()
-    .gte('created_at', '1900-01-01'); // matches all rows; Supabase requires a filter on delete-all
-
-  if (error) { console.error(error); showToast('Could not reset Red Files.', true); return; }
-  showToast('Red Files reset.');
-  await loadRedFiles();
-  renderRedFilesView();
-}
-
 // =====================================================================
 // LI RESTRICTION DAILY REPORT
 // =====================================================================
@@ -6949,7 +6690,7 @@ function stopDashboardPolling() {
 function renderLiRestriction() {
   const actionsEl = document.getElementById('li-restriction-actions');
   actionsEl.innerHTML = `
-    ${isAdmin() ? `<button class="btn btn-ghost" id="li-download-report-btn" style="margin-right:8px;">Download monthly report</button>` : ''}
+    ${isAdmin() ? `<button class="btn btn-ghost" id="li-download-report-btn" style="margin-right:8px;">Download report</button>` : ''}
     <button class="btn btn-primary" id="li-add-entry-btn">+ Log restriction</button>
   `;
   document.getElementById('li-add-entry-btn').addEventListener('click', () => openLiEntryModal());
@@ -7372,17 +7113,48 @@ function formatOtDateHeader(isoStr) {
 function renderOtFiling() {
   renderOtFilingBell();
   const actionsEl = document.getElementById('ot-filing-actions');
+  // Same dropdown pattern as the sidebar's "Team Hub / Operations Hub"
+  // switcher and Account Hub's Leave Tracker/Employees toggle — one
+  // clickable label + chevron instead of three separate buttons.
+  // Order matches exactly what's requested: Manage dates, Download
+  // report, Reset.
   actionsEl.innerHTML = isAdmin() ? `
-    <button class="btn btn-ghost" id="ot-download-report-btn" style="margin-right:8px;">Download report</button>
-    <button class="btn btn-ghost" id="ot-reset-btn" style="margin-right:8px; color:var(--coral); border-color:var(--coral-wash);">Reset</button>
-    <button class="btn btn-ghost" id="ot-manage-dates-btn">Manage dates</button>
+    <div style="position:relative; flex-shrink:0;" id="ot-actions-wrap">
+      <button type="button" id="ot-actions-toggle" style="
+        display:flex; align-items:center; gap:6px; padding:9px 14px;
+        border:1px solid var(--line); border-radius:999px; background:var(--paper);
+        font-size:13px; font-weight:600; color:var(--ink); cursor:pointer; font-family:inherit; white-space:nowrap;">
+        Actions
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6; flex-shrink:0;"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      </button>
+      <div id="ot-actions-menu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; z-index:50; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
+        <div class="ot-actions-option" data-action="manage-dates" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Manage dates</div>
+        <div class="ot-actions-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Download report</div>
+        <div class="ot-actions-option" data-action="reset" style="padding:9px 14px; font-size:12.5px; color:var(--coral); cursor:pointer; border-top:1px solid var(--line-soft);">Reset</div>
+      </div>
+    </div>
   ` : '';
-  const manageDatesBtn = document.getElementById('ot-manage-dates-btn');
-  if (manageDatesBtn) manageDatesBtn.addEventListener('click', openOtManageDatesModal);
-  const downloadBtn = document.getElementById('ot-download-report-btn');
-  if (downloadBtn) downloadBtn.addEventListener('click', downloadOtFilingReport);
-  const resetBtn = document.getElementById('ot-reset-btn');
-  if (resetBtn) resetBtn.addEventListener('click', resetOtFiling);
+
+  const otActionsToggle = document.getElementById('ot-actions-toggle');
+  const otActionsMenu = document.getElementById('ot-actions-menu');
+  if (otActionsToggle && otActionsMenu) {
+    otActionsToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      otActionsMenu.style.display = otActionsMenu.style.display === 'none' ? 'block' : 'none';
+    });
+    otActionsMenu.querySelectorAll('.ot-actions-option').forEach(opt => {
+      opt.addEventListener('mouseenter', () => { opt.style.background = opt.dataset.action === 'reset' ? 'var(--coral-wash)' : 'var(--line-soft)'; });
+      opt.addEventListener('mouseleave', () => { opt.style.background = 'transparent'; });
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        otActionsMenu.style.display = 'none';
+        if (opt.dataset.action === 'manage-dates') openOtManageDatesModal();
+        if (opt.dataset.action === 'download-report') downloadOtFilingReport();
+        if (opt.dataset.action === 'reset') resetOtFiling();
+      });
+    });
+    document.addEventListener('click', () => { otActionsMenu.style.display = 'none'; });
+  }
 
   const el = document.getElementById('ot-filing-content');
   if (!state.employees.length) {
@@ -9333,18 +9105,94 @@ async function loadTeamFundsData() {
   };
 }
 
+// Standalone entry point for the Download Report action — recomputes
+// the exact same figures renderTeamFundsView derives locally (opening
+// balance, credits/debits, loans outstanding, current balance), but
+// independently from state.teamFundsData, so this can be triggered
+// from the actions-bar dropdown regardless of which Team Funds tab
+// happens to be showing. Mirrors that function's math exactly.
+function downloadTeamFundsReport() {
+  if (!state.teamFundsData) { showToast('Team Funds data is still loading — try again in a moment.', true); return; }
+  const { settings, transactions, loans, repayments, treasurerCash, tbSettings } = state.teamFundsData;
+
+  const treasurers = (treasurerCash || []).map(tc => {
+    const name = tc.treasurer_name;
+    const isGeneral = (t) => (t.category || 'general') === 'general';
+    const credits = transactions.filter(t => t.type === 'credit' && t.treasurer === name && isGeneral(t)).reduce((s, t) => s + Number(t.amount), 0);
+    const debits = transactions.filter(t => t.type === 'debit' && t.treasurer === name && isGeneral(t)).reduce((s, t) => s + Number(t.amount), 0);
+    const tbTaken = transactions.filter(t => t.type === 'credit' && t.treasurer === name && t.category === 'team_building').reduce((s, t) => s + Number(t.amount), 0);
+    const loaned = loans.filter(l => l.treasurer === name && !transactions.some(t => t.loan_id === l.id && t.tx_kind === 'loan_grant')).reduce((s, l) => s + Number(l.amount), 0);
+    const repaid = repayments.filter(r => r.treasurer === name && !transactions.some(t => t.repayment_id === r.id)).reduce((s, r) => s + Number(r.amount), 0);
+    return { ...tc, balance: Number(tc.amount) + credits - debits - tbTaken - loaned + repaid };
+  });
+
+  const hasTreasurerCash = treasurers.some(t => Number(t.amount) > 0);
+  const openingBalance = settings ? Number(settings.opening_balance) : 0;
+  const tbBeginning = tbSettings ? Number(tbSettings.beginning_balance) : 0;
+  const totalCredits = transactions.filter(t => t.type === 'credit' && (t.category || 'general') === 'general').reduce((s, t) => s + Number(t.amount), 0);
+  const totalDebits = transactions.filter(t => t.type === 'debit' && (t.category || 'general') === 'general').reduce((s, t) => s + Number(t.amount), 0);
+  const totalLoaned = loans.reduce((s, l) => s + Number(l.amount), 0);
+  const totalRepaid = repayments.reduce((s, r) => s + Number(r.amount), 0);
+  const loanOutstanding = totalLoaned - totalRepaid;
+  const currentBalance = hasTreasurerCash
+    ? treasurers.reduce((s, t) => s + t.balance, 0)
+    : openingBalance - tbBeginning + totalCredits - totalDebits - loanOutstanding;
+
+  openTfReport({ transactions, loans, repayments, openingBalance, totalCredits, totalDebits, totalLoaned, totalRepaid, loanOutstanding, currentBalance });
+}
+
 async function renderTeamFunds() {
   const actionsEl = document.getElementById('team-funds-actions');
   const el = document.getElementById('team-funds-content');
   const canEdit = canEditTeamFunds();
 
-  actionsEl.innerHTML = canEdit ? `
-    <div style="display:flex; gap:8px;">
-      <button class="btn btn-ghost" id="tf-add-credit-btn">+ Add funds</button>
-      <button class="btn btn-ghost" id="tf-add-debit-btn">− Record expense</button>
-      <button class="btn btn-ghost" id="tf-add-loan-btn">+ Loan</button>
+  // One dropdown now, in this exact order: Add funds, Record expense,
+  // Loan, Download report. Download report stays available to anyone
+  // who can view Team Funds (it's a read action, not an edit one) —
+  // the other three stay gated to canEdit, same as before. This
+  // replaces both the old three-button row AND the separate, second
+  // "Download report" button that used to sit below the tabs.
+  actionsEl.innerHTML = `
+    <div style="position:relative; flex-shrink:0;" id="tf-actions-wrap">
+      <button type="button" id="tf-actions-toggle" style="
+        display:flex; align-items:center; gap:6px; padding:9px 14px;
+        border:1px solid var(--line); border-radius:999px; background:var(--paper);
+        font-size:13px; font-weight:600; color:var(--ink); cursor:pointer; font-family:inherit; white-space:nowrap;">
+        Actions
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6; flex-shrink:0;"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      </button>
+      <div id="tf-actions-menu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; z-index:50; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
+        ${canEdit ? `
+          <div class="tf-actions-option" data-action="add-funds" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">+ Add funds</div>
+          <div class="tf-actions-option" data-action="record-expense" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">− Record expense</div>
+          <div class="tf-actions-option" data-action="loan" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">+ Loan</div>
+        ` : ''}
+        <div class="tf-actions-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; ${canEdit ? 'border-top:1px solid var(--line-soft);' : ''}">Download report</div>
+      </div>
     </div>
-  ` : '';
+  `;
+
+  const tfActionsToggle = document.getElementById('tf-actions-toggle');
+  const tfActionsMenu = document.getElementById('tf-actions-menu');
+  if (tfActionsToggle && tfActionsMenu) {
+    tfActionsToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      tfActionsMenu.style.display = tfActionsMenu.style.display === 'none' ? 'block' : 'none';
+    });
+    tfActionsMenu.querySelectorAll('.tf-actions-option').forEach(opt => {
+      opt.addEventListener('mouseenter', () => { opt.style.background = 'var(--line-soft)'; });
+      opt.addEventListener('mouseleave', () => { opt.style.background = 'transparent'; });
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tfActionsMenu.style.display = 'none';
+        if (opt.dataset.action === 'add-funds') openTfTransactionModal('credit');
+        if (opt.dataset.action === 'record-expense') openTfTransactionModal('debit');
+        if (opt.dataset.action === 'loan') openTfLoanModal();
+        if (opt.dataset.action === 'download-report') downloadTeamFundsReport();
+      });
+    });
+    document.addEventListener('click', () => { tfActionsMenu.style.display = 'none'; });
+  }
 
   // Show loading only on the very first load when there's no cached data yet.
   // On re-entry, paint instantly from cache and refresh silently behind it.
@@ -11087,18 +10935,12 @@ function renderTeamFundsView() {
             </button>
           `).join("")}
         </div>
-        <button class="btn btn-ghost btn-sm" id="tf-download-report-btn" style="font-size:12px; padding:6px 14px; margin-bottom:2px; white-space:nowrap;">Download report</button>
       </div>
       ${activeTab === "transactions" ? txTabHtml : activeTab === "loans" ? loansTabHtml : activeTab === "team-building" ? tbTabHtml : accountsTabHtml}
     </div>
   `;
 
   el.innerHTML = summaryHtml + openingBalanceHtml + tabbedCard;
-
-  // Download report button — opens a full Team Funds report in a new tab
-  document.getElementById('tf-download-report-btn')?.addEventListener('click', () => {
-    openTfReport({ transactions, loans, repayments, openingBalance, totalCredits, totalDebits, totalLoaned, totalRepaid, loanOutstanding, currentBalance });
-  });
 
   // Recorded By filter — reset to page 1 whenever the filter changes
   document.getElementById('tf-recorded-by-filter')?.addEventListener('change', (e) => {
@@ -11126,9 +10968,6 @@ function renderTeamFundsView() {
   });
 
   if (canEdit) {
-    document.getElementById("tf-add-credit-btn")?.addEventListener("click", () => openTfTransactionModal("credit"));
-    document.getElementById("tf-add-debit-btn")?.addEventListener("click", () => openTfTransactionModal("debit"));
-    document.getElementById("tf-add-loan-btn")?.addEventListener("click", openTfLoanModal);
     document.getElementById("tf-set-opening-btn")?.addEventListener("click", openTfOpeningBalanceModal);
     document.getElementById("tf-add-account-btn")?.addEventListener("click", () => openTfAccountModal(null));
 
@@ -14040,52 +13879,21 @@ async function requestIpsEmergencyUnlock() {
 // daily-grid report as before) or several months at once (a per-
 // employee monthly-summary report instead, since a multi-month wide
 // daily grid with one column per day would be unreadable).
-function openIpsReportRangeModal() {
+// Generates the IPS report for the CURRENT month (ipsState.month) —
+// whatever month is currently being viewed in the IPS tab — with no
+// range-picker prompt beforehand. Uses the already-cached data when
+// that month is the one currently loaded (the common case), or fetches
+// it fresh otherwise. Function name kept as-is since it's already
+// wired to the Download report button/menu item.
+async function openIpsReportRangeModal() {
   if (!isAdmin()) { showToast('Only admins can download this report.', true); return; }
 
-  const defaultStart = ipsState.month;
-  openModal('Download IPS Report', `
-    <form id="ips-report-range-form" style="display:flex; flex-direction:column; gap:14px;">
-      <p class="muted" style="font-size:12.5px; margin:0;">Choose the months to include — pick the same month twice for a single month's detailed report, or a wider range for a monthly-summary report across several months.</p>
-      <div style="display:flex; gap:12px;">
-        <div class="field" style="flex:1;">
-          <label for="ips-report-start">From month</label>
-          <input type="month" id="ips-report-start" value="${defaultStart.slice(0, 7)}" required
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-        <div class="field" style="flex:1;">
-          <label for="ips-report-end">To month</label>
-          <input type="month" id="ips-report-end" value="${defaultStart.slice(0, 7)}" required
-            style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
-        </div>
-      </div>
-      <button type="submit" class="btn btn-primary" style="justify-content:center;">Generate report</button>
-    </form>
-  `);
-
-  document.getElementById('ips-report-range-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const startVal = document.getElementById('ips-report-start').value; // "YYYY-MM"
-    const endVal = document.getElementById('ips-report-end').value;
-    if (!startVal || !endVal) { showToast('Please select both months.', true); return; }
-    const startMonth = `${startVal}-01`;
-    const endMonth = `${endVal}-01`;
-    if (startMonth > endMonth) { showToast('The start month must be before the end month.', true); return; }
-    closeModal();
-
-    if (startMonth === endMonth) {
-      // Single month — same detailed report as before, using whatever's
-      // already cached if it's the currently-viewed month, or a fresh
-      // fetch otherwise.
-      if (startMonth === ipsState.month && ipsState.loaded) {
-        downloadIpsReport();
-      } else {
-        await downloadIpsReportForMonth(startMonth);
-      }
-    } else {
-      await downloadIpsMultiMonthReport(startMonth, endMonth);
-    }
-  });
+  const currentMonth = ipsState.month;
+  if (ipsState.loaded && ipsState._loadedMonth === ipsState.month) {
+    downloadIpsReport();
+  } else {
+    await downloadIpsReportForMonth(currentMonth);
+  }
 }
 
 // Same detailed single-month report as downloadIpsReport(), but for a
@@ -16041,6 +15849,27 @@ window.addEventListener('hashchange', () => {
   if (HASH_TO_ACCOUNT_HUB_TAB[hashSlug]) state.accountHubTab = HASH_TO_ACCOUNT_HUB_TAB[hashSlug];
   switchView(HASH_TO_VIEW[hashSlug]);
 });
+
+// Mobile sidebar drawer — on screens ≤900px the sidebar is normally
+// off-screen (see the .sidebar CSS under that media query) and slides
+// in as an overlay via the .mobile-open class, with a dark backdrop
+// behind it. Wired once here, unconditionally, since the hamburger
+// button and backdrop exist in the DOM from page load regardless of
+// login state (they just have nothing to toggle until #app is shown).
+function openMobileSidebar() {
+  document.querySelector('.sidebar')?.classList.add('mobile-open');
+  document.getElementById('mobile-nav-backdrop')?.classList.add('show');
+}
+function closeMobileSidebar() {
+  document.querySelector('.sidebar')?.classList.remove('mobile-open');
+  document.getElementById('mobile-nav-backdrop')?.classList.remove('show');
+}
+document.getElementById('mobile-nav-toggle')?.addEventListener('click', () => {
+  const sidebar = document.querySelector('.sidebar');
+  if (sidebar && sidebar.classList.contains('mobile-open')) closeMobileSidebar();
+  else openMobileSidebar();
+});
+document.getElementById('mobile-nav-backdrop')?.addEventListener('click', closeMobileSidebar);
 
 // Deferred rather than called immediately: this script is one long
 // inline block, so calling checkExistingSession() synchronously here
