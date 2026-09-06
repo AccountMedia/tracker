@@ -1741,7 +1741,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-remove-redundant-hint';
+const APP_VERSION = '2026-09-04-ot-uncheck-only-when-empty';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7605,11 +7605,12 @@ function renderOtFiling() {
       const inputVal = hasAssumed ? entry.assumed_hours : '';
       const canDeleteThisEntry = canDeleteOtEntry();
       // canEdit is guaranteed true in this branch (we already returned
-      // for !canEdit above), so the menu is always shown here — it's
-      // what lets someone back out of a mistaken OT check-in via
-      // "Remove OT availability" even after the checkbox itself has
-      // been replaced by this input cell.
-      const badge = `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-confirm="${hasAssumed ? '1' : '0'}" data-can-uncheck="1" data-can-delete="${canDeleteThisEntry ? '1' : '0'}" title="More actions" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>`;
+      // for !canEdit above). "Remove OT availability" (backing out of
+      // a mistaken check-in) only makes sense while the field is still
+      // EMPTY — once a real number has been typed in, only Confirm and
+      // Delete should be offered, not a way to undo the check-in out
+      // from under an already-entered value.
+      const badge = `<button type="button" class="ot-menu-trigger" data-emp-id="${emp.id}" data-date="${d}" data-can-confirm="${hasAssumed ? '1' : '0'}" data-can-uncheck="${hasAssumed ? '0' : '1'}" data-can-delete="${canDeleteThisEntry ? '1' : '0'}" title="More actions" style="position:absolute; left:100%; top:50%; transform:translateY(-50%); margin-left:4px; background:none; border:1px solid var(--line); border-radius:6px; padding:1px 7px; cursor:pointer; color:var(--ink-soft); font-size:12px; line-height:1;">⋯</button>`;
 
       // The suggested split (Estimated Pending Leads ÷ confirmed count
       // ÷ 100) still caps what can be typed in (via the max attribute
