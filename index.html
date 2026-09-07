@@ -11,29 +11,32 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
   :root{
-    --paper: #F8F9FB;
-    --paper-raised: #FFFFFF;
-    --ink: #14161C;
-    --ink-soft: #545A6B;
-    --ink-faint: #9199AC;
-    --line: #E2E5EB;
-    --line-soft: #EDEFF3;
-    --teal: #1A2340;
-    --teal-soft: #29335C;
-    --teal-wash: #ECEEF7;
-    --green: #1D6E7A;
-    --green-wash: #E4F1F3;
-    --amber: #6B4C9A;
-    --amber-wash: #EFEAF6;
-    --coral: #C0392B;
-    --coral-wash: #FBEAE8;
-    --gold-line: #4A6FA5;
-    --shadow-sm: 0 1px 2px rgba(20,22,28,0.06);
-    --shadow-md: 0 4px 16px rgba(20,22,28,0.08);
-    --shadow-lg: 0 12px 32px rgba(26,35,64,0.16);
-    --radius-sm: 5px;
-    --radius-md: 8px;
-    --radius-lg: 12px;
+    color-scheme: dark;
+    --paper: #0B0F1A;
+    --paper-raised: #121826;
+    --ink: #E4E8F0;
+    --ink-soft: #9AA5BC;
+    --ink-faint: #5C6780;
+    --line: #28324A;
+    --line-soft: #1A2233;
+    --teal: #3D8FC4;
+    --teal-soft: #2E6E99;
+    --teal-wash: #14263A;
+    --green: #4CAF7D;
+    --green-wash: #12261E;
+    --amber: #9B7FC7;
+    --amber-wash: #221A34;
+    --amber-dark: #C9A24C;
+    --coral: #E8735C;
+    --coral-wash: #301A16;
+    --gold-line: #C9A227;
+    --row-highlight: rgba(61, 143, 196, 0.16);
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.45);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.5);
+    --shadow-lg: 0 12px 32px rgba(0,0,0,0.6);
+    --radius-sm: 3px;
+    --radius-md: 5px;
+    --radius-lg: 7px;
     --font-display: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
     --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     --font-mono: 'SF Mono', 'IBM Plex Mono', Menlo, Consolas, monospace;
@@ -63,7 +66,11 @@
   input[type=number]::-webkit-inner-spin-button{ -webkit-appearance: none; margin:0; }
   input[type=number]{ -moz-appearance: textfield; appearance: textfield; }
   body{
-    background: var(--paper);
+    background-color: var(--paper);
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 32px 32px;
     color: var(--ink);
     font-family: var(--font-body);
     font-size: 14px;
@@ -72,7 +79,29 @@
   }
   a{ color: inherit; text-decoration: none; }
   button{ font-family: inherit; cursor: pointer; }
-  ::selection{ background: var(--gold-line); color: white; }
+  ::selection{ background: var(--gold-line); color: #0B0F1A; }
+
+  /* Native form elements default to the browser's OWN white background
+     unless explicitly overridden — with thousands of individual inputs
+     scattered across this file, plenty never got an explicit
+     background set inline. This one rule covers every input, select,
+     and textarea app-wide, regardless of what each individual element's
+     own inline style does or doesn't set. Anything that DOES set its
+     own background inline still wins normally (inline beats this), so
+     this only fills in the gaps rather than overriding intentional
+     styling elsewhere. */
+  input, select, textarea{
+    background: var(--paper);
+    color: var(--ink);
+    border-color: var(--line);
+  }
+  input::placeholder, textarea::placeholder{ color: var(--ink-faint); }
+  input[type="checkbox"], input[type="radio"]{
+    accent-color: var(--teal);
+  }
+  select{
+    color-scheme: dark; /* also darkens the native dropdown popup itself */
+  }
 
   /* ---------- Layout shell ---------- */
   #app{
@@ -84,8 +113,9 @@
   .sidebar{
     width: 240px;
     flex-shrink: 0;
-    background: var(--teal);
-    color: #E4E8F5;
+    background: var(--paper-raised);
+    border-right: 1px solid var(--line);
+    color: var(--ink);
     display: flex;
     flex-direction: column;
     padding: 28px 18px;
@@ -159,7 +189,7 @@
   }
   .nav-item.disabled:hover{ background: none; color:#7C87AE; }
   .nav-badge{
-    margin-left:auto; background:#C0392B; color:#fff; font-size:10.5px; font-weight:700;
+    margin-left:auto; background:var(--coral); color:#fff; font-size:10.5px; font-weight:700;
     min-width:18px; height:18px; padding:0 5px; border-radius:9px;
     display:inline-flex; align-items:center; justify-content:center; line-height:1;
   }
@@ -485,7 +515,7 @@
       <span class="sub hub-switcher-wrap" style="position:relative; cursor:pointer;" id="hub-switcher-toggle">
         Team Hub
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block; vertical-align:middle; margin-left:3px; opacity:0.8;"><polyline points="6 9 12 15 18 9"></polyline></svg>
-        <div id="hub-switcher-menu" style="display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:50; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:150px; overflow:hidden; text-transform:none; letter-spacing:normal; font-weight:500;">
+        <div id="hub-switcher-menu" style="display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:50; background:var(--paper-raised); border-radius:8px; box-shadow:var(--shadow-lg); min-width:150px; overflow:hidden; text-transform:none; letter-spacing:normal; font-weight:500;">
           <div class="hub-switcher-option" data-hub="team" style="padding:9px 14px; font-size:12.5px; color:var(--ink); background:var(--teal-wash);">Team Hub</div>
           <div class="hub-switcher-option" data-hub="ops" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Operations Hub</div>
         </div>
@@ -1819,7 +1849,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-fuzzy-name-matching';
+const APP_VERSION = '2026-09-04-ips-match-priolist-input';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1846,7 +1876,7 @@ function showStaleVersionBanner() {
   bar.style.cssText = 'position:fixed; bottom:0; left:0; right:0; z-index:9999; background:var(--teal); color:#FFFFFF; padding:10px 16px; display:flex; align-items:center; justify-content:center; gap:14px; font-size:13px; font-weight:600; box-shadow:0 -2px 10px rgba(0,0,0,0.15);';
   bar.innerHTML = `
     <span>A newer version of this app is available.</span>
-    <button id="stale-version-refresh-btn" style="background:#FFFFFF; color:var(--teal); border:none; padding:6px 14px; border-radius:999px; font-weight:700; font-size:12.5px; cursor:pointer;">Refresh now</button>
+    <button id="stale-version-refresh-btn" style="background:var(--paper-raised); color:var(--teal); border:none; padding:6px 14px; border-radius:999px; font-weight:700; font-size:12.5px; cursor:pointer;">Refresh now</button>
     <button id="stale-version-dismiss-btn" style="background:none; color:#FFFFFF; border:1px solid rgba(247,243,232,0.5); padding:6px 14px; border-radius:999px; font-weight:600; font-size:12.5px; cursor:pointer;">Later</button>
   `;
   document.body.appendChild(bar);
@@ -3075,7 +3105,7 @@ function renderAccountHub() {
         ${ltOn ? 'Leave Tracker' : 'Employees'}
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6; flex-shrink:0;"><polyline points="6 9 12 15 18 9"></polyline></svg>
       </button>
-      <div id="account-hub-tab-menu" style="display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:50; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
+      <div id="account-hub-tab-menu" style="display:none; position:absolute; top:calc(100% + 6px); left:0; z-index:50; background:var(--paper-raised); border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
         <div class="account-hub-tab-option" data-tab="leave-tracker" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; background:${ltOn ? 'var(--teal-wash)' : 'transparent'};">Leave Tracker</div>
         <div class="account-hub-tab-option" data-tab="employee-management" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; background:${emOn ? 'var(--teal-wash)' : 'transparent'};">Employees</div>
         ${(ltOn && isAdmin()) ? `<div class="account-hub-tab-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer; border-top:1px solid var(--line-soft);">Download Report</div>` : ''}
@@ -3685,7 +3715,7 @@ function renderCalendarCard() {
       .cal-cell{ min-height:82px; max-height:82px; overflow:hidden; border-radius:10px; padding:8px; background:var(--paper); border:1px solid var(--line-soft); cursor:pointer; transition: background 0.12s ease, border-color 0.12s ease; display:flex; flex-direction:column; position:relative; }
       .cal-cell:hover{ background: var(--teal-wash); }
       .cal-cell-empty{ background:transparent; border:none; cursor:default; }
-      .cal-cell-weekend{ background: #EEF1F6; }
+      .cal-cell-weekend{ background: var(--line-soft); }
       .cal-cell-today{ border-color: var(--gold-line); border-width:1.5px; background: var(--teal-wash); }
       .cal-daynum{ font-size:13px; font-weight:600; color:var(--ink-soft); margin-bottom:6px; }
       .cal-marks{ display:flex; flex-wrap:wrap; gap:4px; align-items:center; }
@@ -5263,7 +5293,7 @@ function renderCreditTableCard() {
 
       if (editMode) {
         return `
-          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#E2EEF6;' : ''}">
+          <div class="credit-row credit-row-editing" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:var(--row-highlight);' : ''}">
             <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
             <span style="display:flex; gap:6px; flex-shrink:0; align-items:center;">
               <span title="Vacation credits" style="display:flex; align-items:center; gap:3px;">
@@ -5281,7 +5311,7 @@ function renderCreditTableCard() {
       }
 
       return `
-        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:#E2EEF6;' : ''}">
+        <div class="credit-row" data-emp-id="${emp.id}" style="display:flex; justify-content:space-between; align-items:center; padding:7px 8px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; gap:8px; ${isMe ? 'background:var(--row-highlight);' : ''}">
           <span style="overflow:hidden; text-overflow:ellipsis;">${escapeHtml(emp.display_name)}</span>
           <span style="display:flex; gap:10px; align-items:center; flex-shrink:0;">
             <span class="faint" title="Vacation credits">VL ${vl}</span>
@@ -5447,7 +5477,7 @@ function renderPayrollConfirmation() {
       const isMe = emp.id === state.profile.employee_id;
 
       return `
-        <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#E2EEF6;' : ''}">
+        <div class="payroll-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:var(--row-highlight);' : ''}">
           <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
           <span class="faint">${escapeHtml(emp.bank || '—')}</span>
           ${renderPayrollCell(emp.id, year, month, 1, half1, canMark)}
@@ -5617,7 +5647,7 @@ const PRIOLIST_FILE_COLORS = {
   blue:   '#2D6A9F',
   yellow: '#C9A227',
   red:    '#B5495B',
-  none:   '#8A8A86', // gray
+  none:   '#3E4658', // dark slate gray, consistent with the app's own --line-soft family
 };
 
 // A very light wash of each file color, used to highlight the whole
@@ -5831,7 +5861,7 @@ function renderPrioList() {
     const menuIsOpen = state.priolistOpenMenuId === entry.id;
 
     return `
-      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:#E2EEF6;' : ''}">
+      <div class="priolist-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1fr 1.8fr 1.6fr; align-items:center; gap:12px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isMe ? 'background:var(--row-highlight);' : ''}">
         <input type="number" min="1" step="1" class="priolist-input rank-input" data-id="${entry.id}" value="${entry.rank}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">
         <span style="font-weight:700; color:var(--ink);">${escapeHtml(emp.display_name)}</span>
         <span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;" title="Auto-filled from review batches — not manually editable">${entry.peer_review ?? 0}</span>
@@ -6218,7 +6248,7 @@ function renderRedFilesView() {
       <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:9px;
         border:1px solid ${isMine ? 'var(--teal)' : 'var(--line-soft)'};
         border-left:4px solid ${isMine ? 'var(--teal)' : isOpen ? 'var(--coral)' : 'var(--amber)'};
-        background:${isMine ? '#E2EEF6' : 'var(--paper)'};">
+        background:${isMine ? 'var(--row-highlight)' : 'var(--paper)'};">
         <div style="flex:1; min-width:0;">
           <div style="display:flex; align-items:center; gap:7px;">
             ${campIdCopyHtml(f.camp_id)}
@@ -7127,7 +7157,7 @@ function renderOtFiling() {
         Actions
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6; flex-shrink:0;"><polyline points="6 9 12 15 18 9"></polyline></svg>
       </button>
-      <div id="ot-actions-menu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; z-index:50; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
+      <div id="ot-actions-menu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; z-index:50; background:var(--paper-raised); border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
         <div class="ot-actions-option" data-action="manage-dates" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Manage dates</div>
         <div class="ot-actions-option" data-action="download-report" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">Download report</div>
         <div class="ot-actions-option" data-action="reset" style="padding:9px 14px; font-size:12.5px; color:var(--coral); cursor:pointer; border-top:1px solid var(--line-soft);">Reset</div>
@@ -7402,7 +7432,7 @@ function renderOtFiling() {
     }).join('');
 
     return `
-      <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:#E2EEF6;' : ''} ${isPip ? 'opacity:0.6;' : ''}">
+      <tr style="border-bottom:1px solid var(--line-soft); ${isMe ? 'background:var(--row-highlight);' : ''} ${isPip ? 'opacity:0.6;' : ''}">
         <td style="padding:8px 10px; font-weight:700; color:var(--ink);">
           <div style="display:flex; align-items:center; gap:6px;">
             <span>${escapeHtml(emp.display_name)}</span>
@@ -7450,11 +7480,11 @@ function renderOtFiling() {
             ${bodyRows}
           </tbody>
           <tfoot>
-            <tr style="background:var(--amber-wash); border-top:2px solid var(--line);">
+            <tr style="background:var(--teal-wash); border-top:2px solid var(--line);">
               <td style="padding:8px 10px; font-weight:700; font-size:12px;"># of Heads working</td>
               ${headsRow}
             </tr>
-            <tr style="background:var(--amber-wash);">
+            <tr style="background:var(--teal-wash);">
               <td style="padding:8px 10px; font-weight:700; font-size:12px;">
                 # of Leads to Validate
                 <span class="faint" style="font-weight:500; font-size:11px;">(total: ${totalLeadsToValidate})</span>
@@ -9161,7 +9191,7 @@ async function renderTeamFunds() {
         Actions
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.6; flex-shrink:0;"><polyline points="6 9 12 15 18 9"></polyline></svg>
       </button>
-      <div id="tf-actions-menu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; z-index:50; background:#fff; border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
+      <div id="tf-actions-menu" style="display:none; position:absolute; top:calc(100% + 6px); right:0; z-index:50; background:var(--paper-raised); border-radius:8px; box-shadow:var(--shadow-lg); min-width:160px; overflow:hidden;">
         ${canEdit ? `
           <div class="tf-actions-option" data-action="add-funds" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">+ Add funds</div>
           <div class="tf-actions-option" data-action="record-expense" style="padding:9px 14px; font-size:12.5px; color:var(--ink); cursor:pointer;">− Record expense</div>
@@ -10382,7 +10412,7 @@ Respond with ONLY this JSON shape, no other text:
     console.error('LQ Playbook search error:', err);
     resultEl.innerHTML = `
       <div style="padding:14px; border-radius:8px; background:var(--coral-wash); color:var(--coral); font-size:12.5px; font-weight:600;">${escapeHtml(friendly)}</div>
-      <div style="padding:10px 14px; margin-top:6px; border-radius:8px; background:#fff; font-size:11px; color:var(--ink-faint); font-family:monospace; word-break:break-all;">${escapeHtml(msg)}</div>
+      <div style="padding:10px 14px; margin-top:6px; border-radius:8px; background:var(--paper-raised); font-size:11px; color:var(--ink-faint); font-family:monospace; word-break:break-all;">${escapeHtml(msg)}</div>
     `;
     return;
   }
@@ -10546,7 +10576,7 @@ function finishQaGuideWithAnswers({ udCompany, udDomain, topCompany, topStatus, 
     </div>
     <div style="padding:12px 16px 16px; border-radius:0 0 10px 10px; background:${verdictColor}18; border:1px solid ${verdictColor}55; border-top:none;">
       ${reasons.map(r => `<p style="font-size:12.5px; margin:0 0 8px; color:var(--ink-soft); line-height:1.5;">${escapeHtml(r)}</p>`).join('')}
-      <div style="margin-top:12px; padding:4px 12px; background:#fff; border-radius:8px;">
+      <div style="margin-top:12px; padding:4px 12px; background:var(--paper-raised); border-radius:8px;">
         <div style="font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase; letter-spacing:0.03em; padding-top:8px;">The checks</div>
         ${checkRow('1. Uploaded company name and LinkedIn company name — same company?', answers.q1, answers.q1_note)}
         ${checkRow('2. Uploaded domain and LinkedIn company name — same company?', answers.q2, answers.q2_note)}
@@ -10790,14 +10820,14 @@ function renderTeamFundsView() {
                   <td style="padding:10px 12px; text-align:right;">${TF_FMT(loan.amount)}</td>
                   <td style="padding:10px 12px; text-align:right; color:#2E7D32;">
                     ${loanRepaid > 0
-                      ? `<button class="btn-link tf-repay-history-link" data-loan-id="${loan.id}" style="background:none; border:none; padding:0; font:inherit; font-weight:600; color:#2E7D32; cursor:pointer; text-decoration:underline; text-decoration-color:rgba(46,125,50,0.35);" title="View or edit repayments">${TF_FMT(loanRepaid)}</button>`
+                      ? `<button class="btn-link tf-repay-history-link" data-loan-id="${loan.id}" style="background:none; border:none; padding:0; font:inherit; font-weight:600; color:var(--green); cursor:pointer; text-decoration:underline; text-decoration-color:rgba(76,175,125,0.35);" title="View or edit repayments">${TF_FMT(loanRepaid)}</button>`
                       : TF_FMT(loanRepaid)}
                   </td>
-                  <td style="padding:10px 12px; text-align:right; font-weight:600; color:${outstanding > 0 ? "var(--coral)" : "#2E7D32"};">${TF_FMT(outstanding)}</td>
+                  <td style="padding:10px 12px; text-align:right; font-weight:600; color:${outstanding > 0 ? "var(--coral)" : "var(--green)"};">${TF_FMT(outstanding)}</td>
                   <td style="padding:10px 12px;">
                     <span style="display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; font-weight:600;
-                      background:${isPaid ? "#E8F5E9" : "var(--amber-wash)"};
-                      color:${isPaid ? "#2E7D32" : "var(--amber-dark,#9E6B00)"};">
+                      background:${isPaid ? "var(--green-wash)" : "var(--amber-wash)"};
+                      color:${isPaid ? "var(--green)" : "var(--amber-dark)"};">
                       ${isPaid ? "✓ Paid" : "Active"}
                     </span>
                   </td>
@@ -13056,7 +13086,7 @@ function renderIpsTables() {
   const workingDays = ipsState.monthSettings ? ipsState.monthSettings.working_days : '';
 
   function rosterRowStyle(emp) {
-    return emp.id === state.profile.employee_id ? 'background:#E2EEF6;' : '';
+    return emp.id === state.profile.employee_id ? 'background:var(--row-highlight);' : '';
   }
 
   // ── Daily Entry tab: one day at a time ───────────────────────────
@@ -13129,7 +13159,7 @@ function renderIpsTables() {
         // just this one field.
         if (field === 'errors' && canEditIpsRow(emp.id)) {
           const borderStyle = 'border:1px solid var(--line);';
-          const bgStyle = isMe ? '#fff' : 'var(--paper)';
+          const bgStyle = 'var(--paper)';
           return `<td style="${cellPad} text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
               style="width:${(isTrioMember || field === 'errors') ? '78px' : '90px'}; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
@@ -13137,7 +13167,7 @@ function renderIpsTables() {
         }
         if (directEdit) {
           const borderStyle = 'border:1px solid var(--line);';
-          const bgStyle = isMe ? '#fff' : 'var(--paper)';
+          const bgStyle = 'var(--paper)';
           return `<td style="${cellPad} text-align:center;">
             <input type="number" min="0" step="1" class="ips-daily-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" value="${val}"
               style="width:${(isTrioMember || field === 'errors') ? '78px' : '90px'}; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
@@ -13157,7 +13187,7 @@ function renderIpsTables() {
           // specific input through the confirm-then-approval flow
           // instead of saving directly.
           const borderStyle = 'border:1px solid var(--line);';
-          const bgStyle = isMe ? '#fff' : 'var(--paper)';
+          const bgStyle = 'var(--paper)';
           return `<td style="${cellPad} text-align:center;">
             <input type="number" min="0" step="1" class="ips-correction-input" data-emp-id="${emp.id}" data-date="${day}" data-field="${field}" data-current="${val}" value="${val}"
               style="width:${(isTrioMember || field === 'errors') ? '78px' : '90px'}; padding:6px; text-align:center; border-radius:6px; ${borderStyle} font-family:inherit; font-size:12.5px; background:${bgStyle}; box-sizing:border-box;">
@@ -13258,7 +13288,7 @@ function renderIpsTables() {
         </div>
       </div>
       ${admin ? `
-        <div class="card" style="padding:12px 16px; margin-bottom:14px; display:flex; align-items:center; gap:12px; background:var(--amber-wash); border-color:var(--amber-wash);">
+        <div class="card" style="padding:12px 16px; margin-bottom:14px; display:flex; align-items:center; gap:12px; background:var(--teal-wash); border-color:var(--teal-wash);">
           <span style="font-size:16px;">📅</span>
           <label style="font-size:12px; font-weight:600;">Working days this month (applies to everyone, feeds EC Score):</label>
           <input type="number" min="0" step="1" id="ips-working-days-input" value="${workingDays}" style="width:70px; padding:5px 8px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
@@ -13390,9 +13420,9 @@ function renderIpsTables() {
     // ── Podium: top 3, champion in the middle and tallest ──
     const podiumOrder = [scored[1], scored[0], scored[2]].filter(Boolean);
     const podiumMeta = {
-      0: { medal: '🥇', ring: 'var(--gold-line)',  bg: 'linear-gradient(160deg, #FBF4E3 0%, #F3E6C8 100%)', h: 168, avatar: 58 },
-      1: { medal: '🥈', ring: '#9FA6AD',            bg: 'linear-gradient(160deg, #F3F4F6 0%, #E6E8EB 100%)', h: 140, avatar: 48 },
-      2: { medal: '🥉', ring: '#C08A57',            bg: 'linear-gradient(160deg, #F8EEE4 0%, #EFDCC9 100%)', h: 128, avatar: 48 },
+      0: { medal: '🥇', ring: 'var(--gold-line)',  bg: 'linear-gradient(160deg, #2B2410 0%, #1C170A 100%)', h: 168, avatar: 58 },
+      1: { medal: '🥈', ring: '#9FA6AD',            bg: 'linear-gradient(160deg, #212630 0%, #171B23 100%)', h: 140, avatar: 48 },
+      2: { medal: '🥉', ring: '#C08A57',            bg: 'linear-gradient(160deg, #2B2013 0%, #1D150C 100%)', h: 128, avatar: 48 },
     };
     const podiumHtml = scored.length ? `
       <div style="display:flex; align-items:flex-end; justify-content:center; gap:14px; margin:6px 0 26px;">
@@ -13404,7 +13434,7 @@ function renderIpsTables() {
             <div class="ips-score-row" data-emp-id="${emp.id}" title="Click for ${escapeHtml(emp.display_name)}'s full-year view" style="
               flex:1; max-width:220px; min-height:${meta.h}px; cursor:pointer;
               background:${meta.bg}; border:2px solid ${meta.ring};
-              ${isMe ? 'box-shadow:0 0 0 3px var(--teal-wash), 0 6px 18px rgba(31,61,58,0.18);' : 'box-shadow:0 4px 14px rgba(58,58,56,0.1);'}
+              ${isMe ? 'box-shadow:0 0 0 3px var(--teal-wash), 0 6px 18px rgba(0,0,0,0.4);' : 'box-shadow:0 4px 14px rgba(0,0,0,0.35);'}
               border-radius:16px; padding:16px 12px 14px; text-align:center; position:relative;
               display:flex; flex-direction:column; align-items:center; justify-content:flex-end; gap:6px;
               transition:transform 0.15s;"
@@ -13431,7 +13461,7 @@ function renderIpsTables() {
         <div class="ips-score-row" data-emp-id="${emp.id}" title="Click for ${escapeHtml(emp.display_name)}'s full-year view" style="
           display:flex; align-items:center; gap:12px; padding:10px 14px; border-radius:12px; cursor:pointer;
           border:1px solid ${isMe ? 'var(--teal)' : 'var(--line-soft)'};
-          background:${isMe ? '#E2EEF6' : 'var(--paper-raised)'};
+          background:${isMe ? 'var(--row-highlight)' : 'var(--paper-raised)'};
           transition:transform 0.12s, box-shadow 0.12s;"
           onmouseenter="this.style.boxShadow='var(--shadow-md)';this.style.transform='translateX(3px)'"
           onmouseleave="this.style.boxShadow='none';this.style.transform='none'">
@@ -13505,7 +13535,7 @@ function renderIpsTables() {
             const emp = roster.find(x => x.id === empId);
             const dateList = missedDates.map(d => formatMonthDay(d)).join(', ');
             return `
-              <div style="font-size:12.5px; background:#fff; border-radius:8px; padding:8px 12px;">
+              <div style="font-size:12.5px; background:var(--paper-raised); border-radius:8px; padding:8px 12px;">
                 <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong>
                 <span style="color:var(--ink-soft);"> — ${missedDates.length} day${missedDates.length === 1 ? '' : 's'}: ${escapeHtml(dateList)}</span>
               </div>
@@ -13534,7 +13564,7 @@ function renderIpsTables() {
           const emp = roster.find(x => x.id === r.employee_id);
           const fieldLabel = r.field === 'errors' ? 'Errors' : r.field === 'md_value' ? 'Missing Data Task' : 'Lead Qualification';
           return `
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:#fff; border-radius:8px; padding:8px 12px; font-size:12.5px;">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--paper-raised); border-radius:8px; padding:8px 12px; font-size:12.5px;">
               <div>
                 <strong>${escapeHtml(emp ? emp.display_name : 'Unknown')}</strong> — ${fieldLabel} on ${formatPrettyDate(r.entry_date)}:
                 <span style="color:var(--ink-soft);">${r.old_value ?? '—'}</span> → <strong style="color:var(--teal);">${r.new_value ?? '—'}</strong>
@@ -14423,7 +14453,7 @@ function ipsOtherTaskMenuPortal() {
   if (!portal) {
     portal = document.createElement('div');
     portal.id = 'ips-other-task-menu-portal';
-    portal.style.cssText = 'position:fixed; z-index:999; display:none; background:#fff; border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:4px; min-width:150px;';
+    portal.style.cssText = 'position:fixed; z-index:999; display:none; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:4px; min-width:150px;';
     document.body.appendChild(portal);
     document.addEventListener('click', () => { portal.style.display = 'none'; });
   }
@@ -15096,8 +15126,8 @@ function renderTaskManagerView() {
       const label = isOverdue ? `Overdue · ${formatPrettyDate(task.deadline)}`
                   : isDueToday ? `Due today`
                   : `Due ${formatPrettyDate(task.deadline)}`;
-      const color = isOverdue ? 'var(--coral)' : isDueToday ? '#C0392B' : isDueSoon ? 'var(--amber-dark,#9E6B00)' : 'var(--ink-faint)';
-      const bg    = isOverdue ? 'var(--coral-wash)' : isDueToday ? '#FDECEA' : isDueSoon ? 'var(--amber-wash,#FEF3C7)' : 'var(--line-soft)';
+      const color = isOverdue ? 'var(--coral)' : isDueToday ? 'var(--coral)' : isDueSoon ? 'var(--amber-dark)' : 'var(--ink-faint)';
+      const bg    = isOverdue ? 'var(--coral-wash)' : isDueToday ? 'var(--coral-wash)' : isDueSoon ? 'var(--amber-wash)' : 'var(--line-soft)';
       deadlineBadge = `<span style="font-size:10px; font-weight:600; padding:1px 7px; border-radius:4px; margin-left:6px; vertical-align:middle; background:${bg}; color:${color};">📅 ${label}</span>`;
     }
 
@@ -15118,7 +15148,7 @@ function renderTaskManagerView() {
         </button>
         <div style="flex:1; min-width:0;">
           <div style="font-weight:600; font-size:13.5px; ${done ? 'text-decoration:line-through; color:var(--ink-faint);' : ''}">
-            ${isUrgent ? '<span style="font-size:10px; font-weight:700; color:var(--coral); background:#FFF0F0; padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; letter-spacing:0.04em;">URGENT</span>' : ''}
+            ${isUrgent ? '<span style="font-size:10px; font-weight:700; color:var(--coral); background:var(--coral-wash); padding:1px 6px; border-radius:4px; margin-right:6px; vertical-align:middle; letter-spacing:0.04em;">URGENT</span>' : ''}
             ${escapeHtml(task.title)}
             ${isCarryOver ? '<span style="font-size:10px; font-weight:700; color:var(--amber-dark,#9E6B00); background:var(--amber-wash,#FEF3C7); padding:1px 6px; border-radius:4px; margin-left:6px; vertical-align:middle;">carried over</span>' : ''}
             ${deadlineBadge}
