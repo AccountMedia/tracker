@@ -1819,7 +1819,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ips-remove-workday-caption';
+const APP_VERSION = '2026-09-04-fuzzy-name-matching';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2398,7 +2398,7 @@ async function syncPriolistMdOutputFromClaimRecords() {
   const updates = [];
   const unmatchedNames = new Set();
   counts.forEach((count, firstNameLower) => {
-    const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+    const emp = findEmployeeByFirstName(firstNameLower);
     if (!emp) { unmatchedNames.add(firstNameLower); return; }
     const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
     if (!entry) return; // no PrioList row for this employee yet — self-heal in loadPriolistEntries will create one on next full load
@@ -2547,7 +2547,7 @@ async function syncPriolistPeerReviewFromReviewBatches() {
   const updates = [];
   const unmatchedNames = new Set();
   sums.forEach((total, firstNameLower) => {
-    const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+    const emp = findEmployeeByFirstName(firstNameLower);
     if (!emp) { unmatchedNames.add(firstNameLower); return; }
     const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
     if (!entry) return;
@@ -12246,6 +12246,36 @@ const MD_TASK_NAME_ALIASES = {
   'louise': 'jeinna', // Jeinna Louise Perez — the source data uses her middle name
 };
 
+// Matches a raw first-name string (already alias-resolved, lowercased)
+// against the employee roster. Tries an EXACT match first; if nothing
+// matches exactly, falls back to a PREFIX match — the external system
+// sometimes appends a trailing last-initial directly onto the first
+// name with no separator (confirmed real cases: "jacquelynb" for
+// Jacquelyn Bolibar, "franciscoa" for Francisco Almine, "katrenas" for
+// Katrena Saladaga). If exactly ONE employee's first name is a prefix
+// of the raw name with a SHORT (1-2 character) leftover suffix, that's
+// treated as a match. Deliberately requires a UNIQUE candidate — if
+// the short suffix is ambiguous (matches more than one employee), this
+// refuses to guess and returns null instead, exactly like an
+// unmatched name today (logged, not silently misattributed to the
+// wrong person). Shared by every sync that matches names from
+// completion_log/claim_records against the roster (MD Task, PrioList
+// MD Output, Peer Review, etc.) — one matching rule, used everywhere,
+// rather than each sync re-implementing its own exact-only lookup.
+function findEmployeeByFirstName(firstNameLower) {
+  if (!firstNameLower) return null;
+  const exact = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+  if (exact) return exact;
+
+  const candidates = state.employees.filter(e => {
+    const empFirst = e.display_name.split(' ')[0].toLowerCase();
+    if (!firstNameLower.startsWith(empFirst)) return false;
+    const suffixLen = firstNameLower.length - empFirst.length;
+    return suffixLen >= 1 && suffixLen <= 2;
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 // ── MD Task auto-sync from completion_log (external QA-review project) ──
 // Runs LIVE — a realtime subscription on completion_log (in the second
 // Supabase project) re-triggers this the instant a claim is inserted
@@ -12305,7 +12335,7 @@ async function syncMdTaskFromClaimRecords() {
     // a fresh session, which would otherwise make "existing" undefined
     // and silently skip the decrease-check entirely.
     const employeeIds = [...new Set([...counts.keys()].map(firstNameLower => {
-      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      const emp = findEmployeeByFirstName(firstNameLower);
       return emp ? emp.id : null;
     }).filter(Boolean))];
     const { data: currentRows, error: currentErr } = employeeIds.length
@@ -12317,7 +12347,7 @@ async function syncMdTaskFromClaimRecords() {
     const updates = [];
     const unmatchedNames = new Set();
     counts.forEach((count, firstNameLower) => {
-      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      const emp = findEmployeeByFirstName(firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
       const existingValue = currentByEmployeeId.has(emp.id) ? currentByEmployeeId.get(emp.id) : null;
       // Skip entirely if the current value is already correct — avoids
@@ -12399,7 +12429,7 @@ async function syncIpsPeerReviewFromReviewBatches() {
     // and silently skip the decrease-check entirely, letting a lower,
     // incorrect number overwrite a correct one.
     const employeeIds = [...new Set([...sums.keys()].map(firstNameLower => {
-      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      const emp = findEmployeeByFirstName(firstNameLower);
       return emp ? emp.id : null;
     }).filter(Boolean))];
     const { data: currentRows, error: currentErr } = employeeIds.length
@@ -12411,7 +12441,7 @@ async function syncIpsPeerReviewFromReviewBatches() {
     const updates = [];
     const unmatchedNames = new Set();
     sums.forEach((total, firstNameLower) => {
-      const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstNameLower);
+      const emp = findEmployeeByFirstName(firstNameLower);
       if (!emp) { unmatchedNames.add(firstNameLower); return; }
       const existingValue = currentByEmployeeId.has(emp.id) ? currentByEmployeeId.get(emp.id) : null;
       if (existingValue != null && existingValue === total) return; // no genuine change — skip the write
@@ -12744,7 +12774,7 @@ async function fetchQaLeaderboardForPeriod(periodStr, { bypassCache = false } = 
     const rawFirstName = (row.agent_name || '').trim().split(/\s+/)[0];
     if (!rawFirstName) return;
     const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
-    const emp = state.employees.find(e => e.display_name.split(' ')[0].toLowerCase() === firstName);
+    const emp = findEmployeeByFirstName(firstName);
     if (!emp) { unmatchedNames.add(firstName); return; }
     byEmployeeId.set(emp.id, {
       score: row.score != null ? Number(row.score) : null,
