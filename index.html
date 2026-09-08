@@ -956,11 +956,14 @@ function canManageIps() {
   if (!state.profile) return false;
   return isAdmin() || state.profile.role === 'ips';
 }
-// MD Task and Peer Review are auto-populated from the external
-// QA-review project — edit access is deliberately narrower than the
-// general canManageIps() group (admins/IPS): only Jeinna can manually
-// correct these two specific fields, everyone else (including other
-// admins/IPS staff) sees them as read-only.
+// MD Task is auto-populated from the external QA-review project —
+// edit access is deliberately narrower than the general canManageIps()
+// group (admins/IPS): only Jeinna can manually correct it, everyone
+// else (including other admins/IPS staff) sees it as read-only.
+// Peer Review used to share this same restriction, but now has its own
+// wider check instead (canEditAutoSyncedIpsFields() || isAdmin(),
+// wherever Peer Review editing is gated) — any admin can correct it,
+// not just Jeinna.
 function canEditAutoSyncedIpsFields() {
   return !!state.profile && state.profile.display_name === 'Jeinna Louise Perez';
 }
@@ -1782,7 +1785,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-chronological-credit-priority-fix';
+const APP_VERSION = '2026-09-04-fix-type-change-badge-bug';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4524,6 +4527,11 @@ function openChangeLeaveTypeModal(entryId, currentType) {
     }
     closeModal();
     showToast(`Leave type changed to ${LEAVE_TYPES[newType].label}${useHours ? ` (${fields.hours}h)` : ''}.`);
+    const typeChangeDesc = `${LEAVE_TYPES[currentType] ? LEAVE_TYPES[currentType].label : currentType} → ${LEAVE_TYPES[newType].label}${fields.hours ? ` (${fields.hours}h)` : ''}`;
+    pushLeaveNotification(
+      `${state.profile.display_name.split(' ')[0]} changed ${employeeName(entry.employee_id)}'s leave type (${typeChangeDesc}) for ${formatPrettyDate(entry.leave_date)}.`,
+      'leave_type_change'
+    );
     await loadLeaveEntries();
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
     renderDashboard();
@@ -4649,6 +4657,11 @@ function openMyChangeLeaveTypeModal(entryId) {
     }
     closeModal();
     showToast(groupCount > 1 ? `Type change requested for ${groupCount} days — waiting on admin approval.` : 'Type change requested — waiting on admin approval.');
+    const typeChangeDesc = `${LEAVE_TYPES[currentType] ? LEAVE_TYPES[currentType].label : currentType} → ${LEAVE_TYPES[newType].label}${fields.hours ? ` (${fields.hours}h)` : ''}`;
+    pushLeaveNotification(
+      `${employeeName(entry.employee_id)} requested a leave type change (${typeChangeDesc}) for ${formatPrettyDate(entry.leave_date)}${groupCount > 1 ? ` — ${groupCount} days` : ''} — needs approval.`,
+      'leave_type_change'
+    );
     await loadLeaveEntries();
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
     renderDashboard();
@@ -12684,12 +12697,15 @@ function renderIpsTables() {
         // MD Task and Peer Review are both auto-populated from the
         // external QA-review project going forward and are no longer
         // manually editable by regular employees — OR by admins/IPS in
-        // general. Only Jeinna (canEditAutoSyncedIpsFields) can
-        // manually correct these two specific fields; everyone else
-        // always sees a plain read-only value here regardless of what
-        // directEdit/needsRequest would otherwise allow, since there's
-        // nothing left for them to correct or request a change to.
-        if ((field === 'md_value' || field === 'peer_review_value') && !canEditAutoSyncedIpsFields()) {
+        // general, EXCEPT Peer Review, which any admin can now correct
+        // too (not just Jeinna) — MD Task stays Jeinna-only. Everyone
+        // else always sees a plain read-only value here regardless of
+        // what directEdit/needsRequest would otherwise allow, since
+        // there's nothing left for them to correct or request a change to.
+        if (field === 'md_value' && !canEditAutoSyncedIpsFields()) {
+          return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
+        }
+        if (field === 'peer_review_value' && !canEditAutoSyncedIpsFields() && !isAdmin()) {
           return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
         }
         // Errors is editable AT ANY TIME — future, today, or any past
@@ -13960,8 +13976,13 @@ async function saveIpsDailyEntry(input) {
 
   if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); renderIpsTables(); return; }
   if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
-  if ((field === 'md_value' || field === 'peer_review_value') && !canEditAutoSyncedIpsFields()) {
+  if (field === 'md_value' && !canEditAutoSyncedIpsFields()) {
     showToast('This field is auto-filled and can only be corrected by Jeinna.', true);
+    renderIpsTables();
+    return;
+  }
+  if (field === 'peer_review_value' && !canEditAutoSyncedIpsFields() && !isAdmin()) {
+    showToast('This field is auto-filled and can only be corrected by an admin.', true);
     renderIpsTables();
     return;
   }
@@ -15067,11 +15088,21 @@ function notifListFor(kind) {
 // the same list, and dismissing it removes it for everyone (no
 // duplicate rows in Supabase).
 async function pushLeaveNotification(text, kind = 'leave', relatedId = null) {
+  // Some kinds are visually distinct (different color/weight in the
+  // panel) but share the SAME bell/badge as the base 'leave' kind —
+  // leave_type_change is one. The DB row keeps its own distinct kind
+  // value (used for styling at render time), but the seen-tracking
+  // below must use the shared bucket's key, or this notification's
+  // read/seen state would silently diverge from the actual badge the
+  // sidebar checks, breaking the "only the other admin gets notified"
+  // behavior for this specific kind.
+  const badgeKind = kind === 'leave_type_change' ? 'leave' : kind;
+
   // If the approver is NOT the notification owner (e.g. Kristina), her
   // own action shouldn't light up her own badge — she obviously knows.
   // Note whether she was already fully caught up before this insert.
   const approverIsOwner = canManageNotifications();
-  const wasCaughtUp = !approverIsOwner && unreadNotifCount(kind) === 0;
+  const wasCaughtUp = !approverIsOwner && unreadNotifCount(badgeKind) === 0;
 
   // If the OWNER performed the action, insert already-read: her own
   // action shouldn't light her own badges (Kristina still sees it in
@@ -15089,9 +15120,9 @@ async function pushLeaveNotification(text, kind = 'leave', relatedId = null) {
   // OTHER unseen notifications, the badge stays — those weren't hers.)
   // The owner's (Jeinna's) unread state in the DB is untouched either
   // way, so her badge still lights up as intended.
-  if (wasCaughtUp) markNotifsSeenLocally(kind);
+  if (wasCaughtUp) markNotifsSeenLocally(badgeKind);
   updateLeaveNavBadge();
-  if (kind === 'leave' && state.currentView === 'account-hub' && state.accountHubTab === 'leave-tracker') {
+  if ((kind === 'leave' || kind === 'leave_type_change') && state.currentView === 'account-hub' && state.accountHubTab === 'leave-tracker') {
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
   }
   if (kind === 'team_funds') renderTfBell();
@@ -15130,6 +15161,17 @@ function pushIpsNotification(text, relatedId = null) {
 function toggleLeaveNotifPanel() { toggleNotifPanel('leave'); }
 function toggleTfNotifPanel() { toggleNotifPanel('team_funds'); }
 
+// Some notification kinds share a bell/badge but have their own
+// distinct DB kind value (used for styling at render time) —
+// leave_type_change is one, living in the same 'leave' bucket as
+// everything else. Returns every DB kind value that bucket covers, so
+// DB queries scoped by kind (like the mark-as-read update below) don't
+// silently miss rows whose kind differs from the bucket's own name.
+function notifKindsForBucket(kind) {
+  if (kind === 'leave') return ['leave', 'leave_type_change'];
+  return [kind];
+}
+
 function toggleNotifPanel(kind) {
   // Clicking the same bell again closes; clicking the other bell
   // switches the panel over to that stream.
@@ -15153,7 +15195,7 @@ function toggleNotifPanel(kind) {
       sb.from('leave_notifications')
         .update({ read: true })
         .eq('read', false)
-        .eq('kind', kind)
+        .in('kind', notifKindsForBucket(kind))
         .then(({ error }) => { if (error) console.error('Could not mark notifications read:', error); });
     }
   } else {
@@ -15205,7 +15247,7 @@ function showNotifPanel(kind) {
         <div style="padding:12px 16px; border-bottom:1px solid var(--line-soft); display:flex; gap:10px; align-items:flex-start;">
           <span style="font-size:18px; flex-shrink:0; margin-top:1px;">🔔</span>
           <div style="flex:1; min-width:0;">
-            <div style="font-size:12.5px; line-height:1.5; color:var(--ink);">${escapeHtml(n.text)}</div>
+            <div style="font-size:12.5px; line-height:1.5; color:${n.kind === 'leave_type_change' ? 'var(--amber)' : 'var(--ink)'}; font-weight:${n.kind === 'leave_type_change' ? '600' : '400'};">${escapeHtml(n.text)}</div>
             <div class="faint" style="font-size:11px; margin-top:3px;">${n.time}</div>
           </div>
           ${canManage ? `<button class="notif-dismiss-btn" data-id="${n.id}" style="font-size:12px; color:var(--ink-faint); background:none; border:none; cursor:pointer; padding:0; flex-shrink:0; line-height:1; margin-top:1px;">✕</button>` : ''}
@@ -15239,7 +15281,7 @@ function showNotifPanel(kind) {
     updateLeaveNavBadge();
     // Shared stream: clearing removes THIS KIND's notifications for
     // every admin — the other bell's stream is untouched.
-    const { error } = await sb.from('leave_notifications').delete().eq('kind', kind);
+    const { error } = await sb.from('leave_notifications').delete().in('kind', notifKindsForBucket(kind));
     if (error) console.error('Could not clear notifications:', error);
   });
   panel.querySelectorAll('.notif-dismiss-btn').forEach(btn => {
