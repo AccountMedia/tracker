@@ -1780,7 +1780,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-calculator-keyboard-support';
+const APP_VERSION = '2026-09-04-leave-report-ask-month';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -3688,23 +3688,38 @@ function shiftMonth(delta) {
 
 // ---- Monthly report export -------------------------------------------
 
-// Generates the Leave Tracker report for the CURRENT calendar month,
-// immediately, with no date-range prompt beforehand — the report's own
-// filter controls (leave type, etc.) still apply once it's open, see
-// generateLeaveReport / openFilterableLeaveReportTab.
+// Asks which month to generate before downloading — a single month
+// picker, defaulting to whatever month the calendar is currently on.
+// The report's own filter controls (leave type, etc.) still apply once
+// it's open, see generateLeaveReport / openFilterableLeaveReportTab.
 function buildAndOpenLeaveReport() {
   if (!isAdmin()) { showToast('Only admins can download reports.', true); return; }
 
-  // Generates immediately for the current calendar month — no
-  // date-range prompt beforehand. The report itself still has its own
-  // filter controls once opened (see openFilterableLeaveReportTab),
-  // completely unchanged; this only removes the picker step that used
-  // to run BEFORE the report was generated.
   const year = state.calendarYear;
   const month = state.calendarMonth;
-  const rangeStart = isoDate(new Date(year, month, 1));
-  const rangeEnd = isoDate(new Date(year, month + 1, 0));
-  generateLeaveReport(rangeStart, rangeEnd);
+  const defaultMonthVal = isoDate(new Date(year, month, 1)).slice(0, 7); // "YYYY-MM"
+
+  openModal('Download Report', `
+    <form id="leave-report-month-form" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="field">
+        <label for="leave-report-month">Month</label>
+        <input type="month" id="leave-report-month" value="${defaultMonthVal}" required
+          style="width:100%; padding:9px 10px; border-radius:6px; border:1px solid var(--line); font-family:inherit;">
+      </div>
+      <button type="submit" class="btn btn-primary" style="justify-content:center;">Generate report</button>
+    </form>
+  `);
+
+  document.getElementById('leave-report-month-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const monthVal = document.getElementById('leave-report-month').value; // "YYYY-MM"
+    if (!monthVal) { showToast('Please select a month.', true); return; }
+    const [y, m] = monthVal.split('-').map(Number);
+    const rangeStart = isoDate(new Date(y, m - 1, 1));
+    const rangeEnd = isoDate(new Date(y, m, 0));
+    closeModal();
+    generateLeaveReport(rangeStart, rangeEnd);
+  });
 }
 
 function generateLeaveReport(rangeStart, rangeEnd) {
