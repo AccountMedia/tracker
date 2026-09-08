@@ -258,6 +258,8 @@
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-sm);
   }
+  .dashboard-clickable-card{ transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s; }
+  .dashboard-clickable-card:hover{ border-color: var(--teal); box-shadow: var(--shadow-md); transform: translateY(-1px); }
 
   /* ---------- Buttons ---------- */
   /* ---------- Thin, unobtrusive scrollbars (global) ---------- */
@@ -1780,7 +1782,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-nopay-red-and-cutoff-dashboard';
+const APP_VERSION = '2026-09-04-clickable-cards-alpha-ot-sort';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2886,14 +2888,14 @@ function renderDashboard() {
 
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
-      ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl')}
-      ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl')}
-      ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl')}
-      ${dashboardStatCard('Active team members', activeRoster().length, 'Across the PH team.', 'el')}
+      ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl', `scrollToDashboardSection('dash-out-today-section')`)}
+      ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl', birthdaysToday.length ? `scrollToDashboardSection('dash-birthdays-section')` : '')}
+      ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl', `state.accountHubTab='leave-tracker'; switchView('account-hub');`)}
+      ${dashboardStatCard('Active team members', activeRoster().length, 'Across the PH team.', 'el', `state.accountHubTab='employee-management'; switchView('account-hub');`)}
     </div>
 
     <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:18px; margin-bottom:28px;">
-      <div class="card" style="padding:20px;">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('payroll-confirmation');">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark vl"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Payroll — 1st Half</span>
@@ -2901,7 +2903,7 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${half1Confirmed} / ${rosterCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${rosterCount - half1Confirmed} ${rosterCount - half1Confirmed === 1 ? 'person' : 'people'} haven't confirmed yet.</div>
       </div>
-      <div class="card" style="padding:20px;">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('payroll-confirmation');">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark sl"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Payroll — 2nd Half</span>
@@ -2909,7 +2911,7 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${half2Confirmed} / ${rosterCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${rosterCount - half2Confirmed} ${rosterCount - half2Confirmed === 1 ? 'person' : 'people'} haven't confirmed yet.</div>
       </div>
-      <div class="card" style="padding:20px;">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('li-restriction');">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark el"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">LinkedIn Restricted</span>
@@ -2917,7 +2919,7 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${restrictedCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${restrictedCount ? `${restrictedCount} account${restrictedCount === 1 ? '' : 's'} currently restricted.` : 'No restricted accounts right now.'}</div>
       </div>
-      <div class="card" style="padding:20px;">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('ot-filing');">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark sl"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">OT Confirmed</span>
@@ -2925,17 +2927,17 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${otConfirmedCount} / ${otLoggedCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${latestOtDate ? (otLoggedCount ? `For ${formatPrettyDate(latestOtDate)}.` : 'No OT logged for the latest date.') : 'No OT filing dates open.'}</div>
       </div>
-      <div class="card" style="padding:20px;">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="scrollToDashboardSection('dash-lwop-section');">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark el"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Leave Without Pay</span>
         </div>
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${lwopCutoffEmployeeIds.size}</div>
-        <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopCutoffEmployeeIds.size ? `This ${cutoff.label.toLowerCase()} — see details below.` : `No one on unpaid leave this ${cutoff.label.toLowerCase()}.`}</div>
+        <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopCutoffEmployeeIds.size ? `This ${cutoff.label.toLowerCase()}.` : `No one on unpaid leave this ${cutoff.label.toLowerCase()}.`}</div>
       </div>
     </div>
 
-    <div class="card" style="padding:22px;">
+    <div id="dash-out-today-section" class="card" style="padding:22px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
         <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Who's out today</h3>
         <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
@@ -2954,7 +2956,7 @@ function renderDashboard() {
     </div>
 
     ${lwopCutoff.length ? `
-      <div class="card" style="padding:22px; margin-top:18px;">
+      <div id="dash-lwop-section" class="card" style="padding:22px; margin-top:18px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Leave Without Pay — ${cutoff.label}</h3>
           <span class="faint" style="font-size:12px;">${formatPrettyDate(cutoff.start)} – ${formatPrettyDate(cutoff.end)}</span>
@@ -2973,7 +2975,7 @@ function renderDashboard() {
     ` : ''}
 
     ${birthdaysToday.length ? `
-      <div class="card" style="padding:22px; margin-top:18px;">
+      <div id="dash-birthdays-section" class="card" style="padding:22px; margin-top:18px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">🎂 Birthdays today</h3>
           <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
@@ -2990,9 +2992,9 @@ function renderDashboard() {
   `;
 }
 
-function dashboardStatCard(label, value, sub, accentCls) {
+function dashboardStatCard(label, value, sub, accentCls, onClick) {
   return `
-    <div class="card" style="padding:20px;">
+    <div class="card dashboard-clickable-card" ${onClick ? `onclick="${onClick}" style="padding:20px; cursor:pointer;"` : `style="padding:20px;"`}>
       <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
         <span class="dot-mark ${accentCls}"></span>
         <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">${label}</span>
@@ -3001,6 +3003,13 @@ function dashboardStatCard(label, value, sub, accentCls) {
       <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(String(sub))}</div>
     </div>
   `;
+}
+
+// Scrolls to an on-page dashboard section (used by cards whose detail
+// view lives further down this same page, e.g. "Out today" / "Leave
+// Without Pay") rather than navigating away to a different view.
+function scrollToDashboardSection(sectionId) {
+  document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // =====================================================================
@@ -7175,13 +7184,8 @@ function renderOtFiling() {
   }
 
   const roster = activeRoster()
-    .sort(byKristinaFirstThenName)
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
     .sort((a, b) => {
-      // Kristina always stays pinned at the very top, regardless of
-      // whether she's logged hours yet — this sort only re-orders
-      // everyone else by logged-hours status.
-      if (a.display_name === 'Kristina Mutia') return -1;
-      if (b.display_name === 'Kristina Mutia') return 1;
       // PIP employees always sink to the very bottom, below even
       // people who haven't logged anything yet — they can't file OT
       // at all, so there's nothing for them to be prioritized for.
