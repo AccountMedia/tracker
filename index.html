@@ -1782,7 +1782,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-lwop-modal-remove-note';
+const APP_VERSION = '2026-09-04-ot-report-alpha-sort';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -7818,7 +7818,7 @@ function downloadOtFilingReport() {
   if (!dates.length) { showToast('No OT filing dates to report on.', true); return; }
 
   const roster = activeRoster()
-    .sort(byKristinaFirstThenName);
+    .sort((a, b) => a.display_name.localeCompare(b.display_name));
 
   // Wide format: one row per employee, TWO columns per open date (Actual
   // Time Worked, Total Output) — matches the live table's format exactly.
