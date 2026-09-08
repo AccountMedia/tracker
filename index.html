@@ -1782,7 +1782,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-report-alpha-sort';
+const APP_VERSION = '2026-09-04-chronological-credit-priority-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5134,6 +5134,86 @@ function planLeaveWithoutPayConversion(employee, groupRows) {
   return { updates, inserts, slExhaustedHoursByFy };
 }
 
+// Fixes the root cause of a real ordering bug: leave credit exhaustion
+// was being checked in APPROVAL order, not LEAVE-DATE order. If an
+// admin approves a batch of pending requests out of chronological
+// order — say, approving an October request before a September one
+// that was still pending — the October leave could claim VL/SL credit
+// that chronologically belongs to the earlier September date first,
+// leaving the September leave converted to Leave Without Pay even
+// though it should have had first claim on the balance.
+//
+// This runs right after planLeaveWithoutPayConversion, and only looks
+// at rows THIS approval's own conversion just turned into Leave
+// Without Pay. For each one, it checks whether there's an
+// ALREADY-APPROVED, LATER-dated entry (same employee, same fiscal
+// year, same credit pool) that's still drawing paid credit — if
+// bumping enough of those (starting from the furthest-out date first)
+// would free up enough credit to cover the earlier row, it performs
+// that swap instead: the later entries become Leave Without Pay, and
+// the earlier row keeps its original paid type.
+//
+// Deliberately conservative in two ways: it only ever swaps WHOLE
+// entries (never splits a later entry's hours to partially cover an
+// earlier one — much simpler to reason about and audit), and if
+// bumping every available later entry still isn't enough to fully
+// cover the shortfall, nothing is touched at all rather than inventing
+// partial credit. It also never looks at entries outside the fiscal
+// year+pool actually affected by this approval, so it can't have any
+// effect on unrelated leave.
+function reconcileChronologicalPriority(employee, groupRows, conversionUpdates) {
+  const extraUpdates = [];
+  const revertedRowIds = new Set();
+
+  conversionUpdates.forEach(u => {
+    const row = groupRows.find(r => r.id === u.id);
+    if (!row) return;
+    const originalPool = creditPoolForType(row.leave_type); // row.leave_type is still the PRE-conversion type here
+    if (!originalPool) return; // wasn't drawing from a credit pool to begin with — nothing to reconsider
+
+    let stillNeeded = dayFractionForEntry(row);
+    const fy = fiscalYearForDate(row.leave_date);
+
+    const laterEntries = entriesForEmployee(employee.id)
+      .filter(e => e.id !== row.id)
+      .filter(e => !groupRows.some(r => r.id === e.id)) // never touch another row from this same approval — planLeaveWithoutPayConversion already handled ordering within the group itself
+      .filter(e => fiscalYearForDate(e.leave_date) === fy)
+      .filter(e => creditPoolForType(e.leave_type) === originalPool)
+      .filter(e => e.leave_date > row.leave_date)
+      .sort((a, b) => a.leave_date < b.leave_date ? 1 : a.leave_date > b.leave_date ? -1 : 0); // furthest-out date bumped first
+
+    const bumped = [];
+    for (const later of laterEntries) {
+      if (stillNeeded <= 0.001) break;
+      bumped.push(later);
+      stillNeeded = round2(stillNeeded - dayFractionForEntry(later));
+    }
+
+    if (stillNeeded <= 0.001 && bumped.length) {
+      revertedRowIds.add(row.id);
+      bumped.forEach(later => {
+        extraUpdates.push({
+          id: later.id,
+          fields: {
+            leave_type: noPayEquivalent(later.leave_type),
+            note: appendAutoNote(later.note, `Bumped to Leave Without Pay — an earlier-dated leave (${formatPrettyDate(row.leave_date)}) had chronological priority for this credit.`),
+          },
+        });
+      });
+      console.log('Chronological priority reconciliation: swapped credit priority', {
+        employee: employee.display_name,
+        rescued: { date: row.leave_date, type: row.leave_type },
+        bumped: bumped.map(b => ({ date: b.leave_date, type: b.leave_type })),
+      });
+    }
+    // If bumping every available later entry still isn't enough, or
+    // there are no later entries to bump at all, this row's original
+    // Leave Without Pay conversion is left completely untouched.
+  });
+
+  return { extraUpdates, revertedRowIds };
+}
+
 // After planLeaveWithoutPayConversion accumulates the total SL/EL hours
 // genuinely exhausted by this conversion, this subtracts them directly
 // from the employee's CURRENT stored sl_balance — nothing else. It
@@ -5242,9 +5322,11 @@ async function decideRequest(id, decision) {
         ? state.leaveEntries.filter(e => e.request_group_id === groupId && e.status === STATUS.APPROVED).sort((a, b) => a.leave_date.localeCompare(b.leave_date))
         : state.leaveEntries.filter(e => e.id === id && e.status === STATUS.APPROVED);
 
-      const { updates, inserts, slExhaustedHoursByFy } = planLeaveWithoutPayConversion(employee, groupRows);
+      const { updates: rawUpdates, inserts, slExhaustedHoursByFy } = planLeaveWithoutPayConversion(employee, groupRows);
+      const { extraUpdates, revertedRowIds } = reconcileChronologicalPriority(employee, groupRows, rawUpdates);
+      const updates = rawUpdates.filter(u => !revertedRowIds.has(u.id)).concat(extraUpdates);
       if (updates.length || inserts.length) {
-        console.log('LWNP/spillover conversion applied:', { employee: employee.display_name, groupRows, updates, inserts });
+        console.log('LWNP/spillover conversion applied:', { employee: employee.display_name, groupRows, updates, inserts, revertedForChronologicalPriority: [...revertedRowIds] });
       } else if (groupRows.some(r => r.leave_type !== 'VL' && r.leave_type !== 'SL')) {
         // Diagnostic only — logs when a non-VL/SL leave type (like EL)
         // was approved but the conversion function decided nothing
@@ -5268,7 +5350,8 @@ async function decideRequest(id, decision) {
       // is still actually deducted, not left untouched.
       await applySlExhaustionSnapshotAdjustments(employee, slExhaustedHoursByFy);
       if (updates.length || inserts.length) {
-        showToast(`${label} approved — some days auto-marked Leave Without Pay due to exhausted credit.`);
+        const swappedMsg = extraUpdates.length ? ` A later-dated leave was bumped to Leave Without Pay to give this one correct chronological priority.` : '';
+        showToast(`${label} approved — some days auto-marked Leave Without Pay due to exhausted credit.${swappedMsg}`);
         // The conversion above just wrote LNP/VL-spillover changes to the
         // database, but state.leaveEntries was last refreshed BEFORE those
         // writes — fiscalPoolBalance below would still compute the
