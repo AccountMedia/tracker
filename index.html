@@ -1785,7 +1785,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-fix-type-change-badge-bug';
+const APP_VERSION = '2026-09-04-change-type-shows-credits';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4519,6 +4519,16 @@ function openChangeLeaveTypeModal(entryId, currentType) {
 
     if (newType === currentType && !useHours && !hasHours) { closeModal(); return; }
 
+    // Capture BEFORE, using the fiscal year this leave's own date
+    // belongs to — same live fiscalPoolBalance calculation used
+    // everywhere else, not an estimate. Changing between two paid
+    // types (e.g. VL -> VLH) genuinely changes how much credit is
+    // used, so this can move even though no approval is happening.
+    const changeEmployee = state.employees.find(emp => emp.id === entry.employee_id);
+    const changeFy = fiscalYearForDate(entry.leave_date);
+    const vlBefore = changeEmployee ? round2(fiscalPoolBalance(changeEmployee, 'vl', changeFy)) : null;
+    const slBefore = changeEmployee ? round2(fiscalPoolBalance(changeEmployee, 'sl', changeFy)) : null;
+
     const { error } = await sb.from('leave_entries').update(fields).eq('id', entryId);
     if (error) {
       console.error(error);
@@ -4528,11 +4538,23 @@ function openChangeLeaveTypeModal(entryId, currentType) {
     closeModal();
     showToast(`Leave type changed to ${LEAVE_TYPES[newType].label}${useHours ? ` (${fields.hours}h)` : ''}.`);
     const typeChangeDesc = `${LEAVE_TYPES[currentType] ? LEAVE_TYPES[currentType].label : currentType} → ${LEAVE_TYPES[newType].label}${fields.hours ? ` (${fields.hours}h)` : ''}`;
+
+    // Capture AFTER against fresh data — the update above already
+    // landed, but state.leaveEntries still has the pre-change row
+    // until this reload completes.
+    await loadLeaveEntries();
+    const freshEmp = changeEmployee ? state.employees.find(emp => emp.id === changeEmployee.id) : null;
+    const vlAfter = freshEmp ? round2(fiscalPoolBalance(freshEmp, 'vl', changeFy)) : null;
+    const slAfter = freshEmp ? round2(fiscalPoolBalance(freshEmp, 'sl', changeFy)) : null;
+    const creditsChanged = freshEmp && (vlAfter !== vlBefore || slAfter !== slBefore);
+    const creditsBit = creditsChanged
+      ? ` Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
+      : '';
+
     pushLeaveNotification(
-      `${state.profile.display_name.split(' ')[0]} changed ${employeeName(entry.employee_id)}'s leave type (${typeChangeDesc}) for ${formatPrettyDate(entry.leave_date)}.`,
+      `${state.profile.display_name.split(' ')[0]} changed ${employeeName(entry.employee_id)}'s leave type (${typeChangeDesc}) for ${formatPrettyDate(entry.leave_date)}.${creditsBit}`,
       'leave_type_change'
     );
-    await loadLeaveEntries();
     renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
     renderDashboard();
   });
@@ -4614,7 +4636,7 @@ function openMyChangeLeaveTypeModal(entryId) {
     e.preventDefault();
     let newType = document.getElementById('my-change-leave-type-select').value;
     const useHours = !!myUseHoursCheckbox?.checked;
-    const fields = { status: STATUS.PENDING, approved_by: null, decided_at: null };
+    const fields = { status: STATUS.PENDING, approved_by: null, decided_at: null, pending_type_change_from: currentType };
 
     if (useHours) {
       const hours = parseFloat(document.getElementById('my-change-leave-type-hours').value);
@@ -5308,7 +5330,16 @@ async function decideRequest(id, decision) {
     if (error) { showToast('Could not update the request.', true); return; }
     showToast(`${label} declined.`);
   } else {
-    const query = sb.from('leave_entries').update({ status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString() });
+    // Captured from the ORIGINAL entry (fetched before this update),
+    // so it reflects whatever was stored at request time — cleared
+    // below as part of the same update, since it's fully consumed
+    // once this approval's notification text is built.
+    const typeChangeFrom = entry ? entry.pending_type_change_from : null;
+    const typeChangeBit = (typeChangeFrom && entry && typeChangeFrom !== entry.leave_type)
+      ? ` Type changed from ${LEAVE_TYPES[typeChangeFrom] ? LEAVE_TYPES[typeChangeFrom].label : typeChangeFrom} to ${LEAVE_TYPES[entry.leave_type] ? LEAVE_TYPES[entry.leave_type].label : entry.leave_type}.`
+      : '';
+
+    const query = sb.from('leave_entries').update({ status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString(), pending_type_change_from: null });
     const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
     if (error) { showToast('Could not update the request.', true); return; }
 
@@ -5392,10 +5423,10 @@ async function decideRequest(id, decision) {
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
           const dateBit = notifDateLabel ? ` (${notifDateLabel})` : '';
-          const notifText = changed
+          const notifText = (changed
             ? `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
-            : `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
-          pushLeaveNotification(notifText);
+            : `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`) + typeChangeBit;
+          pushLeaveNotification(notifText, typeChangeBit ? 'leave_type_change' : 'leave');
         }
       }
     } else {
@@ -5409,10 +5440,10 @@ async function decideRequest(id, decision) {
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
           const dateBit = notifDateLabel ? ` (${notifDateLabel})` : '';
-          const notifText = changed
+          const notifText = (changed
             ? `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
-            : `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`;
-          pushLeaveNotification(notifText);
+            : `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter}.`) + typeChangeBit;
+          pushLeaveNotification(notifText, typeChangeBit ? 'leave_type_change' : 'leave');
         }
       }
     }
