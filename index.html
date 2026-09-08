@@ -1780,7 +1780,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-remove-chat-restore-calculator';
+const APP_VERSION = '2026-09-04-calculator-keyboard-support';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -15407,14 +15407,40 @@ function calcBuildKeypad() {
   });
 }
 
+// Keyboard support — digit keys (numpad and main row both fire the
+// same e.key values, so no separate handling needed for numpad), the
+// four operators, Enter/= for equals, Escape/C for clear, Backspace to
+// delete. Only active while the calculator panel is actually open, and
+// even then skipped whenever some OTHER input/textarea/contenteditable
+// elsewhere on the page currently has focus — being open in the corner
+// shouldn't hijack typing into an unrelated field.
+function calcHandleKeydown(e) {
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
+
+  if (e.key >= '0' && e.key <= '9') { calcInputDigit(e.key); e.preventDefault(); }
+  else if (e.key === '.') { calcInputDecimal(); e.preventDefault(); }
+  else if (e.key === '+') { calcApplyOperator('+'); e.preventDefault(); }
+  else if (e.key === '-') { calcApplyOperator('−'); e.preventDefault(); }
+  else if (e.key === '*') { calcApplyOperator('×'); e.preventDefault(); }
+  else if (e.key === '/') { calcApplyOperator('÷'); e.preventDefault(); }
+  else if (e.key === 'Enter' || e.key === '=') { calcEquals(); e.preventDefault(); }
+  else if (e.key === 'Escape' || e.key === 'c' || e.key === 'C') { calcClear(); e.preventDefault(); }
+  else if (e.key === 'Backspace') { calcBackspace(); e.preventDefault(); }
+}
+
 function openTfCalculatorPanel() {
   const panel = document.getElementById('tf-calculator-panel');
   if (!panel) return;
   const opening = panel.style.display === 'none';
   panel.style.display = opening ? 'flex' : 'none';
-  if (!opening) return;
-  calcBuildKeypad();
-  calcRenderDisplay();
+  if (opening) {
+    calcBuildKeypad();
+    calcRenderDisplay();
+    document.addEventListener('keydown', calcHandleKeydown);
+  } else {
+    document.removeEventListener('keydown', calcHandleKeydown);
+  }
 }
 
 // Wiring is deferred into a function, called from enterApp() — the
@@ -15426,6 +15452,7 @@ function wireFloatingBubbleButtons() {
   document.getElementById('tf-calculator-bubble-toggle')?.addEventListener('click', openTfCalculatorPanel);
   document.getElementById('tf-calculator-close-btn')?.addEventListener('click', () => {
     document.getElementById('tf-calculator-panel').style.display = 'none';
+    document.removeEventListener('keydown', calcHandleKeydown);
   });
 }
 
