@@ -1782,7 +1782,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-clickable-cards-alpha-ot-sort';
+const APP_VERSION = '2026-09-04-dashboard-cards-open-modals';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2888,14 +2888,14 @@ function renderDashboard() {
 
   el.innerHTML = `
     <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:18px; margin-bottom:28px;">
-      ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl', `scrollToDashboardSection('dash-out-today-section')`)}
-      ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl', birthdaysToday.length ? `scrollToDashboardSection('dash-birthdays-section')` : '')}
-      ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl', `state.accountHubTab='leave-tracker'; switchView('account-hub');`)}
-      ${dashboardStatCard('Active team members', activeRoster().length, 'Across the PH team.', 'el', `state.accountHubTab='employee-management'; switchView('account-hub');`)}
+      ${dashboardStatCard('Out today', [...new Set(todayEntries.map(e => e.employee_id))].length, [...new Set(todayEntries.map(e => employeeName(e.employee_id)))].join(', ') || 'No one is out today.', 'vl', `showDashOutTodayModal()`)}
+      ${dashboardStatCard('Birthdays today', birthdaysToday.length, birthdaysToday.length ? birthdaysToday.map(emp => emp.display_name).join(', ') : 'No birthdays today.', 'sl', `showDashBirthdaysModal()`)}
+      ${dashboardStatCard('Pending requests', pending.length, pending.length ? 'Waiting on your review.' : 'All caught up.', 'sl', `showDashPendingModal()`)}
+      ${dashboardStatCard('Active team members', activeRoster().length, 'Across the PH team.', 'el', `showDashActiveTeamModal()`)}
     </div>
 
-    <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:18px; margin-bottom:28px;">
-      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('payroll-confirmation');">
+    <div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:18px;">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="showDashPayrollModal(1);">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark vl"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Payroll — 1st Half</span>
@@ -2903,7 +2903,7 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${half1Confirmed} / ${rosterCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${rosterCount - half1Confirmed} ${rosterCount - half1Confirmed === 1 ? 'person' : 'people'} haven't confirmed yet.</div>
       </div>
-      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('payroll-confirmation');">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="showDashPayrollModal(2);">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark sl"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Payroll — 2nd Half</span>
@@ -2911,7 +2911,7 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${half2Confirmed} / ${rosterCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${rosterCount - half2Confirmed} ${rosterCount - half2Confirmed === 1 ? 'person' : 'people'} haven't confirmed yet.</div>
       </div>
-      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('li-restriction');">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="showDashLiRestrictedModal();">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark el"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">LinkedIn Restricted</span>
@@ -2919,7 +2919,7 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${restrictedCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${restrictedCount ? `${restrictedCount} account${restrictedCount === 1 ? '' : 's'} currently restricted.` : 'No restricted accounts right now.'}</div>
       </div>
-      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="switchView('ot-filing');">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="showDashOtConfirmedModal();">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark sl"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">OT Confirmed</span>
@@ -2927,7 +2927,7 @@ function renderDashboard() {
         <div style="font-family:var(--font-display); font-size:32px; color:var(--teal); font-weight:600;">${otConfirmedCount} / ${otLoggedCount}</div>
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${latestOtDate ? (otLoggedCount ? `For ${formatPrettyDate(latestOtDate)}.` : 'No OT logged for the latest date.') : 'No OT filing dates open.'}</div>
       </div>
-      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="scrollToDashboardSection('dash-lwop-section');">
+      <div class="card dashboard-clickable-card" style="padding:20px; cursor:pointer;" onclick="showDashLwopModal();">
         <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
           <span class="dot-mark el"></span>
           <span class="faint" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600;">Leave Without Pay</span>
@@ -2936,60 +2936,149 @@ function renderDashboard() {
         <div class="muted" style="font-size:12.5px; margin-top:4px;">${lwopCutoffEmployeeIds.size ? `This ${cutoff.label.toLowerCase()}.` : `No one on unpaid leave this ${cutoff.label.toLowerCase()}.`}</div>
       </div>
     </div>
-
-    <div id="dash-out-today-section" class="card" style="padding:22px;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-        <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Who's out today</h3>
-        <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
-      </div>
-      ${todayEntries.length ? `
-        <div style="display:flex; flex-direction:column; gap:10px;">
-          ${todayEntries.map(e => `
-            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-              <span class="stamp ${LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
-              <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
-              <span class="faint" style="margin-left:auto; font-size:12px;">${escapeHtml(e.note || '')}</span>
-            </div>
-          `).join('')}
-        </div>
-      ` : `<p class="muted" style="margin:0;">Everyone's in today.</p>`}
-    </div>
-
-    ${lwopCutoff.length ? `
-      <div id="dash-lwop-section" class="card" style="padding:22px; margin-top:18px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-          <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">Leave Without Pay — ${cutoff.label}</h3>
-          <span class="faint" style="font-size:12px;">${formatPrettyDate(cutoff.start)} – ${formatPrettyDate(cutoff.end)}</span>
-        </div>
-        <div style="display:flex; flex-direction:column; gap:10px;">
-          ${lwopCutoff.map(e => `
-            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-              <span class="stamp el">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
-              <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
-              <span class="faint" style="font-size:11.5px;">${formatPrettyDate(e.leave_date)}</span>
-              <span class="faint" style="margin-left:auto; font-size:12px; text-align:right; max-width:50%;">${escapeHtml(e.note || '')}</span>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    ` : ''}
-
-    ${birthdaysToday.length ? `
-      <div id="dash-birthdays-section" class="card" style="padding:22px; margin-top:18px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
-          <h3 style="margin:0; font-family:var(--font-display); font-size:17px; color:var(--teal);">🎂 Birthdays today</h3>
-          <span class="faint" style="font-size:12px;">${formatPrettyDate(today)}</span>
-        </div>
-        <div style="display:flex; flex-direction:column; gap:10px;">
-          ${birthdaysToday.map(emp => `
-            <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
-              <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    ` : ''}
   `;
+}
+
+// ── Dashboard card detail modals ────────────────────────────────────
+// Each card opens a read-only modal listing its own details, right on
+// the Dashboard — no navigating to a different tab, no scrolling to a
+// section further down the page. Each one recomputes its own data
+// fresh from state at click time (rather than reusing whatever was
+// captured when the dashboard last rendered), so the numbers are never
+// stale by the time someone actually opens one.
+
+function showDashOutTodayModal() {
+  const today = isoDate(new Date());
+  const isStillInEffect = (e) => e.status === STATUS.APPROVED || e.status === STATUS.CANCELLATION_PENDING;
+  const lwopEmployeeIdsToday = new Set(state.leaveEntries.filter(e => e.leave_date === today && isStillInEffect(e) && (e.leave_type === 'LNP' || e.leave_type === 'HLNP')).map(e => e.employee_id));
+  const entries = state.leaveEntries.filter(e => e.leave_date === today && isStillInEffect(e) && e.leave_type !== 'LNP' && e.leave_type !== 'HLNP' && !lwopEmployeeIdsToday.has(e.employee_id));
+  openModal(`Who's out today — ${formatPrettyDate(today)}`, entries.length ? `
+    <div style="display:flex; flex-direction:column; gap:10px; max-height:420px; overflow-y:auto;">
+      ${entries.map(e => `
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+          <span class="stamp ${LEAVE_TYPES[e.leave_type].cls}">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
+          <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
+          <span class="faint" style="margin-left:auto; font-size:12px;">${escapeHtml(e.note || '')}</span>
+        </div>
+      `).join('')}
+    </div>
+  ` : `<p class="muted" style="margin:0;">Everyone's in today.</p>`);
+}
+
+function showDashBirthdaysModal() {
+  const todayDate = new Date();
+  const todayMonth = todayDate.getMonth();
+  const todayDay = todayDate.getDate();
+  const birthdaysToday = state.employees.filter(emp => {
+    if (!emp.birthday || emp.active === false) return false;
+    const bday = new Date(emp.birthday + 'T00:00:00');
+    return bday.getMonth() === todayMonth && bday.getDate() === todayDay;
+  });
+  openModal('🎂 Birthdays today', birthdaysToday.length ? `
+    <div style="display:flex; flex-direction:column; gap:10px; max-height:420px; overflow-y:auto;">
+      ${birthdaysToday.map(emp => `<div style="padding:8px 0; border-bottom:1px solid var(--line-soft); font-weight:600;">${escapeHtml(emp.display_name)}</div>`).join('')}
+    </div>
+  ` : `<p class="muted" style="margin:0;">No birthdays today.</p>`);
+}
+
+function showDashPendingModal() {
+  const pending = state.leaveEntries.filter(e => e.status === STATUS.PENDING || e.status === STATUS.CANCELLATION_PENDING);
+  openModal('Pending requests', pending.length ? `
+    <div style="display:flex; flex-direction:column; gap:10px; max-height:420px; overflow-y:auto;">
+      ${pending.map(e => `
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+          <span class="stamp ${e.status === STATUS.CANCELLATION_PENDING ? 'pending' : LEAVE_TYPES[e.leave_type].cls}">${e.status === STATUS.CANCELLATION_PENDING ? 'Cancel' : LEAVE_TYPES[e.leave_type].short}</span>
+          <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
+          <span class="faint" style="margin-left:auto; font-size:12px;">${formatPrettyDate(e.leave_date)}</span>
+        </div>
+      `).join('')}
+    </div>
+  ` : `<p class="muted" style="margin:0;">All caught up.</p>`);
+}
+
+function showDashActiveTeamModal() {
+  const roster = activeRoster().slice().sort((a, b) => a.display_name.localeCompare(b.display_name));
+  openModal('Active team members', `
+    <div style="display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto;">
+      ${roster.map(emp => `<div style="padding:6px 0; border-bottom:1px solid var(--line-soft);">${escapeHtml(emp.display_name)}</div>`).join('')}
+    </div>
+  `);
+}
+
+function showDashPayrollModal(half) {
+  const now = new Date();
+  const payrollYear = now.getFullYear();
+  const payrollMonth = now.getMonth() + 1;
+  const roster = activeRosterNoManager().slice().sort((a, b) => a.display_name.localeCompare(b.display_name));
+  openModal(`Payroll — ${half === 1 ? '1st' : '2nd'} Half`, `
+    <div style="display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto;">
+      ${roster.map(emp => {
+        const c = findConfirmation(emp.id, payrollYear, payrollMonth, half);
+        const confirmed = c && c.received;
+        return `
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+            <span>${escapeHtml(emp.display_name)}</span>
+            <span style="font-size:11px; font-weight:700; color:${confirmed ? 'var(--green)' : 'var(--coral)'};">${confirmed ? '✓ Confirmed' : 'Not yet'}</span>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `);
+}
+
+function showDashLiRestrictedModal() {
+  const restricted = state.employees.filter(emp => {
+    const empEntries = state.liRestrictionEntries.filter(e => e.employee_id === emp.id);
+    return empEntries.some(entry => getLiEntryStatus(entry) === 'Restricted');
+  });
+  openModal('LinkedIn Restricted', restricted.length ? `
+    <div style="display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto;">
+      ${restricted.map(emp => `<div style="padding:6px 0; border-bottom:1px solid var(--line-soft);">${escapeHtml(emp.display_name)}</div>`).join('')}
+    </div>
+  ` : `<p class="muted" style="margin:0;">No restricted accounts right now.</p>`);
+}
+
+function showDashOtConfirmedModal() {
+  const otDates = state.otFilingDates.map(d => d.filing_date).sort();
+  const latestOtDate = otDates.length ? otDates[otDates.length - 1] : null;
+  if (!latestOtDate) { openModal('OT Confirmed', `<p class="muted" style="margin:0;">No OT filing dates open.</p>`); return; }
+  const entries = state.otHoursEntries.filter(e => e.filing_date === latestOtDate && otEntryHasData(e));
+  openModal(`OT Confirmed — ${formatPrettyDate(latestOtDate)}`, entries.length ? `
+    <div style="display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto;">
+      ${entries.map(e => {
+        const emp = state.employees.find(x => x.id === e.employee_id);
+        return `
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+            <span>${escapeHtml(emp ? emp.display_name : 'Unknown')}</span>
+            <span style="font-size:11px; font-weight:700; color:${e.confirmed ? 'var(--green)' : 'var(--ink-faint)'};">${e.confirmed ? '✓ Confirmed' : 'Not yet'}</span>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  ` : `<p class="muted" style="margin:0;">No OT logged for the latest date.</p>`);
+}
+
+function showDashLwopModal() {
+  const isStillInEffect = (e) => e.status === STATUS.APPROVED || e.status === STATUS.CANCELLATION_PENDING;
+  const cutoff = getCurrentPayrollCutoffRange();
+  const lwopCutoff = state.leaveEntries
+    .filter(e => e.leave_date >= cutoff.start && e.leave_date <= cutoff.end && isStillInEffect(e) && (e.leave_type === 'LNP' || e.leave_type === 'HLNP'))
+    .sort((a, b) => a.leave_date < b.leave_date ? -1 : a.leave_date > b.leave_date ? 1 : 0);
+  openModal(`Leave Without Pay — ${cutoff.label}`, `
+    <p class="muted" style="margin:0 0 10px; font-size:12px;">${formatPrettyDate(cutoff.start)} – ${formatPrettyDate(cutoff.end)}</p>
+    ${lwopCutoff.length ? `
+      <div style="display:flex; flex-direction:column; gap:10px; max-height:400px; overflow-y:auto;">
+        ${lwopCutoff.map(e => `
+          <div style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line-soft);">
+            <span class="stamp el">${LEAVE_TYPES[e.leave_type].short}${e.hours ? ` ${e.hours}h` : ''}</span>
+            <span style="font-weight:600;">${employeeName(e.employee_id)}</span>
+            <span class="faint" style="font-size:11.5px;">${formatPrettyDate(e.leave_date)}</span>
+            <span class="faint" style="margin-left:auto; font-size:12px; text-align:right; max-width:50%;">${escapeHtml(e.note || '')}</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : `<p class="muted" style="margin:0;">No one on unpaid leave this ${cutoff.label.toLowerCase()}.</p>`}
+  `);
 }
 
 function dashboardStatCard(label, value, sub, accentCls, onClick) {
@@ -3003,13 +3092,6 @@ function dashboardStatCard(label, value, sub, accentCls, onClick) {
       <div class="muted" style="font-size:12.5px; margin-top:4px;">${escapeHtml(String(sub))}</div>
     </div>
   `;
-}
-
-// Scrolls to an on-page dashboard section (used by cards whose detail
-// view lives further down this same page, e.g. "Out today" / "Leave
-// Without Pay") rather than navigating away to a different view.
-function scrollToDashboardSection(sectionId) {
-  document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // =====================================================================
