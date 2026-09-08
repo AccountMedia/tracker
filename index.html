@@ -788,8 +788,6 @@ const state = {
   priolistVisible: true,  // live app-wide toggle (app_settings.priolist_visible) — controlled by Jeinna; defaults true until loaded so nothing flips unexpectedly during the brief pre-load window
   lqPlaybookVisible: false,  // live app-wide toggle (app_settings.lq_playbook_visible) — controlled by Jeinna; defaults FALSE (hidden from everyone else) until she explicitly turns it on, per explicit requirement — the opposite default from PrioList
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
-  chatUnread: 0, // unread Team Chat messages since the panel was last opened — only accumulates while the panel is closed
-  chatReactions: {}, // message_id -> array of reaction rows, kept in sync via realtime
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
   priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
   redFiles: [],             // priolist_red_files rows
@@ -1220,11 +1218,11 @@ function enterApp() {
   hideMaintenanceScreen();
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
-  document.getElementById('team-chat-wrap')?.classList.remove('hidden');
   document.getElementById('current-user-label').textContent = state.profile.display_name || state.profile.username;
   initNav();
-  initSidebarChat();
   loadAllData();
+  wireFloatingBubbleButtons();
+  syncFloatingBubblesVisibility();
   archiveCompletedIpsDays(); // immediate check on login
   startIpsArchiveWatcher(); // and keep re-checking periodically for as long as the tab stays open, since persistent login means someone may never log in again for days
   startMaintenanceWindowWatcher();
@@ -1270,13 +1268,6 @@ function logout() {
   if (ltBadge) ltBadge.style.display = 'none';
   const tfNavBadge = document.getElementById('nav-tf-badge');
   if (tfNavBadge) tfNavBadge.style.display = 'none';
-  const chatPanelLogout = document.getElementById('team-chat-panel');
-  if (chatPanelLogout) chatPanelLogout.style.display = 'none';
-  const chatListLogout = document.getElementById('sidebar-chat-messages');
-  if (chatListLogout) chatListLogout.innerHTML = '';
-  state.chatUnread = 0;
-  const chatBadgeLogout = document.getElementById('team-chat-badge');
-  if (chatBadgeLogout) chatBadgeLogout.style.display = 'none';
   const otNavBadge = document.getElementById('nav-ot-filing-badge');
   if (otNavBadge) otNavBadge.style.display = 'none';
   const ipsNavBadge = document.getElementById('nav-ips-badge');
@@ -1284,7 +1275,6 @@ function logout() {
   stopNavBadgePolling();
   stopMaintenanceWindowWatcher();
   document.getElementById('app').classList.add('hidden');
-  document.getElementById('team-chat-wrap')?.classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
 }
 
@@ -1447,6 +1437,7 @@ function switchView(viewName) {
   sessionStorage.setItem('registry_active_view', viewName);
   updateUrlHashForView(viewName);
   closeMobileSidebar();
+  syncFloatingBubblesVisibility();
   document.querySelectorAll('.nav-item[data-view]').forEach(item => {
     item.classList.toggle('active', item.getAttribute('data-view') === viewName);
   });
@@ -1657,64 +1648,6 @@ function startNavBadgePolling() {
   if (!state.profile) return;
   const isAdminOrIps = isAdmin() || state.profile.role === 'ips';
 
-  // Team Chat — always-on regardless of which tab is open, since the
-  // badge and notification sound need to fire even while someone's
-  // working in, say, Leave Tracker. Only counts toward the badge (and
-  // only plays a sound) when: (a) the chat tab isn't currently the
-  // active view — no need to alert someone already looking at it — and
-  // (b) either the message mentions them by name, or it's just a new
-  // message in general (the badge tracks "unread since I last opened
-  // chat"; the sound is reserved for direct @mentions specifically, so
-  // it doesn't go off constantly during a busy conversation).
-  subscribeRealtime('team_chat_messages', 'team_chat_messages', (payload) => {
-    if (payload.eventType !== 'INSERT') return; // only new messages matter here — edits/deletes don't apply (chat has neither)
-    const msg = payload.new;
-    if (!msg) return;
-    appendLiveChatMessage(msg); // the sidebar panel is always on screen, so every new message (including my own, echoed back) appends immediately
-    const isMyOwnMessage = msg.sender_employee_id === state.profile.employee_id;
-    if (isMyOwnMessage) return; // no sound or badge for my own messages
-    // Sound plays for EVERY message from someone else now, not just
-    // ones that mention me — the mention flag itself still exists here
-    // in case a distinct mention-specific sound/treatment is wanted
-    // later, but it no longer gates whether a sound plays at all.
-    playChatNotificationSound();
-    // Badge only accumulates while the panel is genuinely closed — if
-    // it's open, the person is already looking at the message as it
-    // arrives, so a badge would be redundant/confusing.
-    const panel = document.getElementById('team-chat-panel');
-    const panelClosed = !panel || panel.style.display === 'none';
-    if (panelClosed) {
-      state.chatUnread = (state.chatUnread || 0) + 1;
-      updateTeamChatBadge();
-    }
-  });
-
-  subscribeRealtime('team_chat_reactions', 'team_chat_reactions', (payload) => {
-    const row = payload.new || payload.old;
-    if (!row) return;
-    const messageId = row.message_id;
-    const current = state.chatReactions[messageId] || [];
-    if (payload.eventType === 'INSERT') {
-      if (current.some(r => r.id === row.id)) return; // already have it
-      state.chatReactions[messageId] = [...current, row];
-    } else if (payload.eventType === 'DELETE') {
-      state.chatReactions[messageId] = current.filter(r => r.id !== row.id);
-    }
-    // Only re-render the ONE affected message card's pills, not the
-    // whole list — cheap, and avoids scrolling/focus disruption for
-    // anyone reading other messages while a reaction comes in elsewhere.
-    const el = document.querySelector(`.team-chat-msg[data-id="${messageId}"]`);
-    if (!el) return;
-    const bubble = el.firstElementChild; // the actual colored message bubble, distinct from the outer flex wrapper used for left/right alignment
-    const pillsWrap = el.querySelector('.chat-reaction-pills');
-    const newPillsHtml = renderChatReactionPills(messageId);
-    if (pillsWrap) {
-      pillsWrap.outerHTML = newPillsHtml || '<div class="chat-reaction-pills" style="display:none;"></div>';
-    } else if (newPillsHtml && bubble) {
-      bubble.insertAdjacentHTML('beforeend', newPillsHtml);
-    }
-  });
-
   // Every logged-in employee gets this — the PrioList visibility toggle
   // needs to be current BEFORE they click the nav item (switchView's
   // redirect check reads state.priolistVisible synchronously), not just
@@ -1820,8 +1753,6 @@ function stopNavBadgePolling() {
   unsubscribeRealtime('badge_leave_entries');
   unsubscribeRealtime('badge_leave_notifications');
   unsubscribeRealtime('app_settings_priolist');
-  unsubscribeRealtime('team_chat_messages');
-  unsubscribeRealtime('team_chat_reactions');
 }
 
 // Re-renders whichever view is currently on screen, so staged data
@@ -1849,7 +1780,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ips-match-priolist-input';
+const APP_VERSION = '2026-09-04-remove-chat-restore-calculator';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -9322,617 +9253,6 @@ function renderIpsBell() {
 }
 
 // =====================================================================
-// TEAM CHAT — persistent sidebar panel, live, auto-clears daily
-// =====================================================================
-// Lives directly in the sidebar (between the nav links and the
-// "Signed in as" footer) rather than as its own page — visible on
-// every screen, all the time, like a live-stream comment feed.
-
-// Generates a short two-tone notification sound with the Web Audio
-// API rather than shipping an audio file — keeps this a genuinely
-// self-contained single HTML file with no external assets to host.
-function playChatNotificationSound() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const playTone = (freq, startTime, duration) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      gain.gain.setValueAtTime(0.0001, startTime);
-      gain.gain.exponentialRampToValueAtTime(0.2, startTime + 0.01);
-      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
-      osc.start(startTime);
-      osc.stop(startTime + duration);
-    };
-    const now = ctx.currentTime;
-    playTone(880, now, 0.12);        // first tone
-    playTone(1175, now + 0.11, 0.16); // second, higher tone — classic two-note "ping"
-  } catch (err) {
-    console.error('Could not play chat notification sound:', err);
-  }
-}
-
-// Parses "@Name" mentions out of a message by matching against the
-// actual employee roster — only a genuine, exact display_name match
-// counts as a mention (so "@John" doesn't accidentally match "Johnny"
-// unless that's literally someone's name), keeping mentions reliable
-// rather than guessing at partial names.
-function parseMentionsFromMessage(text) {
-  // "@everyone" expands to EVERY employee's name — reusing the exact
-  // same downstream mechanism as an individual @mention (the sound
-  // trigger and highlight both just check "is my name in
-  // mentioned_names"), so nothing else needs special-casing to support
-  // this. Checked first since it's cheap and, if present, makes the
-  // per-employee name scan below redundant (though harmless to still run).
-  if (/@everyone\b/i.test(text)) {
-    return state.employees.map(emp => emp.display_name);
-  }
-  const mentioned = [];
-  state.employees.forEach(emp => {
-    const nameParts = emp.display_name.split(' ');
-    const firstName = nameParts[0];
-    const fullPattern = new RegExp(`@${emp.display_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-    const firstNamePattern = new RegExp(`@${firstName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-    if (fullPattern.test(text) || firstNamePattern.test(text)) {
-      mentioned.push(emp.display_name);
-    }
-  });
-  return mentioned;
-}
-
-// Renders the message text with any @mention highlighted — done via a
-// simple text-replace on the already-escaped HTML, matching each
-// mentioned employee's name (or first name) case-insensitively.
-function renderChatMessageHtml(msg) {
-  let html = escapeHtml(msg.message);
-  // "@everyone" is highlighted directly, since it's the literal text
-  // typed in the message — mentioned_names holds the EXPANDED list of
-  // every employee's name (for the notification-matching logic), not
-  // the literal string "everyone", so it wouldn't match via the
-  // per-name loop below.
-  html = html.replace(/@everyone\b/gi, (match) => `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 3px; border-radius:3px;">${match}</span>`);
-  (msg.mentioned_names || []).forEach(name => {
-    const firstName = name.split(' ')[0];
-    [name, firstName].forEach(part => {
-      const pattern = new RegExp(`@${part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
-      html = html.replace(pattern, (match) => `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 3px; border-radius:3px;">${match}</span>`);
-    });
-  });
-  return html;
-}
-
-// Compact card styled for the dark, narrow (240px) sidebar — small
-// text, subtle separators instead of full chat "bubbles", since a
-// TikTok/Facebook-Live-style feed reads more like a running comment
-// list than a messenger UI.
-const CHAT_QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
-
-// Renders the small reaction pills below a message — one pill per
-// distinct emoji used on it, with a count and highlighted if the
-// current person is among the reactors (so it's visually obvious
-// which ones are "mine" and clickable-to-remove vs. just informational).
-function renderChatReactionPills(messageId) {
-  const reactions = state.chatReactions[messageId] || [];
-  if (!reactions.length) return '';
-  const byEmoji = {};
-  reactions.forEach(r => { (byEmoji[r.emoji] = byEmoji[r.emoji] || []).push(r); });
-  return `
-    <div class="chat-reaction-pills" style="display:flex; flex-wrap:wrap; gap:3px; margin-top:3px;">
-      ${Object.entries(byEmoji).map(([emoji, list]) => {
-        const iReacted = list.some(r => r.employee_id === state.profile.employee_id);
-        const names = list.map(r => r.employee_name.split(' ')[0]).join(', ');
-        return `<button type="button" class="chat-reaction-pill" data-message-id="${messageId}" data-emoji="${emoji}" title="${escapeHtml(names)}" style="
-          display:inline-flex; align-items:center; gap:3px; padding:1px 6px; border-radius:999px; cursor:pointer; font-size:11px;
-          border:1px solid ${iReacted ? '#5DA6C1' : 'rgba(255,255,255,0.18)'}; background:${iReacted ? 'rgba(93,166,193,0.22)' : 'rgba(255,255,255,0.06)'}; color:#E4E8F5;">
-          <span>${emoji}</span><span style="font-size:9.5px; color:#B8A9E0;">${list.length}</span>
-        </button>`;
-      }).join('')}
-    </div>
-  `;
-}
-
-// The hover-revealed quick-pick row — hidden by default (CSS below
-// shows it on .team-chat-msg:hover), so it doesn't clutter every
-// message all the time.
-function renderChatReactionPicker(messageId, isMine = false) {
-  return `
-    <div class="chat-reaction-picker" data-message-id="${messageId}" style="
-      display:none; gap:2px; position:absolute; bottom:calc(100% + 2px); ${isMine ? 'right:0;' : 'left:0;'} min-width:150px; background:#232B4D; border:1px solid rgba(255,255,255,0.15);
-      border-radius:8px; padding:3px; box-shadow:0 4px 12px rgba(0,0,0,0.3); z-index:5;">
-      ${CHAT_QUICK_REACTIONS.map(e => `<button type="button" class="chat-reaction-pick-btn" data-message-id="${messageId}" data-emoji="${e}" style="background:none; border:none; cursor:pointer; font-size:14px; padding:2px 3px; border-radius:5px;">${e}</button>`).join('')}
-    </div>
-  `;
-}
-
-function chatMessageCard(msg) {
-  const isMine = msg.sender_employee_id === state.profile.employee_id;
-  const iAmMentioned = Array.isArray(msg.mentioned_names) && msg.mentioned_names.includes(state.profile.display_name);
-  const time = new Date(msg.created_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  return `
-    <div class="team-chat-msg" data-id="${msg.id}" style="display:flex; justify-content:${isMine ? 'flex-end' : 'flex-start'}; margin-bottom:4px;">
-      <div class="team-chat-bubble" style="
-        position:relative; max-width:78%; padding:6px 9px; border-radius:8px; font-size:14px; line-height:1.4;
-        ${isMine ? 'background:#2C3968;' : 'background:rgba(255,255,255,0.05);'}
-        ${iAmMentioned ? 'background:rgba(93,166,193,0.22); border:1px solid #5DA6C1;' : ''}">
-        ${!isMine ? renderChatReactionPicker(msg.id, isMine) : ''}
-        ${!isMine ? `<span style="font-weight:700; font-size:12px; color:#B8A9E0;">${escapeHtml(msg.sender_name.split(' ')[0])}</span>` : ''}
-        <span style="color:#7C87AE; font-size:11px; margin-left:${isMine ? '0' : '5px'};">${time}</span>
-        <div style="color:#E4E8F5; word-break:break-word; margin-top:2px;">${renderChatMessageHtml(msg)}</div>
-        ${renderChatReactionPills(msg.id)}
-      </div>
-    </div>
-  `;
-}
-
-// Appends exactly one new message to the live feed — used by the
-// always-on realtime subscription so a new message doesn't require a
-// full re-render/re-fetch. The panel is on screen at all times, so
-// this fires for every message, from anywhere in the app.
-function appendLiveChatMessage(msg) {
-  const list = document.getElementById('sidebar-chat-messages');
-  if (!list) return;
-  // Placeholder-only state ("No messages yet") gets cleared out the
-  // moment a real message arrives.
-  const placeholder = list.querySelector('.team-chat-empty-placeholder');
-  if (placeholder) placeholder.remove();
-  const wasAtBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-  list.insertAdjacentHTML('beforeend', chatMessageCard(msg));
-  if (wasAtBottom) list.scrollTop = list.scrollHeight;
-}
-
-async function loadTeamChatMessages() {
-  // A hard timeout, not just error-handling: if the request never
-  // resolves at all (a stalled network request — common right after a
-  // hard refresh, when many other requests are competing at once), the
-  // panel would otherwise be stuck showing "Loading..." forever, since
-  // nothing after this await would ever run. Racing against a timeout
-  // guarantees this function always settles one way or another.
-  const timeout = new Promise((resolve) => setTimeout(() => resolve({ data: null, error: new Error('Team chat load timed out') }), 8000));
-  // Fetches the MOST RECENT 300 messages (descending order + limit),
-  // not the oldest — ordering ascending-with-a-limit would instead
-  // return the earliest 300 messages on any day busy enough to exceed
-  // that cap, silently never even retrieving the actual recent
-  // conversation. The result is reversed back into chronological order
-  // right after, since that's what the message list needs for display.
-  const { data, error } = await Promise.race([
-    sb.from('team_chat_messages').select('*').order('created_at', { ascending: false }).limit(300),
-    timeout,
-  ]);
-  if (error) {
-    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load team chat:', error);
-    return [];
-  }
-  return (data || []).reverse();
-}
-
-// Loads every reaction row and groups them by message_id, so
-// chatMessageCard can look up "what reactions does THIS message have"
-// with a plain object lookup rather than filtering the full list
-// per-message on every render.
-async function loadTeamChatReactions() {
-  const { data, error } = await sb.from('team_chat_reactions').select('*');
-  if (error) {
-    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Could not load chat reactions:', error);
-    return {};
-  }
-  const grouped = {};
-  (data || []).forEach(r => {
-    if (!grouped[r.message_id]) grouped[r.message_id] = [];
-    grouped[r.message_id].push(r);
-  });
-  return grouped;
-}
-
-
-// Builds the persistent sidebar chat panel once, at login — not tied
-// to switchView/tab navigation at all, since it needs to stay visible
-// regardless of which page is active. Safe to call more than once
-// (e.g. if initNav ever re-runs); it just re-renders into the same slot.
-// Wires up "@Name" autocomplete on the chat input: as the person
-// types, this looks for an unfinished "@word" token right at the
-// cursor, filters the employee roster (plus a synthetic "Everyone"
-// entry) against it, and shows a clickable dropdown of matches. The
-// dropdown always displays each person's FULL name (so it's
-// unambiguous which "John" is being suggested), but clicking a
-// suggestion inserts only their FIRST name into the message — matching
-// how mentions are already parsed elsewhere (parseMentionsFromMessage
-// already recognizes a bare first name as a valid mention), so what
-// gets typed and what gets detected stay consistent.
-// Computes the current caret position as a plain-text character
-// offset within a contenteditable element — the DOM equivalent of
-// <input>.selectionStart, which contenteditable has no direct
-// equivalent for. Walks the element's text nodes in order, summing
-// characters until the actual caret-containing node/offset is reached.
-function getCaretCharOffset(el) {
-  const sel = window.getSelection();
-  if (!sel.rangeCount) return 0;
-  const range = sel.getRangeAt(0);
-  const preRange = range.cloneRange();
-  preRange.selectNodeContents(el);
-  preRange.setEnd(range.endContainer, range.endOffset);
-  return preRange.toString().length;
-}
-
-// The inverse of getCaretCharOffset — walks the element's text nodes,
-// counting characters until the target offset falls within the
-// current node, then places the caret there. Used to restore cursor
-// position after re-rendering the contenteditable's innerHTML (which
-// would otherwise reset the caret to the very start of the element).
-function setCaretCharOffset(el, targetOffset) {
-  const sel = window.getSelection();
-  const range = document.createRange();
-  let remaining = targetOffset;
-  let placed = false;
-  function walk(node) {
-    if (placed) return;
-    if (node.nodeType === Node.TEXT_NODE) {
-      const len = node.textContent.length;
-      if (remaining <= len) {
-        range.setStart(node, remaining);
-        range.collapse(true);
-        placed = true;
-      } else {
-        remaining -= len;
-      }
-    } else {
-      for (const child of node.childNodes) { walk(child); if (placed) return; }
-    }
-  }
-  walk(el);
-  if (!placed) { range.selectNodeContents(el); range.collapse(false); } // fell off the end — put caret at the very end
-  sel.removeAllRanges();
-  sel.addRange(range);
-}
-
-function wireChatMentionAutocomplete() {
-  const input = document.getElementById('sidebar-chat-input');
-  const menu = document.getElementById('sidebar-chat-mention-suggestions');
-  if (!input || !menu) return;
-
-  // Plain-text accessor — contenteditable's "value" is its innerHTML,
-  // which isn't what mention-parsing or message-sending should operate
-  // on; textContent strips the highlight <span> tags back to plain text.
-  function getText() { return input.textContent; }
-
-  // Finds the "@partial" token immediately before the cursor, if any —
-  // e.g. typing "hey @jei" with the cursor at the end returns "jei".
-  // Returns null if the cursor isn't currently inside an @-token (so
-  // the dropdown correctly disappears once the person keeps typing a
-  // space or moves on).
-  function currentMentionToken() {
-    const pos = getCaretCharOffset(input);
-    const before = getText().slice(0, pos);
-    const match = before.match(/@([a-zA-Z]*)$/);
-    return match ? match[1] : null;
-  }
-
-  function closeMenu() { menu.style.display = 'none'; menu.innerHTML = ''; }
-
-  // Re-renders the editable content with live @mention highlighting —
-  // reuses the exact same highlight styling as sent messages
-  // (renderChatMessageHtml), so what you see while typing matches
-  // what everyone sees after you send it. Saves and restores the
-  // caret position around the re-render, since replacing innerHTML
-  // would otherwise reset the cursor to the start every keystroke.
-  function refreshHighlighting() {
-    const caretOffset = getCaretCharOffset(input);
-    const text = getText();
-    input.innerHTML = escapeHtml(text)
-      .replace(/@everyone\b/gi, (m) => `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 2px; border-radius:3px;">${m}</span>`)
-      .replace(/@([A-Za-z]+)\b/g, (m, name) => {
-        const isRealPerson = state.employees.some(emp => emp.display_name.split(' ')[0].toLowerCase() === name.toLowerCase() || emp.display_name.toLowerCase() === name.toLowerCase());
-        return isRealPerson ? `<span style="background:#5DA6C1; color:#0F2A33; font-weight:700; padding:0 2px; border-radius:3px;">${m}</span>` : m;
-      });
-    setCaretCharOffset(input, caretOffset);
-  }
-
-  // Shared insertion logic — used by both a mouse click on a
-  // suggestion AND pressing Enter when exactly one candidate remains,
-  // so the two input methods stay perfectly consistent with each other.
-  function insertMention(insertText) {
-    const pos = getCaretCharOffset(input);
-    const text = getText();
-    const before = text.slice(0, pos).replace(/@([a-zA-Z]*)$/, `@${insertText} `);
-    const after = text.slice(pos);
-    input.textContent = before + after;
-    refreshHighlighting();
-    setCaretCharOffset(input, before.length);
-    input.focus();
-    closeMenu();
-  }
-
-  function openMenuWith(partial) {
-    const lower = partial.toLowerCase();
-    const candidates = [
-      { full: 'Everyone', insert: 'everyone', isEveryone: true },
-      ...state.employees
-        .filter(emp => emp.display_name.toLowerCase().startsWith(lower) || emp.display_name.split(' ')[0].toLowerCase().startsWith(lower))
-        .map(emp => ({ full: emp.display_name, insert: emp.display_name.split(' ')[0] })),
-    ].filter(c => c.full.toLowerCase().includes(lower) || c.insert.toLowerCase().startsWith(lower));
-
-    if (!candidates.length) { closeMenu(); return; }
-    menu.dataset.singleInsert = candidates.length === 1 ? candidates[0].insert : ''; // read by the Enter-key handler below
-
-    menu.innerHTML = candidates.map(c => `
-      <div class="chat-mention-option" data-insert="${escapeHtml(c.insert)}" style="
-        padding:6px 10px; font-size:11.5px; color:#E4E8F5; cursor:pointer;
-        ${c.isEveryone ? 'font-weight:700; color:#5DA6C1; border-bottom:1px solid rgba(255,255,255,0.1);' : ''}">
-        ${escapeHtml(c.full)}
-      </div>
-    `).join('');
-    menu.style.display = 'block';
-
-    menu.querySelectorAll('.chat-mention-option').forEach(opt => {
-      opt.addEventListener('mouseenter', () => { opt.style.background = 'rgba(93,166,193,0.15)'; });
-      opt.addEventListener('mouseleave', () => { opt.style.background = 'none'; });
-      opt.addEventListener('mousedown', (e) => {
-        // mousedown (not click) — fires before the input loses focus,
-        // so the caret offset in insertMention still reflects where
-        // the cursor was
-        e.preventDefault();
-        insertMention(opt.dataset.insert);
-      });
-    });
-  }
-
-  input.addEventListener('input', () => {
-    refreshHighlighting();
-    const token = currentMentionToken();
-    if (token === null) { closeMenu(); return; }
-    openMenuWith(token);
-  });
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { closeMenu(); return; }
-    // Enter OR Space inserts the mention ONLY when the suggestion menu
-    // is open with exactly ONE candidate remaining — mirrors clicking
-    // that single suggestion. Space is included here specifically
-    // because typing a name and hitting the space bar (the natural way
-    // to move on to the rest of the sentence) is the more common
-    // real-world gesture than reaching for Enter mid-message. If the
-    // menu is closed, or still has multiple candidates (ambiguous
-    // which one either key should mean), this does nothing and the
-    // keypress falls through to its normal behavior instead — Space
-    // types a literal space, Enter goes to the submit handling below.
-    if ((e.key === 'Enter' || e.key === ' ') && menu.style.display === 'block' && menu.dataset.singleInsert) {
-      e.preventDefault();
-      insertMention(menu.dataset.singleInsert); // already appends its own trailing space, so this fully replaces what the space bar would have typed
-      return;
-    }
-    if (e.key === 'Enter' && !e.shiftKey) {
-      // contenteditable's default Enter behavior inserts a line break
-      // and does NOT submit the enclosing form the way a real <input>
-      // does — so this explicitly triggers the same submit path a
-      // click on the Send button already uses, keeping "press Enter to
-      // send" working exactly as it did with the old <input>.
-      e.preventDefault();
-      document.getElementById('sidebar-chat-form')?.requestSubmit();
-    }
-  });
-  input.addEventListener('blur', () => {
-    // Small delay so a mousedown on a suggestion (which also blurs the
-    // input) still gets to run its own handler before the menu closes.
-    setTimeout(closeMenu, 150);
-  });
-}
-
-let chatReactionHandlersWired = false;
-function wireChatReactionHandlers() {
-  if (chatReactionHandlersWired) return; // delegation only needs wiring once — new messages/pills work automatically
-  chatReactionHandlersWired = true;
-  const list = document.getElementById('sidebar-chat-messages');
-  if (!list) return;
-  list.addEventListener('click', (e) => {
-    const pickBtn = e.target.closest('.chat-reaction-pick-btn');
-    const pillBtn = e.target.closest('.chat-reaction-pill');
-    const target = pickBtn || pillBtn;
-    if (!target) return;
-    toggleChatReaction(target.dataset.messageId, target.dataset.emoji);
-  });
-}
-
-// Adds the (message, employee, emoji) row if it doesn't exist yet, or
-// removes it if it does — the unique constraint on the table is what
-// makes "does it exist" unambiguous, so this is a genuine toggle
-// rather than needing separate add/remove code paths to stay in sync.
-async function toggleChatReaction(messageId, emoji) {
-  if (!state.profile) return;
-  // Server-side check, not just the UI hiding the picker button — a
-  // person could otherwise call this directly (e.g. from the browser
-  // console) to react to their own message despite the button being
-  // absent. Reacting to your own message is disallowed entirely.
-  const { data: msgRow, error: msgErr } = await sb.from('team_chat_messages').select('sender_employee_id').eq('id', messageId).maybeSingle();
-  if (msgErr || !msgRow) return;
-  if (msgRow.sender_employee_id === state.profile.employee_id) {
-    showToast("You can't react to your own message.", true);
-    return;
-  }
-  const existing = (state.chatReactions[messageId] || []).find(r => r.employee_id === state.profile.employee_id && r.emoji === emoji);
-  if (existing) {
-    const { error } = await sb.from('team_chat_reactions').delete().eq('id', existing.id);
-    if (error) { console.error(error); return; }
-  } else {
-    const { error } = await sb.from('team_chat_reactions').insert({
-      message_id: messageId,
-      employee_id: state.profile.employee_id,
-      employee_name: state.profile.display_name,
-      emoji,
-    });
-    if (error) {
-      if (/relation .* does not exist/i.test(error.message || '')) {
-        showToast('Reactions need setup — run team_chat_reactions_schema.sql in Supabase.', true);
-      } else if (!/duplicate key/i.test(error.message || '')) {
-        // A duplicate-key race (rapid double-click) is harmless and
-        // expected — the realtime echo will reconcile state correctly
-        // either way, so only genuinely unexpected errors get logged.
-        console.error(error);
-      }
-    }
-  }
-  // No local state mutation here — the realtime subscription (on
-  // team_chat_reactions, wired in startNavBadgePolling) is what
-  // actually updates state.chatReactions and re-renders the affected
-  // message, keeping exactly one source of truth for "what does this
-  // array currently look like" rather than two code paths that could
-  // drift out of sync with each other.
-}
-
-// Updates the chat bubble's badge to reflect state.chatUnread —
-// hidden entirely at zero, capped visually at "99+" like other
-// notification badges in the app.
-function updateTeamChatBadge() {
-  const badge = document.getElementById('team-chat-badge');
-  if (!badge) return;
-  if (state.chatUnread > 0) {
-    badge.textContent = state.chatUnread > 99 ? '99+' : String(state.chatUnread);
-    badge.style.display = 'flex';
-  } else {
-    badge.style.display = 'none';
-  }
-}
-
-let _initSidebarChatRetries = 0;
-async function initSidebarChat() {
-  if (!state.profile) return;
-  const panel = document.getElementById('team-chat-panel');
-  const toggle = document.getElementById('team-chat-bubble-toggle');
-  if (!panel || !toggle) {
-    // Previously this just silently gave up for the rest of the
-    // session if the elements weren't in the DOM at this exact
-    // instant — meaning the bubble could end up permanently
-    // unclickable until a hard refresh re-ran everything from
-    // scratch. Retrying shortly after fixes this defensively,
-    // regardless of the precise reason the elements weren't ready
-    // the first time. Capped so a genuinely broken/missing element
-    // doesn't retry forever.
-    if (_initSidebarChatRetries++ < 10) setTimeout(initSidebarChat, 300);
-    return;
-  }
-  _initSidebarChatRetries = 0;
-
-  // Closed by default — the person clicks the bubble to open it, same
-  // as every other floating bubble in this app (Notes, Calculator,
-  // etc.), rather than starting expanded.
-  panel.style.display = 'none';
-
-
-  toggle.addEventListener('click', (e) => {
-    e.stopPropagation(); // prevent this same click from also being seen by the outside-click listener below, which would otherwise immediately re-close a panel this click just opened
-
-    // Jeinna gets the two-option picker instead of Team Chat opening
-    // directly — everyone else's click behavior below is completely
-    // unaffected, since this branch only ever applies to her.
-    if (state.profile.display_name === 'Jeinna Louise Perez') {
-      const picker = document.getElementById('jeinna-bubble-picker');
-      if (picker) {
-        const opening = picker.style.display === 'none';
-        // Closing either open panel when the main bubble is clicked
-        // again, so re-clicking always returns to a clean collapsed
-        // state rather than leaving something stuck open underneath.
-        document.getElementById('team-chat-panel').style.display = 'none';
-        document.getElementById('linkedin-accounts-panel').style.display = 'none';
-        picker.style.display = opening ? 'flex' : 'none';
-        return;
-      }
-    }
-
-    openTeamChatPanel();
-  });
-
-  function openTeamChatPanel() {
-    const opening = panel.style.display === 'none';
-    panel.style.display = opening ? 'flex' : 'none';
-    if (opening) {
-      // Reopening clears whatever accumulated while it was closed
-      state.chatUnread = 0;
-      updateTeamChatBadge();
-      // The panel was display:none until this exact line ran, so any
-      // earlier "scroll to bottom" attempt (at initial load, or from a
-      // message arriving while closed) was silently a no-op — a hidden
-      // ancestor makes scrollHeight report 0, so scrollTop = scrollHeight
-      // was really just scrollTop = 0. Now that the panel's layout is
-      // genuinely real again, actually scroll to the latest message.
-      const list = document.getElementById('sidebar-chat-messages');
-      if (list) list.scrollTop = list.scrollHeight;
-    }
-  }
-
-  // The two-option picker only exists in the DOM for everyone (it's
-  // just hidden by default), but only Jeinna's toggle-click handler
-  // above ever reveals it — wiring these buttons unconditionally here
-  // is harmless for everyone else, since the picker never becomes
-  // visible for them in the first place.
-  document.querySelectorAll('.jeinna-picker-option').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      document.getElementById('jeinna-bubble-picker').style.display = 'none';
-      if (btn.dataset.target === 'chat') {
-        openTeamChatPanel();
-      } else if (btn.dataset.target === 'linkedin') {
-        openLinkedInAccountsPanel();
-      }
-    });
-  });
-
-  // Closes the panel on any click outside the chat box (panel +
-  // toggle button together) — a click on the toggle itself is already
-  // handled above (and stops propagation so it doesn't double-fire
-  // here), and a click genuinely inside the panel (typing a message,
-  // picking a reaction, etc.) should obviously not close it either.
-  document.addEventListener('click', (e) => {
-    const wrap = document.getElementById('team-chat-wrap');
-    if (!wrap) return;
-    if (wrap.contains(e.target)) return;
-    if (panel.style.display !== 'none') panel.style.display = 'none';
-    const picker = document.getElementById('jeinna-bubble-picker');
-    if (picker && picker.style.display !== 'none') picker.style.display = 'none';
-    const linkedinPanel = document.getElementById('linkedin-accounts-panel');
-    if (linkedinPanel && linkedinPanel.style.display !== 'none') linkedinPanel.style.display = 'none';
-  });
-
-  const [messages, reactions] = await Promise.all([loadTeamChatMessages(), loadTeamChatReactions()]);
-  state.chatReactions = reactions;
-  const list = document.getElementById('sidebar-chat-messages');
-  if (list) {
-    list.innerHTML = messages.length
-      ? messages.map(chatMessageCard).join('')
-      : `<div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:13px; text-align:center; padding:12px 4px;">Say Hello!</div>`;
-    list.scrollTop = list.scrollHeight;
-  }
-
-  wireChatMentionAutocomplete();
-  wireChatReactionHandlers();
-
-  document.getElementById('sidebar-chat-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const input = document.getElementById('sidebar-chat-input');
-    const text = input.textContent.trim();
-    if (!text) return;
-    input.innerHTML = '';
-    input.contentEditable = 'false';
-    const mentionedNames = parseMentionsFromMessage(text);
-    const { error } = await sb.from('team_chat_messages').insert({
-      sender_name: state.profile.display_name,
-      sender_employee_id: state.profile.employee_id,
-      message: text,
-      mentioned_names: mentionedNames.length ? mentionedNames : null,
-    });
-    input.contentEditable = 'true';
-    input.focus();
-    if (error) {
-      console.error(error);
-      showToast(/relation .* does not exist/i.test(error.message || '') ? 'Team Chat needs setup — run team_chat_schema.sql in Supabase.' : 'Could not send your message.', true);
-      return;
-    }
-    // No local append here — the realtime subscription (which fires for
-    // everyone, including the sender) handles adding it to the view, so
-    // there's exactly one code path responsible for rendering a new
-    // message rather than two that could ever drift apart.
-  });
-}
-
-// =====================================================================
 // LINKEDIN ACCOUNTS — Jeinna only
 // =====================================================================
 let linkedinAccountsLoaded = false;
@@ -15951,19 +15271,163 @@ if (document.readyState === 'loading') {
 // end-of-body bubbles this used to also cover).
 setTimeout(syncPersonalAlertsVisibility, 1500);
 setTimeout(syncPersonalAlertsVisibility, 4000);
+setTimeout(syncFloatingBubblesVisibility, 1500);
+setTimeout(syncFloatingBubblesVisibility, 4000);
 
-// Self-heal for the chat bubble specifically: if someone is genuinely
-// logged in but the bubble is still hidden a moment later, force it
-// visible. Cheap insurance against this exact class of "element wasn't
-// parsed yet when we tried to reveal it" bug recurring.
-function ensureChatBubbleVisibleIfLoggedIn() {
-  const wrap = document.getElementById('team-chat-wrap');
-  if (wrap && state.profile && wrap.classList.contains('hidden')) {
-    wrap.classList.remove('hidden');
-  }
+// =====================================================================
+// FLOATING BUBBLE STACK — LinkedIn Accounts (Jeinna only) + Calculator
+// (Team Funds only)
+// =====================================================================
+// Each bubble button shows/hides independently based on who's logged
+// in and which view is currently active — called on login and on
+// every view switch (see switchView), plus a couple of delayed
+// self-heal calls above in case session restore resolves late.
+function syncFloatingBubblesVisibility() {
+  if (!state.profile) return;
+  const linkedinBtn = document.getElementById('linkedin-accounts-bubble-toggle');
+  if (linkedinBtn) linkedinBtn.style.display = canEditAutoSyncedIpsFields() ? 'flex' : 'none';
+  const calcBtn = document.getElementById('tf-calculator-bubble-toggle');
+  if (calcBtn) calcBtn.style.display = state.currentView === 'team-funds' ? 'flex' : 'none';
 }
-setTimeout(ensureChatBubbleVisibleIfLoggedIn, 1500);
-setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
+
+// ---- Calculator ------------------------------------------------------
+// A plain standalone arithmetic calculator — no connection to any
+// app data, just a convenience tool while working through Team Funds
+// numbers. State lives entirely in these three variables, reset
+// whenever "C" is pressed or a fresh calculation starts after "=".
+let calcDisplayValue = '0';
+let calcPendingOperator = null;
+let calcPendingValue = null;
+let calcJustEvaluated = false;
+
+function calcRenderDisplay() {
+  const el = document.getElementById('tf-calculator-display');
+  if (el) el.textContent = calcDisplayValue;
+}
+
+function calcInputDigit(digit) {
+  if (calcJustEvaluated) { calcDisplayValue = digit; calcJustEvaluated = false; }
+  else if (calcDisplayValue === '0') { calcDisplayValue = digit; }
+  else if (calcDisplayValue.length < 14) { calcDisplayValue += digit; }
+  calcRenderDisplay();
+}
+function calcInputDecimal() {
+  if (calcJustEvaluated) { calcDisplayValue = '0.'; calcJustEvaluated = false; calcRenderDisplay(); return; }
+  if (!calcDisplayValue.includes('.')) { calcDisplayValue += '.'; calcRenderDisplay(); }
+}
+function calcApplyOperator(op) {
+  const current = parseFloat(calcDisplayValue);
+  if (calcPendingOperator && !calcJustEvaluated) {
+    calcPendingValue = calcCompute(calcPendingValue, current, calcPendingOperator);
+    calcDisplayValue = String(round2(calcPendingValue));
+  } else {
+    calcPendingValue = current;
+  }
+  calcPendingOperator = op;
+  calcJustEvaluated = true; // next digit starts a fresh number, not an append
+  calcRenderDisplay();
+}
+function calcCompute(a, b, op) {
+  if (op === '+') return a + b;
+  if (op === '−') return a - b;
+  if (op === '×') return a * b;
+  if (op === '÷') return b === 0 ? 0 : a / b;
+  return b;
+}
+function calcEquals() {
+  if (calcPendingOperator == null) return;
+  const current = parseFloat(calcDisplayValue);
+  calcDisplayValue = String(round2(calcCompute(calcPendingValue, current, calcPendingOperator)));
+  calcPendingOperator = null;
+  calcPendingValue = null;
+  calcJustEvaluated = true;
+  calcRenderDisplay();
+}
+function calcClear() {
+  calcDisplayValue = '0';
+  calcPendingOperator = null;
+  calcPendingValue = null;
+  calcJustEvaluated = false;
+  calcRenderDisplay();
+}
+function calcBackspace() {
+  if (calcJustEvaluated) return;
+  calcDisplayValue = calcDisplayValue.length > 1 ? calcDisplayValue.slice(0, -1) : '0';
+  calcRenderDisplay();
+}
+function calcToggleSign() {
+  if (calcDisplayValue === '0') return;
+  calcDisplayValue = calcDisplayValue.startsWith('-') ? calcDisplayValue.slice(1) : '-' + calcDisplayValue;
+  calcRenderDisplay();
+}
+
+const CALC_KEYS = [
+  { label: 'C', action: 'clear', kind: 'fn' },
+  { label: '±', action: 'sign', kind: 'fn' },
+  { label: '⌫', action: 'back', kind: 'fn' },
+  { label: '÷', action: 'op', value: '÷', kind: 'op' },
+  { label: '7', action: 'digit', value: '7' },
+  { label: '8', action: 'digit', value: '8' },
+  { label: '9', action: 'digit', value: '9' },
+  { label: '×', action: 'op', value: '×', kind: 'op' },
+  { label: '4', action: 'digit', value: '4' },
+  { label: '5', action: 'digit', value: '5' },
+  { label: '6', action: 'digit', value: '6' },
+  { label: '−', action: 'op', value: '−', kind: 'op' },
+  { label: '1', action: 'digit', value: '1' },
+  { label: '2', action: 'digit', value: '2' },
+  { label: '3', action: 'digit', value: '3' },
+  { label: '+', action: 'op', value: '+', kind: 'op' },
+  { label: '0', action: 'digit', value: '0', span: 2 },
+  { label: '.', action: 'decimal' },
+  { label: '=', action: 'equals', kind: 'op' },
+];
+
+function calcBuildKeypad() {
+  const wrap = document.getElementById('tf-calculator-keys');
+  if (!wrap || wrap.dataset.built) return; // build once, never re-render (would lose focus/feel mid-tap otherwise)
+  wrap.dataset.built = '1';
+  wrap.innerHTML = CALC_KEYS.map(k => `
+    <button type="button" class="tf-calc-key" data-action="${k.action}" ${k.value ? `data-value="${k.value}"` : ''}
+      style="grid-column: span ${k.span || 1}; padding:12px 0; border:none; cursor:pointer; font-family:inherit; font-size:15px; font-weight:600;
+             background:${k.kind === 'op' ? 'var(--teal)' : k.kind === 'fn' ? 'var(--paper)' : 'var(--paper-raised)'};
+             color:${k.kind === 'op' ? '#FFFFFF' : 'var(--ink)'};">${k.label}</button>
+  `).join('');
+  wrap.querySelectorAll('.tf-calc-key').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const { action, value } = btn.dataset;
+      if (action === 'digit') calcInputDigit(value);
+      else if (action === 'decimal') calcInputDecimal();
+      else if (action === 'op') calcApplyOperator(value);
+      else if (action === 'equals') calcEquals();
+      else if (action === 'clear') calcClear();
+      else if (action === 'back') calcBackspace();
+      else if (action === 'sign') calcToggleSign();
+    });
+  });
+}
+
+function openTfCalculatorPanel() {
+  const panel = document.getElementById('tf-calculator-panel');
+  if (!panel) return;
+  const opening = panel.style.display === 'none';
+  panel.style.display = opening ? 'flex' : 'none';
+  if (!opening) return;
+  calcBuildKeypad();
+  calcRenderDisplay();
+}
+
+// Wiring is deferred into a function, called from enterApp() — the
+// bubble buttons live in HTML that comes AFTER this script tag in the
+// file, so attaching listeners here at top-level (before that HTML is
+// parsed) would silently fail: getElementById would just return null.
+function wireFloatingBubbleButtons() {
+  document.getElementById('linkedin-accounts-bubble-toggle')?.addEventListener('click', () => openLinkedInAccountsPanel());
+  document.getElementById('tf-calculator-bubble-toggle')?.addEventListener('click', openTfCalculatorPanel);
+  document.getElementById('tf-calculator-close-btn')?.addEventListener('click', () => {
+    document.getElementById('tf-calculator-panel').style.display = 'none';
+  });
+}
 
 </script>
 
@@ -15988,60 +15452,33 @@ setTimeout(ensureChatBubbleVisibleIfLoggedIn, 4000);
      another. Each bubble's own panel (Alerts list / Notes list /
      Calculator) still opens independently via its own button click,
      exactly as before this change. -->
-<div id="team-chat-wrap" class="hidden" style="position:fixed; right:24px; bottom:24px; z-index:1002; display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
-  <style>
-    .team-chat-bubble:hover .chat-reaction-picker { display: flex !important; }
-    .chat-reaction-pick-btn:hover { background: rgba(255,255,255,0.12) !important; }
-    #sidebar-chat-input:empty::before { content: attr(data-placeholder); color: #7C87AE; pointer-events: none; }
-  </style>
+<div id="floating-bubble-wrap" style="position:fixed; right:24px; bottom:24px; z-index:1002; display:flex; flex-direction:column; align-items:flex-end; gap:10px;">
 
-  <!-- LinkedIn Accounts — Jeinna only. Sibling panel to Team Chat's own,
-       toggled the same way, just via a different trigger button. -->
-  <div id="linkedin-accounts-panel" style="display:none; flex-direction:column; width:340px; height:400px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
-    <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-      <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">LinkedIn Accounts</span>
+  <!-- LinkedIn Accounts — Jeinna only. -->
+  <div id="linkedin-accounts-panel" style="display:none; flex-direction:column; width:340px; height:400px; background:var(--paper-raised); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
+    <div style="padding:10px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+      <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft);">LinkedIn Accounts</span>
       <div style="display:flex; align-items:center; gap:8px;">
-        <span id="linkedin-accounts-grand-total" title="Total across all accounts" style="font-size:12.5px; font-weight:700; color:#5DA6C1;">0</span>
-        <button id="linkedin-accounts-add-btn" title="Add a row" style="background:none; border:1px solid rgba(255,255,255,0.2); color:#5DA6C1; border-radius:6px; width:22px; height:22px; font-size:15px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;">+</button>
+        <span id="linkedin-accounts-grand-total" title="Total across all accounts" style="font-size:12.5px; font-weight:700; color:var(--teal);">0</span>
+        <button id="linkedin-accounts-add-btn" title="Add a row" style="background:none; border:1px solid var(--line); color:var(--teal); border-radius:6px; width:22px; height:22px; font-size:15px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;">+</button>
       </div>
     </div>
     <div id="linkedin-accounts-list" style="flex:1; min-height:0; overflow-y:auto; padding:8px 10px;">
-      <div class="faint" style="color:#7C87AE; font-size:12px; text-align:center; padding:14px 4px;">Loading...</div>
+      <div class="faint" style="font-size:12px; text-align:center; padding:14px 4px;">Loading...</div>
     </div>
   </div>
+  <button id="linkedin-accounts-bubble-toggle" title="LinkedIn Accounts" style="display:none; position:relative; width:52px; height:52px; border-radius:50%; border:1px solid var(--line); background:var(--paper-raised); color:#0A66C2; cursor:pointer; box-shadow:var(--shadow-lg); align-items:center; justify-content:center; font-weight:700; font-size:13px;">in</button>
 
-  <!-- The two-option picker — Jeinna only. Shown instead of directly
-       opening Team Chat when she clicks the main bubble; picking an
-       option here opens the matching panel and closes the picker. -->
-  <div id="jeinna-bubble-picker" style="display:none; flex-direction:column; gap:8px; align-items:flex-end;">
-    <button type="button" class="jeinna-picker-option" data-target="linkedin" style="display:flex; align-items:center; gap:8px; padding:8px 14px 8px 10px; border-radius:999px; border:1px solid rgba(255,255,255,0.15); background:#1A2340; color:#E4E8F5; font-size:12.5px; font-weight:600; cursor:pointer; box-shadow:var(--shadow-md);">
-      <span style="width:26px; height:26px; border-radius:50%; background:#0A66C2; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; color:#fff; flex-shrink:0;">in</span>
-      LinkedIn Accounts
-    </button>
-    <button type="button" class="jeinna-picker-option" data-target="chat" style="display:flex; align-items:center; gap:8px; padding:8px 14px 8px 10px; border-radius:999px; border:1px solid rgba(255,255,255,0.15); background:#1A2340; color:#E4E8F5; font-size:12.5px; font-weight:600; cursor:pointer; box-shadow:var(--shadow-md);">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5DA6C1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-      Team Chat
-    </button>
-  </div>
-
-  <div id="team-chat-panel" style="display:none; flex-direction:column; width:300px; height:380px; background:#1A2340; border:1px solid rgba(255,255,255,0.12); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
-    <div style="padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.12); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
-      <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#B8A9E0;">Team Chat</span>
+  <!-- Calculator — Team Funds only. -->
+  <div id="tf-calculator-panel" style="display:none; flex-direction:column; width:260px; background:var(--paper-raised); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow-lg); overflow:hidden; font-family:inherit;">
+    <div style="padding:10px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; flex-shrink:0;">
+      <span style="font-size:11.5px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--ink-soft);">Calculator</span>
+      <button id="tf-calculator-close-btn" title="Close" style="background:none; border:none; color:var(--ink-faint); font-size:16px; cursor:pointer; line-height:1; padding:2px 4px;">✕</button>
     </div>
-    <div id="sidebar-chat-messages" style="flex:1; min-height:0; overflow-y:auto; padding:32px 12px 10px;">
-      <div class="team-chat-empty-placeholder" style="color:#7C87AE; font-size:13px; text-align:center; padding:12px 4px;">Loading...</div>
-    </div>
-    <form id="sidebar-chat-form" style="display:flex; gap:5px; flex-shrink:0; position:relative; padding:8px 10px; border-top:1px solid rgba(255,255,255,0.12);">
-      <div id="sidebar-chat-mention-suggestions" style="display:none; position:absolute; bottom:calc(100% + 4px); left:10px; right:10px; z-index:71; background:#232B4D; border:1px solid rgba(255,255,255,0.15); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.35); max-height:160px; overflow-y:auto;"></div>
-      <div id="sidebar-chat-input" contenteditable="true" data-placeholder="@Name or message..." role="textbox"
-        style="flex:1; min-width:0; padding:7px 9px; border-radius:6px; border:1px solid rgba(255,255,255,0.15); background:rgba(255,255,255,0.06); color:#fff; font-family:inherit; font-size:13px; outline:none; white-space:pre-wrap; word-break:break-word; max-height:80px; overflow-y:auto;"></div>
-      <button type="submit" style="flex-shrink:0; padding:7px 11px; border-radius:6px; border:none; background:#5DA6C1; color:#0F2A33; font-weight:700; font-size:13px; cursor:pointer;">Send</button>
-    </form>
+    <div id="tf-calculator-display" style="padding:18px 14px; text-align:right; font-family:var(--font-mono); font-size:28px; font-weight:600; color:var(--ink); background:var(--paper); word-break:break-all;">0</div>
+    <div id="tf-calculator-keys" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:1px; background:var(--line);"></div>
   </div>
-  <button id="team-chat-bubble-toggle" title="Team Chat" style="position:relative; width:52px; height:52px; border-radius:50%; border:1px solid rgba(255,255,255,0.15); background:#1A2340; color:#5DA6C1; cursor:pointer; box-shadow:var(--shadow-lg); display:flex; align-items:center; justify-content:center;">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-    <span id="team-chat-badge" style="display:none; position:absolute; top:-2px; right:-2px; background:var(--coral); color:#fff; font-size:10px; font-weight:700; border-radius:999px; min-width:18px; height:18px; padding:0 5px; align-items:center; justify-content:center; border:2px solid #1A2340;"></span>
-  </button>
+  <button id="tf-calculator-bubble-toggle" title="Calculator" style="display:none; position:relative; width:52px; height:52px; border-radius:50%; border:1px solid var(--line); background:var(--paper-raised); color:var(--teal); cursor:pointer; box-shadow:var(--shadow-lg); align-items:center; justify-content:center; font-size:20px;">🧮</button>
 </div>
 
 </body>
