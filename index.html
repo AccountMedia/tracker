@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-incremental-sync-rewrite';
+const APP_VERSION = '2026-09-04-visibility-based-realtime-pause';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2791,6 +2791,41 @@ function stopReviewBatchesRealtimeSync() {
     _reviewBatchesChannel = null;
   }
 }
+
+// Every one of the 33 connected browser tabs receives every broadcast
+// from PrioList's own tables and the completion_log/review_batches
+// channels that feed it — including tabs sitting minimized or
+// backgrounded while someone works in a different window. Pausing all
+// of it whenever the tab itself is hidden (confirmed via the Page
+// Visibility API) directly reduces the number of clients any given
+// change gets broadcast to, without affecting anyone actually looking
+// at the screen.
+//
+// stopPriolistPolling() is safe to call unconditionally here even if
+// PrioList isn't the active view — unsubscribing from something never
+// subscribed is a harmless no-op, and if the tab is hidden, nothing
+// needs to stay live regardless of which screen happened to be open.
+//
+// Resuming is gated to only restart what the CURRENTLY active view
+// still needs, so this doesn't wastefully restart a subscription for
+// a screen the person has since navigated away from while the tab was
+// hidden. The incremental MD Task/Peer Review sync design already
+// handles catching up correctly on resume (it just fetches everything
+// since its watermark, however much accumulated while paused) — only
+// PrioList's own tables need an explicit fresh reload here, since
+// their realtime patching only applies CHANGES going forward and
+// can't retroactively backfill what was missed while paused.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopPriolistPolling(); // also stops completion_log/review_batches via its own internal calls, correctly shared with IPS
+  } else if (state.currentView === 'priolist') {
+    startPriolistPolling();
+    renderPrioListEntry();
+  } else if (state.currentView === 'ips') {
+    startCompletionLogRealtimeSync();
+    startReviewBatchesRealtimeSync();
+  }
+});
 
 function startPriolistPeerReviewRealtimeSync() {
   startReviewBatchesRealtimeSync(); // thin wrapper — every existing call site keeps working unchanged
