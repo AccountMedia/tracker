@@ -1785,7 +1785,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-fix-approval-blocking-bug';
+const APP_VERSION = '2026-09-04-realtime-channel-consolidation';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -1833,27 +1833,51 @@ function showStaleVersionBanner() {
 // (Database -> Replication, or run realtime_setup_v2.sql). Until
 // that's done for a given table, its subscription silently receives
 // nothing — never throws, so partial rollout is safe.
-const _realtimeChannels = {};
+// One Postgres CDC channel PER TABLE, not per caller — multiple
+// callers watching the same table (e.g. badge counters AND a live
+// view both watching leave_entries) share a single subscription and
+// get multiplexed client-side, instead of each opening their own
+// channel and having Supabase send the same change payload once per
+// channel. Confirmed real duplication before this: app_settings,
+// employees, and leave_entries each had two separate channels doing
+// the same job. The public API is unchanged — every existing call
+// site keeps working exactly as before.
+const _realtimeChannels = {};   // table -> channel
+const _realtimeListeners = {};  // table -> { key -> onChange }
 
 function subscribeRealtime(key, table, onChange) {
-  if (_realtimeChannels[key]) return; // already subscribed
+  if (!_realtimeListeners[table]) _realtimeListeners[table] = {};
+  if (_realtimeListeners[table][key]) return; // this key is already subscribed
+  _realtimeListeners[table][key] = onChange;
+
+  if (_realtimeChannels[table]) return; // channel for this table already exists — just added as another listener above
   try {
-    const channel = sb.channel(`rt:${key}`)
+    const channel = sb.channel(`rt:${table}`)
       .on('postgres_changes', { event: '*', schema: 'public', table }, (payload) => {
-        onChange(payload);
+        Object.values(_realtimeListeners[table] || {}).forEach(fn => fn(payload));
       })
       .subscribe();
-    _realtimeChannels[key] = channel;
+    _realtimeChannels[table] = channel;
   } catch (err) {
     console.error(`Realtime subscribe failed for ${table}:`, err);
   }
 }
 
 function unsubscribeRealtime(key) {
-  const channel = _realtimeChannels[key];
-  if (channel) {
-    try { sb.removeChannel(channel); } catch (err) { /* non-fatal */ }
-    delete _realtimeChannels[key];
+  for (const table in _realtimeListeners) {
+    if (!(key in _realtimeListeners[table])) continue;
+    delete _realtimeListeners[table][key];
+    // Only tear down the actual channel once NO listeners remain for
+    // this table — other callers may still need it live.
+    if (Object.keys(_realtimeListeners[table]).length === 0) {
+      const channel = _realtimeChannels[table];
+      if (channel) {
+        try { sb.removeChannel(channel); } catch (err) { /* non-fatal */ }
+        delete _realtimeChannels[table];
+      }
+      delete _realtimeListeners[table];
+    }
+    return;
   }
 }
 
