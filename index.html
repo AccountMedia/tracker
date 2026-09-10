@@ -1785,7 +1785,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-change-type-shows-credits';
+const APP_VERSION = '2026-09-04-fix-approval-blocking-bug';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -4667,10 +4667,23 @@ function openMyChangeLeaveTypeModal(entryId) {
 
     if (newType === currentType && !useHours && !hasHours) { closeModal(); return; }
 
-    const query = sb.from('leave_entries').update(fields);
-    const { error } = entry.request_group_id
+    let query = sb.from('leave_entries').update(fields);
+    let { error } = entry.request_group_id
       ? await query.eq('request_group_id', entry.request_group_id)
       : await query.eq('id', entry.id);
+
+    if (error) {
+      // If add_pending_type_change_from_column.sql hasn't been run yet,
+      // this specific field would block the request entirely — retry
+      // once without it so the change itself still goes through, just
+      // without the later "type changed from X to Y" notification text.
+      console.error('Type change request failed, retrying without pending_type_change_from:', error);
+      delete fields.pending_type_change_from;
+      query = sb.from('leave_entries').update(fields);
+      ({ error } = entry.request_group_id
+        ? await query.eq('request_group_id', entry.request_group_id)
+        : await query.eq('id', entry.id));
+    }
 
     if (error) {
       console.error(error);
@@ -5339,8 +5352,19 @@ async function decideRequest(id, decision) {
       ? ` Type changed from ${LEAVE_TYPES[typeChangeFrom] ? LEAVE_TYPES[typeChangeFrom].label : typeChangeFrom} to ${LEAVE_TYPES[entry.leave_type] ? LEAVE_TYPES[entry.leave_type].label : entry.leave_type}.`
       : '';
 
-    const query = sb.from('leave_entries').update({ status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString(), pending_type_change_from: null });
-    const { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+    const approvalFields = { status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString(), pending_type_change_from: null };
+    let query = sb.from('leave_entries').update(approvalFields);
+    let { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+    if (error) {
+      // If add_pending_type_change_from_column.sql hasn't been run yet,
+      // this specific field would make EVERY approval fail, not just
+      // type-change ones — retry once without it rather than blocking
+      // approvals entirely over one missing optional column.
+      console.error('Approval update failed, retrying without pending_type_change_from:', error);
+      delete approvalFields.pending_type_change_from;
+      query = sb.from('leave_entries').update(approvalFields);
+      ({ error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id));
+    }
     if (error) { showToast('Could not update the request.', true); return; }
 
     // Capture BEFORE: DB write succeeded but local state still has
