@@ -624,14 +624,14 @@
       <a class="nav-item" data-view="team-funds" id="nav-team-funds"><span class="dot"></span>Team Funds<span id="nav-tf-badge" class="nav-badge" style="display:none;"></span></a>
       <a class="nav-item" data-view="qa-guide" id="nav-qa-guide"><span class="dot"></span>LQ Playbook</a>
     </nav>
+    <button type="button" id="theme-toggle-btn" title="Switch to light mode" style="background:none; border:1px solid var(--line); border-radius:6px; width:24px; height:24px; padding:0; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--ink-soft); margin:10px 10px 14px; flex-shrink:0;">
+      <svg id="theme-toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><line x1="12" y1="2" x2="12" y2="4"></line><line x1="12" y1="20" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"></line><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="4" y2="12"></line><line x1="20" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="6.34" y2="17.66"></line><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"></line></svg>
+    </button>
     <div class="sidebar-foot">
-      Signed in as <strong id="current-user-label">—</strong>
+      <div>Signed in as <strong id="current-user-label">—</strong></div>
       <div style="margin-top:10px; display:flex; align-items:center; gap:10px;">
-        <a href="#" id="change-password-link" style="color:var(--ink-soft); text-decoration:underline; font-size:11.5px;">Change password</a>
-        <a href="#" id="logout-link" style="color:var(--ink-soft); text-decoration:underline; font-size:11.5px;">Sign out</a>
-        <button type="button" id="theme-toggle-btn" title="Switch to light mode" style="margin-left:auto; background:none; border:1px solid var(--line); border-radius:6px; width:24px; height:24px; padding:0; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--ink-soft); flex-shrink:0;">
-          <svg id="theme-toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><line x1="12" y1="2" x2="12" y2="4"></line><line x1="12" y1="20" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"></line><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="4" y2="12"></line><line x1="20" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="6.34" y2="17.66"></line><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"></line></svg>
-        </button>
+        <a href="#" id="change-password-link" style="color:var(--ink-soft); text-decoration:underline; font-size:11.5px; white-space:nowrap;">Change password</a>
+        <a href="#" id="logout-link" style="color:var(--ink-soft); text-decoration:underline; font-size:11.5px; white-space:nowrap;">Sign out</a>
       </div>
     </div>
   </aside>
@@ -1871,7 +1871,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-light-mode-navy-sidebar';
+const APP_VERSION = '2026-09-04-toggle-spacing-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
