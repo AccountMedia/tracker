@@ -557,6 +557,13 @@
        actual content fits without needing to scroll as much. */
     .card{ padding: 16px !important; }
     #modal-overlay .card{ padding: 18px !important; max-height: 88vh !important; }
+
+    /* LI Restriction Daily Report: the main log list and the LinkedIn
+       Verification panel sit side-by-side on desktop (the panel fixed
+       at 300px) — on a narrow screen that fixed width just squeezes
+       everything else, so this stacks them into one column instead. */
+    .li-restriction-layout{ flex-direction: column; }
+    .li-restriction-sidebar{ width: 100% !important; }
   }
 </style>
 </head>
@@ -1871,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-toggle-spacing-fix';
+const APP_VERSION = '2026-09-04-ot-filing-mobile-overlap-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5801,21 +5808,23 @@ function renderPayrollConfirmation() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div class="payroll-sticky-top">
-        <div style="display:flex; justify-content:flex-start; align-items:center; margin-bottom:18px; gap:12px;">
-          <button class="btn btn-ghost btn-sm" id="payroll-prev">←</button>
-          <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
-          <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
+      <div class="payroll-scroll-wrap">
+        <div class="payroll-sticky-top">
+          <div style="display:flex; justify-content:flex-start; align-items:center; margin-bottom:18px; gap:12px;">
+            <button class="btn btn-ghost btn-sm" id="payroll-prev">←</button>
+            <h3 style="margin:0; font-family:var(--font-display); font-size:18px; color:var(--teal); min-width:190px; text-align:center;">${PAYROLL_MONTH_NAMES[month - 1]} ${year}</h3>
+            <button class="btn btn-ghost btn-sm" id="payroll-next">→</button>
+          </div>
+          <div class="payroll-header-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+            <span>Agent</span>
+            <span>Bank</span>
+            <span>1st Half</span>
+            <span>2nd Half</span>
+          </div>
         </div>
-        <div class="payroll-header-row" style="display:grid; grid-template-columns: 1.6fr 0.8fr 1.3fr 1.3fr; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
-          <span>Agent</span>
-          <span>Bank</span>
-          <span>1st Half</span>
-          <span>2nd Half</span>
+        <div class="payroll-table">
+          ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
         </div>
-      </div>
-      <div class="payroll-table">
-        ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
       </div>
     </div>
     <style>
@@ -5827,6 +5836,14 @@ function renderPayrollConfirmation() {
         margin: 0 -22px;
         padding: 22px 22px 0;
         border-radius: 16px 16px 0 0;
+      }
+      @media (max-width: 900px){
+        .payroll-scroll-wrap{ overflow-x: auto; }
+        .payroll-header-row, .payroll-row{ min-width: 560px; }
+        .payroll-sticky-top{
+          position: static; /* overflow-x:auto on the wrapper forces overflow-y to also become a scroll context, breaking sticky against the page — turned off here rather than silently misbehaving */
+          margin: 0; padding: 0;
+        }
       }
     </style>
   `;
@@ -6209,17 +6226,19 @@ function renderPrioList() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div class="priolist-header-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1fr 1.8fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
-        <span>Rank</span>
-        <span>Name</span>
-        <span>Peer Review</span>
-        <span>MD Task</span>
-        <span>Leads</span>
-        <span>Total</span>
-        <span>Status / File</span>
-        <span>Note</span>
+      <div class="priolist-scroll-wrap">
+        <div class="priolist-header-row" style="display:grid; grid-template-columns: 0.6fr 1.8fr 1fr 1fr 1fr 1fr 1.8fr 1.6fr; gap:12px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+          <span>Rank</span>
+          <span>Name</span>
+          <span>Peer Review</span>
+          <span>MD Task</span>
+          <span>Leads</span>
+          <span>Total</span>
+          <span>Status / File</span>
+          <span>Note</span>
+        </div>
+        ${tableRows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
       </div>
-      ${tableRows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
     </div>
     <style>
       .priolist-header-row{
@@ -6232,6 +6251,14 @@ function renderPrioList() {
         padding-right: 22px;
         padding-top: 22px;
         border-radius: 16px 16px 0 0;
+      }
+      @media (max-width: 900px){
+        .priolist-scroll-wrap{ overflow-x: auto; }
+        .priolist-header-row, .priolist-row{ min-width: 900px; }
+        .priolist-header-row{
+          position: static; /* overflow-x:auto on the wrapper forces overflow-y to also become a scroll context per the CSS spec, which breaks position:sticky against the page — so sticky is deliberately turned off here rather than silently misbehaving */
+          margin: 0; padding-left: 0; padding-right: 0; padding-top: 0; border-radius: 0;
+        }
       }
     </style>
   `;
@@ -7121,7 +7148,7 @@ function renderLiRestriction() {
   }).join('') : `<p class="muted">No restrictions logged for this day.</p>`;
 
   el.innerHTML = `
-    <div style="display:flex; gap:24px; align-items:flex-start;">
+    <div class="li-restriction-layout" style="display:flex; gap:24px; align-items:flex-start;">
       <div style="flex:1; min-width:0;">
         <div class="card" style="padding:18px 22px; margin-bottom:18px;">
           <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
@@ -7137,7 +7164,7 @@ function renderLiRestriction() {
         </div>
         ${logCards}
       </div>
-      <div style="width:300px; flex-shrink:0;">
+      <div class="li-restriction-sidebar" style="width:300px; flex-shrink:0;">
         <div class="card" style="padding:20px;">
           <h3 style="margin:0 0 4px; font-family:var(--font-display); font-size:16px; color:var(--teal);">LinkedIn Verification</h3>
           <p class="faint" style="font-size:11px; margin:0 0 12px;">Account ID-verification status per agent.</p>
@@ -7770,7 +7797,8 @@ function renderOtFiling() {
       <div style="background:var(--paper); color:var(--teal); border:1px solid var(--line-soft); border-radius:8px; padding:12px 16px; font-size:13px; font-weight:700; letter-spacing:0.01em; line-height:1.5; margin:0 0 16px;">
         ${topBannerText}
       </div>
-      <table style="width:100%; border-collapse:collapse; table-layout:fixed;">
+      <div class="ot-filing-scroll-wrap">
+      <table class="ot-filing-table" style="width:100%; border-collapse:collapse; table-layout:fixed;">
         <colgroup>
           <col style="width:230px;">
           ${dates.map(() => '<col style="width:90px;"><col style="width:90px;">').join('')}
@@ -7815,6 +7843,7 @@ function renderOtFiling() {
             </tr>
           </tfoot>
       </table>
+      </div>
     </div>
     <style>
       /* The card itself has no overflow set, so the page stays the
@@ -7829,6 +7858,24 @@ function renderOtFiling() {
         top: 0;
         z-index: 5;
         background: var(--paper-raised);
+      }
+      @media (max-width: 900px){
+        /* This table is deliberately opted OUT of the app-wide
+           table{display:block} mobile rule — that generic fix splits
+           thead/tbody/tfoot into separate display:table contexts,
+           which breaks table-layout:fixed's colgroup-based column
+           widths for a table this specific (many narrow, equal-width
+           date columns) — the ⋯ menu trigger and Total Output column
+           were visibly overlapping as a direct result. Scrolling
+           happens on the wrapper instead, with the table itself kept
+           as a single native table so its column widths stay exactly
+           as declared. */
+        .ot-filing-scroll-wrap{ overflow-x: auto; }
+        .ot-filing-table{ display: table !important; }
+        .ot-filing-table thead, .ot-filing-table tbody, .ot-filing-table tfoot{ display: revert !important; }
+        .ot-filing-header-row th{
+          position: static; /* sticky is turned off here rather than silently breaking, once overflow-x:auto is active on the wrapper */
+        }
       }
     </style>
   `;
@@ -8522,7 +8569,7 @@ function renderEmployeeManagementTable() {
       const isInactive = emp.active === false;
       const menuIsOpen = state.employeeManagementOpenMenuId === emp.id;
       return `
-        <div style="display:grid; grid-template-columns: ${GRID_COLUMNS}; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isInactive ? 'opacity:0.5;' : ''}">
+        <div class="em-row" style="display:grid; grid-template-columns: ${GRID_COLUMNS}; align-items:center; gap:14px; padding:10px 12px; margin:0 -12px; border-radius:8px; border-bottom:1px solid var(--line-soft); font-size:12.5px; ${isInactive ? 'opacity:0.5;' : ''}">
           <span style="font-weight:600;">${escapeHtml(emp.display_name)}</span>
           <span class="faint">${emp.contact_number ? escapeHtml(emp.contact_number) : '—'}</span>
           <span class="faint">${emp.birthday ? formatBirthday(emp.birthday) : '—'}</span>
@@ -8546,27 +8593,28 @@ function renderEmployeeManagementTable() {
 
   el.innerHTML = `
     <div class="card" style="padding:22px;">
-      <div class="em-header-row" style="display:grid; grid-template-columns: ${GRID_COLUMNS}; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
-        <span>Name</span>
-        <span>Contact Number</span>
-        <span>Birthday</span>
-        <span>Address</span>
-        <span>Username</span>
-        <span>Role</span>
-        <span>Status</span>
-        <span></span>
+      <div class="em-scroll-wrap">
+        <div class="em-header-row" style="display:grid; grid-template-columns: ${GRID_COLUMNS}; gap:14px; padding-bottom:8px; border-bottom:2px solid var(--line); font-size:11px; font-weight:600; letter-spacing:0.04em; text-transform:uppercase; color:var(--ink-faint);">
+          <span>Name</span>
+          <span>Contact Number</span>
+          <span>Birthday</span>
+          <span>Address</span>
+          <span>Username</span>
+          <span>Role</span>
+          <span>Status</span>
+          <span></span>
+        </div>
+        ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
       </div>
-      ${rows || '<p class="muted" style="margin-top:14px;">No employees yet.</p>'}
     </div>
     <style>
-      /* No horizontal-scroll wrapper here on purpose: any ancestor with
-         its own overflow (even just overflow-x) silently becomes a new
-         clipping/scroll context for BOTH axes, which breaks
-         "position: sticky; top: 0" against the page — exactly what
-         happened the first two times this was attempted. Columns are
-         narrow enough to fit without needing horizontal scroll, so the
-         card stays a plain, page-flowing element, same as PrioList's
-         already-working header. */
+      /* Desktop: no horizontal-scroll wrapper active (see the media
+         query below) — an ancestor with overflow-x set becomes a new
+         scroll/clipping context for BOTH axes per the CSS spec, which
+         would break "position: sticky; top: 0" against the page. On
+         desktop the columns already fit, so .em-scroll-wrap has no
+         overflow rule outside the mobile breakpoint and this simply
+         doesn't apply. */
       .em-header-row{
         position: sticky;
         top: 0;
@@ -8577,6 +8625,14 @@ function renderEmployeeManagementTable() {
         padding-right: 22px;
         padding-top: 22px;
         border-radius: 16px 16px 0 0;
+      }
+      @media (max-width: 900px){
+        .em-scroll-wrap{ overflow-x: auto; }
+        .em-header-row, .em-row{ min-width: 900px; }
+        .em-header-row{
+          position: static; /* sticky is turned off here rather than silently breaking, once overflow-x:auto is active on the wrapper */
+          margin: 0; padding-left: 0; padding-right: 0; padding-top: 0; border-radius: 0;
+        }
       }
     </style>
   `;
