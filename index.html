@@ -101,11 +101,28 @@
       linear-gradient(90deg, rgba(20,22,28,0.02) 1px, transparent 1px);
   }
   html[data-theme="light"] ::selection{ color: #FFFFFF; }
-  html[data-theme="light"] .sidebar{ border-right: 1px solid var(--line); }
-  html[data-theme="light"] .brand{ color: #14161C; }
-  html[data-theme="light"] .brand .sub{ color: #545A6B; }
-  html[data-theme="light"] .nav-item{ color: #29304A; }
-  html[data-theme="light"] .nav-item:hover{ background: rgba(20,22,28,0.06); color: #14161C; }
+
+  /* The sidebar stays dark navy in light mode too — that's the actual
+     original design (white main content, dark blue sidebar), not a
+     fully white sidebar. Redefining the shared variables locally,
+     scoped to .sidebar, means every descendant that already uses
+     var(--ink)/var(--line)/etc — nav items, the footer links, the
+     theme toggle button itself — automatically picks up the correct
+     light-on-navy colors without needing each one overridden by hand. */
+  html[data-theme="light"] .sidebar{
+    --paper-raised: #1A2340;
+    --ink: #FFFFFF;
+    --ink-soft: #B5BEDA;
+    --ink-faint: #7C87AE;
+    --line: rgba(255,255,255,0.14);
+    --line-soft: rgba(255,255,255,0.10);
+    --teal: #6FA8DC;
+    border-right: none;
+  }
+  html[data-theme="light"] .brand{ color: #FFFFFF; }
+  html[data-theme="light"] .brand .sub{ color: #A9B4D6; }
+  html[data-theme="light"] .nav-item{ color: #D3D9EC; }
+  html[data-theme="light"] .nav-item:hover{ background: rgba(255,255,255,0.10); color: #FFFFFF; }
 
   *{ box-sizing: border-box; }
   html, body{ margin:0; padding:0; }
@@ -1854,7 +1871,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-light-dark-theme-toggle';
+const APP_VERSION = '2026-09-04-light-mode-navy-sidebar';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
