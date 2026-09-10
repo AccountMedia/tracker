@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-full-egress-audit-ips-pause';
+const APP_VERSION = '2026-09-04-loans-active-first-sort';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -10735,7 +10735,13 @@ function renderTeamFundsView() {
             </tr>
           </thead>
           <tbody>
-            ${loans.map(loan => {
+            ${loans.slice().sort((a, b) => {
+              const repaidA = repayments.filter(r => r.loan_id === a.id).reduce((s, r) => s + Number(r.amount), 0);
+              const isPaidA = a.status === "paid" || Math.max(0, Number(a.amount) - repaidA) <= 0;
+              const repaidB = repayments.filter(r => r.loan_id === b.id).reduce((s, r) => s + Number(r.amount), 0);
+              const isPaidB = b.status === "paid" || Math.max(0, Number(b.amount) - repaidB) <= 0;
+              return (isPaidA ? 1 : 0) - (isPaidB ? 1 : 0); // Active (0) first, Paid (1) last
+            }).map(loan => {
               const loanRepaid = repayments.filter(r => r.loan_id === loan.id).reduce((s,r) => s + Number(r.amount), 0);
               const outstanding = Math.max(0, Number(loan.amount) - loanRepaid);
               const isPaid = loan.status === "paid" || outstanding <= 0;
@@ -11077,7 +11083,13 @@ function openTfReport({ transactions, loans, repayments, openingBalance, totalCr
     </tr>
   `).join('');
 
-  const loanRowsHtml = loans.map(loan => {
+  const loanRowsHtml = loans.slice().sort((a, b) => {
+    const repaidA = repayments.filter(r => r.loan_id === a.id).reduce((s, r) => s + Number(r.amount), 0);
+    const isPaidA = a.status === 'paid' || Math.max(0, Number(a.amount) - repaidA) <= 0;
+    const repaidB = repayments.filter(r => r.loan_id === b.id).reduce((s, r) => s + Number(r.amount), 0);
+    const isPaidB = b.status === 'paid' || Math.max(0, Number(b.amount) - repaidB) <= 0;
+    return (isPaidA ? 1 : 0) - (isPaidB ? 1 : 0);
+  }).map(loan => {
     const loanRepaid = repayments.filter(r => r.loan_id === loan.id).reduce((s,r) => s + Number(r.amount), 0);
     const outstanding = Math.max(0, Number(loan.amount) - loanRepaid);
     const isPaid = loan.status === 'paid' || outstanding <= 0;
