@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-ot-filing-mobile-overlap-fix';
+const APP_VERSION = '2026-09-04-lengthen-sync-debounce';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2521,8 +2521,8 @@ let _completionLogChannel = null;
 function startCompletionLogRealtimeSync() {
   if (_completionLogChannel || !sbQaReview) return; // already subscribed, or second project not configured
   try {
-    const debouncedPriolistSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 400);
-    const debouncedIpsSync = debounceRealtime(syncMdTaskFromClaimRecords, 400);
+    const debouncedPriolistSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 3000);
+    const debouncedIpsSync = debounceRealtime(syncMdTaskFromClaimRecords, 3000);
     _completionLogChannel = sbQaReview
       .channel('rt:completion_log_shared')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => {
@@ -2655,8 +2655,8 @@ let _reviewBatchesChannel = null;
 function startReviewBatchesRealtimeSync() {
   if (_reviewBatchesChannel || !sbQaReview) return;
   try {
-    const debouncedPriolistSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 400);
-    const debouncedIpsSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 400);
+    const debouncedPriolistSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 3000);
+    const debouncedIpsSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 3000);
     _reviewBatchesChannel = sbQaReview
       .channel('rt:review_batches_shared')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => {
