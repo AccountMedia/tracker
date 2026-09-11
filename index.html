@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-three-way-notif-colors';
+const APP_VERSION = '2026-09-04-fix-missing-credits-reload';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5726,7 +5726,16 @@ async function decideRequest(id, decision) {
       }
     } else {
       showToast(`${label} approved.`);
-      // Same credit notification for simple approvals (no LWOP conversion)
+      // Same credit notification for simple approvals (no LWOP
+      // conversion) — state.leaveEntries was last refreshed BEFORE
+      // this approval's own DB write landed, so without reloading
+      // here, fiscalPoolBalance below would compute the SAME
+      // pre-approval balance for both "before" and "after", silently
+      // making the notification look like nothing changed even when
+      // it genuinely did (confirmed real case: a type change that
+      // freed up credit showed no "previously" figures at all,
+      // because this reload was missing).
+      await loadLeaveEntries();
       if (empForNotif && fyNum && vlBefore !== null) {
         const freshEmp = state.employees.find(e => e.id === notifEmployeeId);
         if (freshEmp) {
