@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-fix-missing-credits-reload';
+const APP_VERSION = '2026-09-04-fix-type-change-before-balance';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5642,8 +5642,26 @@ async function decideRequest(id, decision) {
     // the entry as 'pending' (excluded from balance) — this is exactly
     // what the Credits section was showing before approval.
     const empForNotif = notifEmployeeId ? state.employees.find(e => e.id === notifEmployeeId) : null;
-    const vlBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
-    const slBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
+    let vlBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
+    let slBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
+    // For a type-change approval specifically, the raw value above is
+    // misleading as a "previously" figure: while the request sat
+    // pending, the entry was excluded from the balance ENTIRELY
+    // (regardless of type), so this raw number is artificially
+    // inflated by whatever the OLD type would have been costing —
+    // it reflects "balance with this day uncounted," not "balance
+    // before the change was requested." Confirmed real case: a
+    // half-day (0.5) being changed to a full day (1.0) showed
+    // "previously VL 8" when the true prior balance was 7.5 — the 8
+    // only existed because the entry was temporarily not counting
+    // against anything while pending. Subtracting what the OLD type
+    // would have cost restores the TRUE prior committed balance.
+    if (typeChangeFrom && LEAVE_TYPES[typeChangeFrom] && typeChangeFrom !== entry.leave_type) {
+      const oldPool = LEAVE_TYPES[typeChangeFrom].credit;
+      const oldFraction = LEAVE_TYPES[typeChangeFrom].half ? 0.5 : 1;
+      if (oldPool === 'vl' && vlBefore !== null) vlBefore = round2(vlBefore - oldFraction);
+      if (oldPool === 'sl' && slBefore !== null) slBefore = round2(slBefore - oldFraction);
+    }
     // Dates of the approved leave, for the notification text
     const notifDates = (groupId
       ? state.leaveEntries.filter(e => e.request_group_id === groupId)
