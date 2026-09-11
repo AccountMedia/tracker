@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-fix-type-change-before-balance';
+const APP_VERSION = '2026-09-04-revert-incremental-sync';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2400,36 +2400,17 @@ function currentPriolistResetBoundary() {
 // here would make this number drift out of sync with when the rest of
 // the row resets). Fully locked for everyone including admins, so
 // there's no manual-override path to reconcile against.
-// Incremental sync state for MD Output — avoids re-fetching the
-// day's ENTIRE accumulated completion_log on every single sync
-// trigger, which was growing larger and larger as a busy day went on
-// (confirmed real cost driver behind a genuine egress spike — every
-// trigger re-pulled everything since 7am, all day long, even though
-// only a handful of rows were actually new each time).
-//
-// completion_log rows are immutable once inserted — a completed claim
-// is never "un-completed" or edited afterward — so it's safe to fetch
-// only rows newer than the last watermark and simply add them to a
-// running per-employee count, rather than re-summing everything from
-// scratch each time. Deduplicated by row id (not just timestamp) as a
-// safety margin against multiple rows sharing an identical
-// millisecond-precision completed_at value.
-//
-// This state is intentionally SHARED between PrioList's and IPS's own
-// callers (both call this same function independently on every
-// trigger) — whichever one runs first does the real incremental
-// fetch and advances the watermark; the second one then finds nothing
-// new and returns the same cached result instantly, fixing a second,
-// previously-unnoticed duplicate fetch on every single trigger.
-let _mdOutputIncrementalState = {
-  boundaryDate: null,
-  watermark: null,
-  countsByFirstName: null,
-  seenRowIds: null,
-};
-const MD_OUTPUT_RECONCILE_INTERVAL_MS = 15 * 60 * 1000; // periodic full recompute as a safety net against any drift — time-based rather than sync-count-based, so a genuinely busy burst (many syncs close together) doesn't force extra expensive full-refetches right when the incremental approach matters most
-let _mdOutputLastReconcileTime = 0;
-
+// REVERTED from an incremental (watermark-based) design back to a
+// full re-fetch every time — confirmed real evidence (Sep 10, 2026)
+// of a value being written with NO supporting completion_log rows
+// behind it at all, traced to this function. The exact failure
+// mechanism in the incremental version isn't fully pinned down yet,
+// but for a system that feeds performance scores, correctness has to
+// come before the egress savings the incremental version bought.
+// Other, independently-safe egress improvements (the longer sync
+// debounce, visibility-based channel pausing, and the shared caching
+// between PrioList's and IPS's own callers) are untouched and still
+// in effect.
 async function computeMdOutputCountsSinceBoundary() {
   if (!sbQaReview) return null;
   const boundaryDate = currentPriolistResetBoundary(); // 'YYYY-MM-DD', already computed in PHT — the cutoff TIME is 7am PHT that date
@@ -2439,27 +2420,6 @@ async function computeMdOutputCountsSinceBoundary() {
   const [y, m, d] = boundaryDate.split('-').map(Number);
   const boundaryTimestamp = new Date(Date.UTC(y, m - 1, d, 7, 0, 0));
   boundaryTimestamp.setUTCMinutes(boundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
-
-  // New reset period (or first run this session), or the periodic
-  // safety-net reconciliation is due — start fresh from the full
-  // boundary rather than the incremental watermark.
-  const isNewPeriod = _mdOutputIncrementalState.boundaryDate !== boundaryDate;
-  const dueForReconcile = Date.now() - _mdOutputLastReconcileTime >= MD_OUTPUT_RECONCILE_INTERVAL_MS;
-  if (isNewPeriod || dueForReconcile) {
-    _mdOutputIncrementalState = {
-      boundaryDate,
-      watermark: boundaryTimestamp.toISOString(),
-      countsByFirstName: new Map(),
-      seenRowIds: new Set(),
-    };
-    _mdOutputLastReconcileTime = Date.now();
-  }
-
-  // Only fetch rows on/after the watermark — the actual fix. Row-id
-  // dedup (rather than a strict ">" comparison) guards against missing
-  // or double-counting any row that shares the exact watermark
-  // timestamp with another row.
-  const fetchFrom = _mdOutputIncrementalState.watermark;
 
   // Paginated fetch — Supabase's REST API caps any single request at
   // 1000 rows by default. Without this, if completion_log for the
@@ -2476,11 +2436,10 @@ async function computeMdOutputCountsSinceBoundary() {
   const PAGE_SIZE = 1000;
   const { data: firstPage, count: totalCount, error: firstErr } = await sbQaReview
     .from('completion_log')
-    .select('id, agent_name, completed_at', { count: 'exact' })
-    .gte('completed_at', fetchFrom)
+    .select('agent_name, completed_at', { count: 'exact' })
+    .gte('completed_at', boundaryTimestamp.toISOString())
     .not('agent_name', 'is', null)
     .not('completed_at', 'is', null)
-    .order('completed_at', { ascending: true })
     .range(0, PAGE_SIZE - 1);
 
   if (firstErr) {
@@ -2497,11 +2456,10 @@ async function computeMdOutputCountsSinceBoundary() {
       for (let p = batchStart; p <= batchEnd; p++) {
         const start = p * PAGE_SIZE;
         pagePromises.push(
-          sbQaReview.from('completion_log').select('id, agent_name, completed_at')
-            .gte('completed_at', fetchFrom)
+          sbQaReview.from('completion_log').select('agent_name, completed_at')
+            .gte('completed_at', boundaryTimestamp.toISOString())
             .not('agent_name', 'is', null)
             .not('completed_at', 'is', null)
-            .order('completed_at', { ascending: true })
             .range(start, start + PAGE_SIZE - 1)
         );
       }
@@ -2513,25 +2471,18 @@ async function computeMdOutputCountsSinceBoundary() {
     }
   }
 
-  // Merge the new delta into the running per-employee counts (with
-  // the same alias resolution as the IPS sync), skipping any row
-  // already counted (guards against re-including the watermark row
-  // itself on the next fetch), and advance the watermark to the
-  // latest row actually seen.
-  data.forEach(row => {
-    if (_mdOutputIncrementalState.seenRowIds.has(row.id)) return;
-    _mdOutputIncrementalState.seenRowIds.add(row.id);
+  // Group by first name (with the same alias resolution as the IPS
+  // sync) -> count. No date-splitting needed here, unlike IPS, since
+  // everything in this query already falls within the single current
+  // reset period.
+  const counts = new Map();
+  (data || []).forEach(row => {
     const rawFirstName = (row.agent_name || '').trim().split(/\s+/)[0];
-    if (rawFirstName) {
-      const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
-      _mdOutputIncrementalState.countsByFirstName.set(firstName, (_mdOutputIncrementalState.countsByFirstName.get(firstName) || 0) + 1);
-    }
-    if (row.completed_at > _mdOutputIncrementalState.watermark) {
-      _mdOutputIncrementalState.watermark = row.completed_at;
-    }
+    if (!rawFirstName) return;
+    const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
+    counts.set(firstName, (counts.get(firstName) || 0) + 1);
   });
-
-  return _mdOutputIncrementalState.countsByFirstName;
+  return counts;
 }
 
 async function syncPriolistMdOutputFromClaimRecords() {
@@ -2581,8 +2532,8 @@ let _completionLogChannel = null;
 function startCompletionLogRealtimeSync() {
   if (_completionLogChannel || !sbQaReview) return; // already subscribed, or second project not configured
   try {
-    const debouncedPriolistSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 1000);
-    const debouncedIpsSync = debounceRealtime(syncMdTaskFromClaimRecords, 1000);
+    const debouncedPriolistSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 3000);
+    const debouncedIpsSync = debounceRealtime(syncMdTaskFromClaimRecords, 3000);
     _completionLogChannel = sbQaReview
       .channel('rt:completion_log_shared')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => {
@@ -2625,23 +2576,9 @@ function stopPriolistMdOutputRealtimeSync() {
 // given employee, rather than counting rows — confirmed explicitly:
 // if Katrena appears twice with total_records 100 and 50, her Peer
 // Review is 150, not 2. Fully locked, same as MD Output.
-// Incremental sync state for Peer Review — same underlying fix as MD
-// Output's, but review_batches rows ARE mutable (updated_at implies
-// total_records can change after creation, e.g. as more items get
-// reviewed within the same batch), so this tracks each row's
-// LAST-KNOWN value individually. When a row reappears with a newer
-// updated_at, its OLD contribution is subtracted and the NEW value
-// added — the net effect is exactly the real delta, not a duplicate
-// of the row's full value stacked on top of what was already counted.
-let _peerReviewIncrementalState = {
-  boundaryDate: null,
-  watermark: null,
-  sumsByFirstName: null,
-  rowState: null, // Map: review_batches row id -> { firstName, total_records } as of the last time this row was seen
-};
-const PEER_REVIEW_RECONCILE_INTERVAL_MS = 15 * 60 * 1000; // periodic full recompute as a safety net against any drift — time-based, same reasoning as MD Output above
-let _peerReviewLastReconcileTime = 0;
-
+// REVERTED from an incremental design back to a full re-fetch every
+// time — see the identical revert and reasoning in
+// computeMdOutputCountsSinceBoundary above.
 async function computePeerReviewSumsSinceBoundary() {
   if (!sbQaReview) return null;
   const boundaryDate = currentPriolistResetBoundary(); // already PHT-correct
@@ -2651,35 +2588,14 @@ async function computePeerReviewSumsSinceBoundary() {
   const boundaryTimestamp = new Date(Date.UTC(y, m - 1, d, 7, 0, 0));
   boundaryTimestamp.setUTCMinutes(boundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
 
-  const isNewPeriod = _peerReviewIncrementalState.boundaryDate !== boundaryDate;
-  const dueForReconcile = Date.now() - _peerReviewLastReconcileTime >= PEER_REVIEW_RECONCILE_INTERVAL_MS;
-  if (isNewPeriod || dueForReconcile) {
-    _peerReviewIncrementalState = {
-      boundaryDate,
-      watermark: boundaryTimestamp.toISOString(),
-      sumsByFirstName: new Map(),
-      rowState: new Map(),
-    };
-    _peerReviewLastReconcileTime = Date.now();
-  }
-
-  // Only fetch rows on/after the watermark — same fix as MD Output.
-  // >= (not >) is deliberate here: a row can legitimately be updated
-  // AGAIN at the exact watermark timestamp from the previous fetch,
-  // and re-checking it is exactly how an update to it gets picked up
-  // — the per-row rowState comparison below (not the timestamp query)
-  // is what prevents double-counting, not the query boundary itself.
-  const fetchFrom = _peerReviewIncrementalState.watermark;
-
   // Paginated fetch — see the identical, confirmed fix and reasoning in
   // computeMdOutputCountsSinceBoundary above.
   const PAGE_SIZE = 1000;
   const { data: firstPage, count: totalCount, error: firstErr } = await sbQaReview
     .from('review_batches')
-    .select('id, claimed_by, total_records, updated_at', { count: 'exact' })
-    .gte('updated_at', fetchFrom)
+    .select('claimed_by, total_records, updated_at', { count: 'exact' })
+    .gte('updated_at', boundaryTimestamp.toISOString())
     .not('claimed_by', 'is', null)
-    .order('updated_at', { ascending: true })
     .range(0, PAGE_SIZE - 1);
 
   if (firstErr) {
@@ -2696,10 +2612,9 @@ async function computePeerReviewSumsSinceBoundary() {
       for (let p = batchStart; p <= batchEnd; p++) {
         const start = p * PAGE_SIZE;
         pagePromises.push(
-          sbQaReview.from('review_batches').select('id, claimed_by, total_records, updated_at')
-            .gte('updated_at', fetchFrom)
+          sbQaReview.from('review_batches').select('claimed_by, total_records, updated_at')
+            .gte('updated_at', boundaryTimestamp.toISOString())
             .not('claimed_by', 'is', null)
-            .order('updated_at', { ascending: true })
             .range(start, start + PAGE_SIZE - 1)
         );
       }
@@ -2711,31 +2626,15 @@ async function computePeerReviewSumsSinceBoundary() {
     }
   }
 
-  data.forEach(row => {
+  const sums = new Map();
+  (data || []).forEach(row => {
     const rawFirstName = (row.claimed_by || '').trim().split(/\s+/)[0];
     if (!rawFirstName) return;
     const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
-    const newValue = Number(row.total_records) || 0;
-
-    const previous = _peerReviewIncrementalState.rowState.get(row.id);
-    if (previous) {
-      // Seen this exact row before — remove its OLD contribution
-      // (from whichever employee it was attributed to at the time)
-      // before adding the new one, so an update never double-counts.
-      _peerReviewIncrementalState.sumsByFirstName.set(
-        previous.firstName,
-        (_peerReviewIncrementalState.sumsByFirstName.get(previous.firstName) || 0) - previous.total_records
-      );
-    }
-    _peerReviewIncrementalState.sumsByFirstName.set(firstName, (_peerReviewIncrementalState.sumsByFirstName.get(firstName) || 0) + newValue);
-    _peerReviewIncrementalState.rowState.set(row.id, { firstName, total_records: newValue });
-
-    if (row.updated_at > _peerReviewIncrementalState.watermark) {
-      _peerReviewIncrementalState.watermark = row.updated_at;
-    }
+    const n = Number(row.total_records) || 0;
+    sums.set(firstName, (sums.get(firstName) || 0) + n);
   });
-
-  return _peerReviewIncrementalState.sumsByFirstName;
+  return sums;
 }
 
 async function syncPriolistPeerReviewFromReviewBatches() {
@@ -2770,8 +2669,8 @@ let _reviewBatchesChannel = null;
 function startReviewBatchesRealtimeSync() {
   if (_reviewBatchesChannel || !sbQaReview) return;
   try {
-    const debouncedPriolistSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 1000);
-    const debouncedIpsSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 1000);
+    const debouncedPriolistSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 3000);
+    const debouncedIpsSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 3000);
     _reviewBatchesChannel = sbQaReview
       .channel('rt:review_batches_shared')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => {
