@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-revert-incremental-sync';
+const APP_VERSION = '2026-09-04-safe-shared-fetch';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2485,8 +2485,7 @@ async function computeMdOutputCountsSinceBoundary() {
   return counts;
 }
 
-async function syncPriolistMdOutputFromClaimRecords() {
-  const counts = await computeMdOutputCountsSinceBoundary();
+async function syncPriolistMdOutputFromClaimRecords(counts) {
   if (!counts) return;
 
   const updates = [];
@@ -2532,20 +2531,37 @@ let _completionLogChannel = null;
 function startCompletionLogRealtimeSync() {
   if (_completionLogChannel || !sbQaReview) return; // already subscribed, or second project not configured
   try {
-    const debouncedPriolistSync = debounceRealtime(syncPriolistMdOutputFromClaimRecords, 3000);
-    const debouncedIpsSync = debounceRealtime(syncMdTaskFromClaimRecords, 3000);
+    // ONE shared debounce, not two — fetches completion_log data ONCE
+    // per triggered event and hands the SAME result to both consumers,
+    // instead of each independently re-querying for the same
+    // information. This is deliberately NOT the same thing as the
+    // incremental (watermark) design that was reverted above — there's
+    // no state carried between different trigger events here, no
+    // "since last time" tracking, nothing that can drift over time.
+    // Every single trigger still does one full, complete,
+    // fresh-from-scratch fetch — the only change is doing that fetch
+    // once instead of twice for the same event.
+    const debouncedSync = debounceRealtime(async () => {
+      const counts = await computeMdOutputCountsSinceBoundary();
+      if (!counts) return;
+      await syncPriolistMdOutputFromClaimRecords(counts);
+      await syncMdTaskFromClaimRecords(counts);
+    }, 3000);
     _completionLogChannel = sbQaReview
       .channel('rt:completion_log_shared')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'completion_log' }, () => {
-        debouncedPriolistSync();
-        debouncedIpsSync();
+        debouncedSync();
       })
       .subscribe();
-    // Run both once immediately, so whichever section is actually open
+    // Run once immediately, so whichever section is actually open
     // right now shows the correct number without waiting for the next
     // live change — same behavior as before, just from one connection.
-    syncPriolistMdOutputFromClaimRecords();
-    syncMdTaskFromClaimRecords();
+    (async () => {
+      const counts = await computeMdOutputCountsSinceBoundary();
+      if (!counts) return;
+      await syncPriolistMdOutputFromClaimRecords(counts);
+      await syncMdTaskFromClaimRecords(counts);
+    })();
   } catch (err) {
     console.error('completion_log realtime subscribe failed:', err);
   }
@@ -2637,8 +2653,7 @@ async function computePeerReviewSumsSinceBoundary() {
   return sums;
 }
 
-async function syncPriolistPeerReviewFromReviewBatches() {
-  const sums = await computePeerReviewSumsSinceBoundary();
+async function syncPriolistPeerReviewFromReviewBatches(sums) {
   if (!sums) return;
 
   const updates = [];
@@ -2669,17 +2684,27 @@ let _reviewBatchesChannel = null;
 function startReviewBatchesRealtimeSync() {
   if (_reviewBatchesChannel || !sbQaReview) return;
   try {
-    const debouncedPriolistSync = debounceRealtime(syncPriolistPeerReviewFromReviewBatches, 3000);
-    const debouncedIpsSync = debounceRealtime(syncIpsPeerReviewFromReviewBatches, 3000);
+    // ONE shared debounce — same reasoning as completion_log's
+    // identical restructure above. No cross-time state, every trigger
+    // still does a full fresh fetch, just once instead of twice.
+    const debouncedSync = debounceRealtime(async () => {
+      const sums = await computePeerReviewSumsSinceBoundary();
+      if (!sums) return;
+      await syncPriolistPeerReviewFromReviewBatches(sums);
+      await syncIpsPeerReviewFromReviewBatches(sums);
+    }, 3000);
     _reviewBatchesChannel = sbQaReview
       .channel('rt:review_batches_shared')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'review_batches' }, () => {
-        debouncedPriolistSync();
-        debouncedIpsSync();
+        debouncedSync();
       })
       .subscribe();
-    syncPriolistPeerReviewFromReviewBatches();
-    syncIpsPeerReviewFromReviewBatches();
+    (async () => {
+      const sums = await computePeerReviewSumsSinceBoundary();
+      if (!sums) return;
+      await syncPriolistPeerReviewFromReviewBatches(sums);
+      await syncIpsPeerReviewFromReviewBatches(sums);
+    })();
   } catch (err) {
     console.error('review_batches realtime subscribe failed:', err);
   }
@@ -12207,8 +12232,8 @@ function workDayForTimestamp(isoTimestamp) {
   return boundaryPh.toISOString().slice(0, 10);
 }
 
-async function syncMdTaskFromClaimRecords() {
-  if (!sbQaReview) return;
+async function syncMdTaskFromClaimRecords(counts) {
+  if (!sbQaReview || !counts) return;
 
   try {
     // Mirrors PrioList's OWN trusted MD Output query exactly — same
@@ -12219,8 +12244,6 @@ async function syncMdTaskFromClaimRecords() {
     // by this function at all, so once a day's number is saved it
     // stays exactly as it is, permanently, unless someone with
     // permission (Jeinna) manually edits it.
-    const counts = await computeMdOutputCountsSinceBoundary();
-    if (!counts) return;
 
     const todayWorkDay = currentPriolistResetBoundary(); // the SAME boundary date PrioList itself is currently using
 
@@ -12304,16 +12327,14 @@ function stopIpsMdTaskRealtimeSync() {
 // does not. Sums total_records (not counting rows) per employee per
 // date, since multiple review_batches rows for the same person on the
 // same day should have their totals added together.
-async function syncIpsPeerReviewFromReviewBatches() {
-  if (!sbQaReview) return;
+async function syncIpsPeerReviewFromReviewBatches(sums) {
+  if (!sbQaReview || !sums) return;
 
   try {
     // Mirrors PrioList's OWN trusted Peer Review calculation exactly —
     // same boundary, same query. Only ever computes and writes TODAY's
     // total; past dates are never touched or recomputed by this
     // function, so a saved historical value stays exactly as it is.
-    const sums = await computePeerReviewSumsSinceBoundary();
-    if (!sums) return;
 
     const todayWorkDay = currentPriolistResetBoundary();
 
