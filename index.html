@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-safe-shared-fetch';
+const APP_VERSION = '2026-09-04-md-peer-review-locked';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -13029,17 +13029,11 @@ function renderIpsTables() {
         const cellPad = `padding:4px ${rightPad}px 4px ${leftPad}px;`;
         const cellPadLocked = `padding:8px ${rightPad}px 8px ${leftPad}px;`;
         // MD Task and Peer Review are both auto-populated from the
-        // external QA-review project going forward and are no longer
-        // manually editable by regular employees — OR by admins/IPS in
-        // general, EXCEPT Peer Review, which any admin can now correct
-        // too (not just Jeinna) — MD Task stays Jeinna-only. Everyone
-        // else always sees a plain read-only value here regardless of
-        // what directEdit/needsRequest would otherwise allow, since
-        // there's nothing left for them to correct or request a change to.
-        if (field === 'md_value' && !canEditAutoSyncedIpsFields()) {
-          return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
-        }
-        if (field === 'peer_review_value' && !canEditAutoSyncedIpsFields() && !isAdmin()) {
+        // external QA-review project and are now completely
+        // uneditable, for everyone — no exceptions, not even Jeinna
+        // (MD Task) or admins (Peer Review), who previously had
+        // manual-correction access. Always a plain read-only value.
+        if (field === 'md_value' || field === 'peer_review_value') {
           return `<td style="${cellPadLocked} text-align:center; color:var(--ink-soft);" title="Auto-filled — not manually editable">${val !== '' ? val : '—'}</td>`;
         }
         // Errors is editable AT ANY TIME — future, today, or any past
@@ -14310,13 +14304,8 @@ async function saveIpsDailyEntry(input) {
 
   if (!canEditIpsRow(employeeId)) { showToast('You can only edit your own entries.', true); renderIpsTables(); return; }
   if (!ipsConfirmIfEditingOthers(employeeId)) { renderIpsTables(); return; }
-  if (field === 'md_value' && !canEditAutoSyncedIpsFields()) {
-    showToast('This field is auto-filled and can only be corrected by Jeinna.', true);
-    renderIpsTables();
-    return;
-  }
-  if (field === 'peer_review_value' && !canEditAutoSyncedIpsFields() && !isAdmin()) {
-    showToast('This field is auto-filled and can only be corrected by an admin.', true);
+  if (field === 'md_value' || field === 'peer_review_value') {
+    showToast('This field is auto-filled and is no longer manually editable.', true);
     renderIpsTables();
     return;
   }
