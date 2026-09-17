@@ -705,7 +705,7 @@
         <div>
           <span class="eyebrow">PH Team</span>
           <h1 style="display:flex; align-items:center; gap:6px;">PrioList <span id="priolist-eye"></span></h1>
-          <p class="lede">Daily output priority list — resets every day at 8 AM.</p>
+          <p class="lede">Daily output priority list — resets every day at 7 AM.</p>
         </div>
         <div id="priolist-actions"></div>
       </div>
@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-md-peer-review-locked';
+const APP_VERSION = '2026-09-04-cleanup-stale-8am-refs';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2369,9 +2369,6 @@ async function loadPriolistEntries(fullReload = true) {
   await applyDailyPriolistReset();
 }
 
-// Returns the ISO date string of the most recent 8 AM boundary that has
-// already passed. Before 8 AM, that's yesterday's date; from 8 AM onward,
-// it's today's date. A row resets once per boundary crossed.
 // Returns today's 7am PHT boundary date, as 'YYYY-MM-DD' — explicitly
 // computed in Philippine time (via PH_UTC_OFFSET_MINUTES), NOT the
 // viewer's own browser/device timezone. Using new Date().setHours()
@@ -2395,7 +2392,7 @@ function currentPriolistResetBoundary() {
 // Unlike IPS's MD Task (a per-date historical figure), PrioList shows
 // ONE live number per employee for the current reset period — so this
 // counts only completion_log rows completed since the CURRENT reset
-// boundary (the same 8am cutoff PrioList's own daily reset already
+// boundary (the same 7am cutoff PrioList's own daily reset already
 // uses, via currentPriolistResetBoundary — using a different boundary
 // here would make this number drift out of sync with when the rest of
 // the row resets). Fully locked for everyone including admins, so
@@ -2490,13 +2487,31 @@ async function syncPriolistMdOutputFromClaimRecords(counts) {
 
   const updates = [];
   const unmatchedNames = new Set();
+  // Track every employee genuinely matched in the FRESH counts, so
+  // every OTHER employee (zero completion_log activity since the
+  // boundary) gets explicitly reset to 0 below — this loop alone was
+  // the actual root cause of PrioList's MD Output never resetting at
+  // the day boundary: it only ever touched employees who appeared in
+  // counts, never the ones who dropped out of it entirely.
+  const matchedEmployeeIds = new Set();
   counts.forEach((count, firstNameLower) => {
     const emp = findEmployeeByFirstName(firstNameLower);
     if (!emp) { unmatchedNames.add(firstNameLower); return; }
+    matchedEmployeeIds.add(emp.id);
     const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
     if (!entry) return; // no PrioList row for this employee yet — self-heal in loadPriolistEntries will create one on next full load
     if (entry.md_output === count) return; // no genuine change — skip the write entirely
     updates.push({ id: entry.id, md_output: count });
+  });
+
+  // Reset everyone else back to 0 — anyone with a PrioList row whose
+  // employee wasn't matched above genuinely has zero completion_log
+  // activity since the boundary, and should correctly show 0, not
+  // whatever number was last written on a previous day.
+  state.priolistEntries.forEach(entry => {
+    if (matchedEmployeeIds.has(entry.employee_id)) return;
+    if (entry.md_output === 0 || entry.md_output == null) return; // already correctly at 0 — no write needed
+    updates.push({ id: entry.id, md_output: 0 });
   });
 
   if (unmatchedNames.size) {
@@ -2587,7 +2602,7 @@ function stopPriolistMdOutputRealtimeSync() {
 }
 
 // ── PrioList Peer Review real-time sync from review_batches ───────────
-// Same 8am reset window as MD Output (resets daily alongside the rest
+// Same 7am reset window as MD Output (resets daily alongside the rest
 // of the row), but SUMS total_records across every matching row for a
 // given employee, rather than counting rows — confirmed explicitly:
 // if Katrena appears twice with total_records 100 and 50, her Peer
@@ -2658,13 +2673,24 @@ async function syncPriolistPeerReviewFromReviewBatches(sums) {
 
   const updates = [];
   const unmatchedNames = new Set();
+  // Same fix and reasoning as MD Output's identical change above.
+  const matchedEmployeeIds = new Set();
   sums.forEach((total, firstNameLower) => {
     const emp = findEmployeeByFirstName(firstNameLower);
     if (!emp) { unmatchedNames.add(firstNameLower); return; }
+    matchedEmployeeIds.add(emp.id);
     const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
     if (!entry) return;
     if (entry.peer_review === total) return; // no genuine change — skip the write entirely
     updates.push({ id: entry.id, peer_review: total });
+  });
+
+  // Reset everyone else back to 0 — see the identical reasoning in
+  // syncPriolistMdOutputFromClaimRecords above.
+  state.priolistEntries.forEach(entry => {
+    if (matchedEmployeeIds.has(entry.employee_id)) return;
+    if (entry.peer_review === 0 || entry.peer_review == null) return;
+    updates.push({ id: entry.id, peer_review: 0 });
   });
 
   if (unmatchedNames.size) {
@@ -12323,7 +12349,7 @@ function stopIpsMdTaskRealtimeSync() {
 // ── Peer Review auto-sync from review_batches (IPS Daily Entry) ───────
 // Same per-date, Aug-5-onward historical tracking as MD Task — NOT a
 // daily-resetting figure like PrioList's version of Peer Review.
-// Confirmed explicitly: PrioList's Peer Review resets at 8am, IPS's
+// Confirmed explicitly: PrioList's Peer Review resets at 7am, IPS's
 // does not. Sums total_records (not counting rows) per employee per
 // date, since multiple review_batches rows for the same person on the
 // same day should have their totals added together.
