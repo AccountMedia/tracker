@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-04-cleanup-stale-8am-refs';
+const APP_VERSION = '2026-09-18-fix-before-capture-race';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -5573,24 +5573,21 @@ async function decideRequest(id, decision) {
       ? ` Type changed from ${LEAVE_TYPES[typeChangeFrom] ? LEAVE_TYPES[typeChangeFrom].label : typeChangeFrom} to ${LEAVE_TYPES[entry.leave_type] ? LEAVE_TYPES[entry.leave_type].label : entry.leave_type}.`
       : '';
 
-    const approvalFields = { status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString(), pending_type_change_from: null };
-    let query = sb.from('leave_entries').update(approvalFields);
-    let { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
-    if (error) {
-      // If add_pending_type_change_from_column.sql hasn't been run yet,
-      // this specific field would make EVERY approval fail, not just
-      // type-change ones — retry once without it rather than blocking
-      // approvals entirely over one missing optional column.
-      console.error('Approval update failed, retrying without pending_type_change_from:', error);
-      delete approvalFields.pending_type_change_from;
-      query = sb.from('leave_entries').update(approvalFields);
-      ({ error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id));
-    }
-    if (error) { showToast('Could not update the request.', true); return; }
-
-    // Capture BEFORE: DB write succeeded but local state still has
-    // the entry as 'pending' (excluded from balance) — this is exactly
-    // what the Credits section was showing before approval.
+    // Capture BEFORE the approval write happens at all — not after.
+    // This used to run right after the DB write succeeded, relying on
+    // local state still showing 'pending' at that exact moment. But
+    // this app also has a realtime subscription on leave_entries that
+    // patches local state the instant ANY change lands in the
+    // database — including this exact write, echoing straight back to
+    // the same browser that made it. If that echo arrived even
+    // slightly before the old capture point ran, the entry would
+    // already show as approved by the time "before" was measured,
+    // making before and after identical even though a real change had
+    // happened (confirmed real case: a standalone ELH approval showed
+    // no "previously" figures at all, despite the balance genuinely
+    // changing). Capturing here, before the write even starts, removes
+    // the race entirely — there's no window left for anything to
+    // interfere, since nothing has changed in the database yet.
     const empForNotif = notifEmployeeId ? state.employees.find(e => e.id === notifEmployeeId) : null;
     let vlBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'vl', fyNum)) : null;
     let slBefore = empForNotif && fyNum ? round2(fiscalPoolBalance(empForNotif, 'sl', fyNum)) : null;
@@ -5612,6 +5609,22 @@ async function decideRequest(id, decision) {
       if (oldPool === 'vl' && vlBefore !== null) vlBefore = round2(vlBefore - oldFraction);
       if (oldPool === 'sl' && slBefore !== null) slBefore = round2(slBefore - oldFraction);
     }
+
+    const approvalFields = { status: decision, approved_by: state.profile.display_name, decided_at: new Date().toISOString(), pending_type_change_from: null };
+    let query = sb.from('leave_entries').update(approvalFields);
+    let { error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id);
+    if (error) {
+      // If add_pending_type_change_from_column.sql hasn't been run yet,
+      // this specific field would make EVERY approval fail, not just
+      // type-change ones — retry once without it rather than blocking
+      // approvals entirely over one missing optional column.
+      console.error('Approval update failed, retrying without pending_type_change_from:', error);
+      delete approvalFields.pending_type_change_from;
+      query = sb.from('leave_entries').update(approvalFields);
+      ({ error } = groupId ? await query.eq('request_group_id', groupId) : await query.eq('id', id));
+    }
+    if (error) { showToast('Could not update the request.', true); return; }
+
     // Dates of the approved leave, for the notification text
     const notifDates = (groupId
       ? state.leaveEntries.filter(e => e.request_group_id === groupId)
@@ -5685,6 +5698,12 @@ async function decideRequest(id, decision) {
           const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
+          if (!changed) {
+            console.log('Approval notification computed NO CHANGE (LWOP-conversion branch) — diagnostic dump:', {
+              employee: freshEmp.display_name, leaveType: entry.leave_type, hours: entry.hours,
+              groupId, fyNum, vlBefore, slBefore, vlAfter, slAfter,
+            });
+          }
           const dateBit = notifDateLabel ? ` (${notifDateLabel})` : '';
           const notifText = (changed
             ? `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
@@ -5711,6 +5730,17 @@ async function decideRequest(id, decision) {
           const slAfter = round2(fiscalPoolBalance(freshEmp, 'sl', fyNum));
           const firstName = freshEmp.display_name.split(' ')[0];
           const changed = vlAfter !== vlBefore || slAfter !== slBefore;
+          if (!changed) {
+            // Diagnostic only — if this fires for an entry that should
+            // genuinely have changed the balance (not LNP), the exact
+            // numbers here will show whether vlBefore/slBefore were
+            // captured wrong, or whether something else already applied
+            // this same change before this notification was built.
+            console.log('Approval notification computed NO CHANGE (simple-approval branch) — diagnostic dump:', {
+              employee: freshEmp.display_name, leaveType: entry.leave_type, hours: entry.hours,
+              groupId, fyNum, vlBefore, slBefore, vlAfter, slAfter,
+            });
+          }
           const dateBit = notifDateLabel ? ` (${notifDateLabel})` : '';
           const notifText = (changed
             ? `${firstName}'s leave${dateBit} has been approved. Leave credits are now VL ${vlAfter}, SL ${slAfter} (previously VL ${vlBefore}, SL ${slBefore}).`
