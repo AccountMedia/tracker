@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-24-fix-null-timestamp-exclusion';
+const APP_VERSION = '2026-09-24-fix-refresh-zeroing-bug';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2487,31 +2487,25 @@ async function syncPriolistMdOutputFromClaimRecords(counts) {
 
   const updates = [];
   const unmatchedNames = new Set();
-  // Track every employee genuinely matched in the FRESH counts, so
-  // every OTHER employee (zero completion_log activity since the
-  // boundary) gets explicitly reset to 0 below — this loop alone was
-  // the actual root cause of PrioList's MD Output never resetting at
-  // the day boundary: it only ever touched employees who appeared in
-  // counts, never the ones who dropped out of it entirely.
-  const matchedEmployeeIds = new Set();
+  // Only ever ADDS/UPDATES employees with genuine fresh activity —
+  // deliberately does NOT reset anyone to 0 here. That's already
+  // handled safely by applyDailyPriolistReset, which resets everyone
+  // based on the actual date boundary (last_reset_date vs today) on
+  // every page load — a reliable, date-based check, not dependent on
+  // this live query's result. Doing the reset here too was a real
+  // bug: if this query happened to return incomplete or empty results
+  // during a brief window right after page load (a timing/auth race,
+  // not a genuine new day), it would incorrectly wipe out everyone's
+  // already-correct numbers — confirmed real case: a regular refresh
+  // briefly zeroed out MD Task/Peer Review for everyone, requiring a
+  // hard refresh to recover.
   counts.forEach((count, firstNameLower) => {
     const emp = findEmployeeByFirstName(firstNameLower);
     if (!emp) { unmatchedNames.add(firstNameLower); return; }
-    matchedEmployeeIds.add(emp.id);
     const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
     if (!entry) return; // no PrioList row for this employee yet — self-heal in loadPriolistEntries will create one on next full load
     if (entry.md_output === count) return; // no genuine change — skip the write entirely
     updates.push({ id: entry.id, md_output: count });
-  });
-
-  // Reset everyone else back to 0 — anyone with a PrioList row whose
-  // employee wasn't matched above genuinely has zero completion_log
-  // activity since the boundary, and should correctly show 0, not
-  // whatever number was last written on a previous day.
-  state.priolistEntries.forEach(entry => {
-    if (matchedEmployeeIds.has(entry.employee_id)) return;
-    if (entry.md_output === 0 || entry.md_output == null) return; // already correctly at 0 — no write needed
-    updates.push({ id: entry.id, md_output: 0 });
   });
 
   if (unmatchedNames.size) {
@@ -2683,24 +2677,16 @@ async function syncPriolistPeerReviewFromReviewBatches(sums) {
 
   const updates = [];
   const unmatchedNames = new Set();
-  // Same fix and reasoning as MD Output's identical change above.
-  const matchedEmployeeIds = new Set();
+  // Same fix and reasoning as MD Output's identical change above —
+  // never resets anyone to 0 here; that's applyDailyPriolistReset's
+  // job, based on the real date boundary, not this live query.
   sums.forEach((total, firstNameLower) => {
     const emp = findEmployeeByFirstName(firstNameLower);
     if (!emp) { unmatchedNames.add(firstNameLower); return; }
-    matchedEmployeeIds.add(emp.id);
     const entry = state.priolistEntries.find(e => e.employee_id === emp.id);
     if (!entry) return;
     if (entry.peer_review === total) return; // no genuine change — skip the write entirely
     updates.push({ id: entry.id, peer_review: total });
-  });
-
-  // Reset everyone else back to 0 — see the identical reasoning in
-  // syncPriolistMdOutputFromClaimRecords above.
-  state.priolistEntries.forEach(entry => {
-    if (matchedEmployeeIds.has(entry.employee_id)) return;
-    if (entry.peer_review === 0 || entry.peer_review == null) return;
-    updates.push({ id: entry.id, peer_review: 0 });
   });
 
   if (unmatchedNames.size) {
