@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-18-fix-before-capture-race';
+const APP_VERSION = '2026-09-24-fix-null-timestamp-exclusion';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2621,11 +2621,21 @@ async function computePeerReviewSumsSinceBoundary() {
 
   // Paginated fetch — see the identical, confirmed fix and reasoning in
   // computeMdOutputCountsSinceBoundary above.
+  //
+  // Includes rows with a NULL updated_at, not just ones on/after the
+  // boundary — confirmed real case: a genuine review_batches row for
+  // today had updated_at = null, and .gte() alone silently excludes
+  // any row where the compared column is null (a SQL null comparison
+  // is never true), permanently hiding that row from every sync
+  // regardless of when it was actually created. A null timestamp is
+  // treated as "definitely counts" rather than "exclude it" — a
+  // freshly-created row with no explicit update time yet is a signal
+  // of being current, not stale.
   const PAGE_SIZE = 1000;
   const { data: firstPage, count: totalCount, error: firstErr } = await sbQaReview
     .from('review_batches')
     .select('claimed_by, total_records, updated_at', { count: 'exact' })
-    .gte('updated_at', boundaryTimestamp.toISOString())
+    .or(`updated_at.gte.${boundaryTimestamp.toISOString()},updated_at.is.null`)
     .not('claimed_by', 'is', null)
     .range(0, PAGE_SIZE - 1);
 
@@ -2644,7 +2654,7 @@ async function computePeerReviewSumsSinceBoundary() {
         const start = p * PAGE_SIZE;
         pagePromises.push(
           sbQaReview.from('review_batches').select('claimed_by, total_records, updated_at')
-            .gte('updated_at', boundaryTimestamp.toISOString())
+            .or(`updated_at.gte.${boundaryTimestamp.toISOString()},updated_at.is.null`)
             .not('claimed_by', 'is', null)
             .range(start, start + PAGE_SIZE - 1)
         );
