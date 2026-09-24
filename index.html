@@ -1878,7 +1878,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-24-fix-refresh-zeroing-bug';
+const APP_VERSION = '2026-09-24-yesterday-catchup-fix';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -12350,6 +12350,10 @@ async function syncMdTaskFromClaimRecords(counts) {
     const { error: upsertErr } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
     if (upsertErr) { console.error('MD Task sync upsert failed:', upsertErr); return; }
 
+    // Yesterday catch-up — same fix and reasoning as Peer Review's
+    // identical mechanism above, applied here for consistency.
+    await catchUpYesterdayMdTask(todayWorkDay);
+
     // Refresh in-memory state and repaint so the new counts show up
     // immediately without needing a manual page refresh.
     await loadIpsData();
@@ -12357,6 +12361,64 @@ async function syncMdTaskFromClaimRecords(counts) {
   } catch (err) {
     console.error('MD Task sync error:', err);
   }
+}
+
+async function catchUpYesterdayMdTask(todayWorkDay) {
+  const [ty, tm, td] = todayWorkDay.split('-').map(Number);
+  const todayBoundaryTimestamp = new Date(Date.UTC(ty, tm - 1, td, 7, 0, 0));
+  todayBoundaryTimestamp.setUTCMinutes(todayBoundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
+  const yesterdayBoundaryTimestamp = new Date(todayBoundaryTimestamp.getTime() - 24 * 60 * 60 * 1000);
+  const yesterdayDateObj = new Date(Date.UTC(ty, tm - 1, td));
+  yesterdayDateObj.setUTCDate(yesterdayDateObj.getUTCDate() - 1);
+  const yesterdayWorkDay = yesterdayDateObj.toISOString().slice(0, 10);
+
+  // Bounded on both ends, same reasoning as Peer Review's version.
+  // completion_log rows are immutable once inserted, so unlike Peer
+  // Review there's no risk of a row's own timestamp changing after
+  // the fact — a row counted here for yesterday will never need
+  // re-counting again later.
+  const { data, error } = await sbQaReview
+    .from('completion_log')
+    .select('agent_name')
+    .gte('completed_at', yesterdayBoundaryTimestamp.toISOString())
+    .lt('completed_at', todayBoundaryTimestamp.toISOString())
+    .not('agent_name', 'is', null);
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('MD Task yesterday catch-up query failed:', error);
+    return;
+  }
+
+  const counts = new Map();
+  (data || []).forEach(row => {
+    const rawFirstName = (row.agent_name || '').trim().split(/\s+/)[0];
+    if (!rawFirstName) return;
+    const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
+    counts.set(firstName, (counts.get(firstName) || 0) + 1);
+  });
+  if (!counts.size) return;
+
+  const employeeIds = [...new Set([...counts.keys()].map(firstNameLower => {
+    const emp = findEmployeeByFirstName(firstNameLower);
+    return emp ? emp.id : null;
+  }).filter(Boolean))];
+  if (!employeeIds.length) return;
+
+  const { data: currentRows, error: currentErr } = await sb.from('ips_daily_entries').select('employee_id, md_value').eq('entry_date', yesterdayWorkDay).in('employee_id', employeeIds);
+  if (currentErr) { console.error('MD Task yesterday catch-up: could not verify current values:', currentErr); return; }
+  const currentByEmployeeId = new Map((currentRows || []).map(r => [r.employee_id, r.md_value]));
+
+  const updates = [];
+  counts.forEach((count, firstNameLower) => {
+    const emp = findEmployeeByFirstName(firstNameLower);
+    if (!emp) return;
+    const existingValue = currentByEmployeeId.has(emp.id) ? currentByEmployeeId.get(emp.id) : null;
+    if (existingValue != null && count <= existingValue) return; // already at or above this — never decrease, never write a no-op
+    updates.push({ employee_id: emp.id, entry_date: yesterdayWorkDay, md_value: count, updated_by: 'completion_log sync (yesterday catch-up)', updated_at: new Date().toISOString() });
+  });
+  if (!updates.length) return;
+
+  const { error: upsertErr2 } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
+  if (upsertErr2) console.error('MD Task yesterday catch-up upsert failed:', upsertErr2);
 }
 
 // Genuinely real-time: subscribes directly to completion_log in the
@@ -12431,16 +12493,96 @@ async function syncIpsPeerReviewFromReviewBatches(sums) {
     if (unmatchedNames.size) {
       console.warn('IPS Peer Review sync: could not match these claimed_by first names to any employee:', [...unmatchedNames].join(', '));
     }
-    if (!updates.length) return;
+    if (updates.length) {
+      const { error: upsertErr } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
+      if (upsertErr) { console.error('IPS Peer Review sync upsert failed:', upsertErr); return; }
+    }
 
-    const { error: upsertErr } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
-    if (upsertErr) { console.error('IPS Peer Review sync upsert failed:', upsertErr); return; }
+    // Yesterday catch-up — confirmed real case: a submission at 6:41
+    // AM PHT (19 minutes before the 7am boundary) never got counted
+    // for its correct day, because nobody had PrioList/IPS open
+    // during that exact narrow window to trigger a sync while it
+    // still belonged to yesterday. By the time anyone next opened
+    // either screen, "today" had already rolled over past it, and the
+    // main sync above only ever looks forward from the CURRENT
+    // boundary — never backward. This fills that specific gap: checks
+    // yesterday's bounded window (a fixed, closed range, not an
+    // open-ended "since" query, so it can never double-count anything
+    // today's sync already claimed) and only ever fills in a blank or
+    // INCREASES an existing value — mirrors the same
+    // never-decrease safeguard as today's sync above, so an
+    // already-correct or already-higher stored value is never
+    // clobbered by a late or partial catch-up run.
+    await catchUpYesterdayPeerReview(todayWorkDay);
 
     await loadIpsData();
     renderIpsTables();
   } catch (err) {
     console.error('IPS Peer Review sync error:', err);
   }
+}
+
+async function catchUpYesterdayPeerReview(todayWorkDay) {
+  const [ty, tm, td] = todayWorkDay.split('-').map(Number);
+  const todayBoundaryTimestamp = new Date(Date.UTC(ty, tm - 1, td, 7, 0, 0));
+  todayBoundaryTimestamp.setUTCMinutes(todayBoundaryTimestamp.getUTCMinutes() - PH_UTC_OFFSET_MINUTES);
+  const yesterdayBoundaryTimestamp = new Date(todayBoundaryTimestamp.getTime() - 24 * 60 * 60 * 1000);
+  // currentPriolistResetBoundary() takes no parameters (always reads
+  // the REAL current time) — yesterday's date string is computed
+  // directly from todayWorkDay instead, by subtracting one calendar
+  // day from the already-known boundary date.
+  const yesterdayDateObj = new Date(Date.UTC(ty, tm - 1, td));
+  yesterdayDateObj.setUTCDate(yesterdayDateObj.getUTCDate() - 1);
+  const yesterdayWorkDay = yesterdayDateObj.toISOString().slice(0, 10);
+
+  // Bounded on BOTH ends — [yesterday's boundary, today's boundary) —
+  // unlike the open-ended "since boundary" queries used elsewhere.
+  // Deliberately excludes null-updated_at rows here: those are already
+  // safely claimed by today's own sync (see the null-inclusive .or()
+  // fix in computePeerReviewSumsSinceBoundary), so including them here
+  // too would risk double-counting the same row across both days.
+  const { data, error } = await sbQaReview
+    .from('review_batches')
+    .select('claimed_by, total_records')
+    .gte('updated_at', yesterdayBoundaryTimestamp.toISOString())
+    .lt('updated_at', todayBoundaryTimestamp.toISOString())
+    .not('claimed_by', 'is', null);
+  if (error) {
+    if (!/relation .* does not exist/i.test(error.message || '')) console.error('Peer Review yesterday catch-up query failed:', error);
+    return;
+  }
+
+  const sums = new Map();
+  (data || []).forEach(row => {
+    const rawFirstName = (row.claimed_by || '').trim().split(/\s+/)[0];
+    if (!rawFirstName) return;
+    const firstName = (MD_TASK_NAME_ALIASES[rawFirstName.toLowerCase()] || rawFirstName).toLowerCase();
+    sums.set(firstName, (sums.get(firstName) || 0) + (Number(row.total_records) || 0));
+  });
+  if (!sums.size) return;
+
+  const employeeIds = [...new Set([...sums.keys()].map(firstNameLower => {
+    const emp = findEmployeeByFirstName(firstNameLower);
+    return emp ? emp.id : null;
+  }).filter(Boolean))];
+  if (!employeeIds.length) return;
+
+  const { data: currentRows, error: currentErr } = await sb.from('ips_daily_entries').select('employee_id, peer_review_value').eq('entry_date', yesterdayWorkDay).in('employee_id', employeeIds);
+  if (currentErr) { console.error('Peer Review yesterday catch-up: could not verify current values:', currentErr); return; }
+  const currentByEmployeeId = new Map((currentRows || []).map(r => [r.employee_id, r.peer_review_value]));
+
+  const updates = [];
+  sums.forEach((total, firstNameLower) => {
+    const emp = findEmployeeByFirstName(firstNameLower);
+    if (!emp) return;
+    const existingValue = currentByEmployeeId.has(emp.id) ? currentByEmployeeId.get(emp.id) : null;
+    if (existingValue != null && total <= existingValue) return; // already at or above this — never decrease, never write a no-op
+    updates.push({ employee_id: emp.id, entry_date: yesterdayWorkDay, peer_review_value: total, updated_by: 'review_batches sync (yesterday catch-up)', updated_at: new Date().toISOString() });
+  });
+  if (!updates.length) return;
+
+  const { error: upsertErr } = await sb.from('ips_daily_entries').upsert(updates, { onConflict: 'employee_id,entry_date' });
+  if (upsertErr) console.error('Peer Review yesterday catch-up upsert failed:', upsertErr);
 }
 
 function startIpsPeerReviewRealtimeSync() {
