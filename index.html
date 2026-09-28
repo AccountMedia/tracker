@@ -1896,7 +1896,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-29-priolist-timer-icon';
+const APP_VERSION = '2026-09-29-priolist-log-diagnostics';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6658,7 +6658,11 @@ async function savePriolistField(entryId, field, value) {
 async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
   const updates = {};
   updates[field] = value;
-  const { error } = await sb.from('priolist_entries').update(updates).eq('id', entryId);
+  // .select() pulls the row back from the DB directly (not local state),
+  // so the status-log insert below always has a real, fresh employee_id
+  // to attach to — it doesn't depend on state.priolistEntries already
+  // containing this entry, or on it being found by the time this runs.
+  const { data: savedRows, error } = await sb.from('priolist_entries').update(updates).eq('id', entryId).select('employee_id');
   if (error) { showToast('Could not save.', true); return; }
 
   // Every status change (including clearing it back to blank) gets its
@@ -6668,21 +6672,26 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
   // realtime subscription on this table (kept egress-free; it's only
   // ever read on-demand when an admin opens "see all timestamps").
   if (field === 'status') {
-    const changedEntry = state.priolistEntries.find(e => e.id === entryId);
-    if (changedEntry) {
+    const employeeIdForLog = savedRows && savedRows[0] && savedRows[0].employee_id;
+    if (employeeIdForLog) {
       sb.from('priolist_status_log').insert({
         entry_id: entryId,
-        employee_id: changedEntry.employee_id,
+        employee_id: employeeIdForLog,
         status: value,
         changed_by: state.profile.employee_id,
       }).then(({ error: logError }) => {
         if (logError) {
           console.warn('priolist_status_log insert failed:', logError);
-          if (isMissingTableError(logError)) {
-            showToast('Status saved, but timestamp logging isn\'t set up yet — run add_priolist_status_log_table.sql in Supabase.', true);
-          }
+          showToast(
+            isMissingTableError(logError)
+              ? 'Status saved, but timestamp logging isn\'t set up yet — run add_priolist_status_log_table.sql in Supabase.'
+              : `Status saved, but the timestamp log failed: ${logError.message || 'unknown error'}`,
+            true
+          );
         }
       });
+    } else {
+      console.warn('priolist_status_log insert skipped — update() returned no row for', entryId);
     }
   }
 
@@ -6721,8 +6730,9 @@ async function openPriolistTimestampsModal(entryId, empName) {
     .order('changed_at', { ascending: true });
 
   if (error) {
+    console.warn('priolist_status_log select failed:', error);
     openModal(`${empName} — Status Timestamps`,
-      `<p class="muted">Couldn't load timestamps${isMissingTableError(error) ? ' — the logging table hasn\'t been set up yet. Run add_priolist_status_log_table.sql in Supabase, then try again.' : '.'}</p>`,
+      `<p class="muted">Couldn't load timestamps${isMissingTableError(error) ? ' — the logging table hasn\'t been set up yet. Run add_priolist_status_log_table.sql in Supabase, then try again.' : `: ${escapeHtml(error.message || 'unknown error')}`}</p>`,
       { width: '520px' });
     return;
   }
