@@ -1640,11 +1640,28 @@ function updateLeaveNavBadge() {
       otFilingBadge.style.display = 'none';
     }
   }
+  // Keep the Leave Tracker page itself (pending list + its bell) fresh
+  // if it's the view currently on screen — this was previously missing,
+  // so a realtime notification landing while someone was ALREADY sitting
+  // on the Leave Tracker tab only ever updated the sidebar badge number;
+  // the tab's own content stayed stale until a manual refresh.
+  if (state.currentView === 'account-hub' && state.accountHubTab === 'leave-tracker' && !state.leaveNotifPanelOpen) {
+    renderPreservingScroll(['.pending-scroll', '.credit-scroll'], renderLeaveTracker);
+  }
   // Keep the Team Funds / OT Filing bell badges fresh if that view is on screen
   if (state.currentView === 'team-funds' && !state.leaveNotifPanelOpen) renderTfBell();
   if (state.currentView === 'ot-filing' && !state.leaveNotifPanelOpen) renderOtFilingBell();
   // Browser tab shows the combined total of all three admin-only streams
   updateBrowserTabBadge(count + tfCount + otFilingCount);
+  }
+  // If a notification bell dropdown is currently OPEN, its list was built
+  // once at open-time and never repainted since — a realtime notification
+  // landing while it's open would patch state invisibly, badge the bell
+  // again, but leave the visible panel itself showing the old list until
+  // closed and reopened (effectively requiring a refresh). Repaint it in
+  // place instead, same as the badge counts above.
+  if (state.leaveNotifPanelOpen && state.notifPanelKind) {
+    showNotifPanel(state.notifPanelKind);
   }
   // IPS sidebar badge — its own visibility rule (admin OR ips role),
   // handled independently of the admin-only block above so an IPS-role
@@ -1879,7 +1896,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-29-priolist-status-timestamps';
+const APP_VERSION = '2026-09-29-priolist-timer-icon';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6364,7 +6381,14 @@ function renderPrioList() {
           ${admin ? `
             <button type="button" class="priolist-timestamps-btn" data-id="${entry.id}" data-emp="${escapeHtml(emp.display_name)}"
               title="See all Break/Inactive timestamps for ${escapeHtml(emp.display_name)}"
-              style="flex-shrink:0; width:22px; height:22px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; font-family:inherit; font-size:13px; line-height:1; color:var(--ink-soft); display:flex; align-items:center; justify-content:center;">⋮</button>
+              style="flex-shrink:0; width:22px; height:22px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; color:var(--ink-soft); display:flex; align-items:center; justify-content:center;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="13" r="8"/>
+                <path d="M12 9v4l2.5 2.5"/>
+                <path d="M9 2h6"/>
+                <path d="M18.5 5.5l1-1"/>
+              </svg>
+            </button>
           ` : ''}
           <div class="status-filecolor-dropdown" style="position:relative; flex:1; min-width:0;">
             <button type="button" class="status-dropdown-trigger" data-id="${entry.id}"
@@ -6652,7 +6676,12 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
         status: value,
         changed_by: state.profile.employee_id,
       }).then(({ error: logError }) => {
-        if (logError) console.warn('priolist_status_log insert failed (table may not exist yet):', logError);
+        if (logError) {
+          console.warn('priolist_status_log insert failed:', logError);
+          if (isMissingTableError(logError)) {
+            showToast('Status saved, but timestamp logging isn\'t set up yet — run add_priolist_status_log_table.sql in Supabase.', true);
+          }
+        }
       });
     }
   }
@@ -6664,6 +6693,19 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
   state.priolistOpenMenuId = bothSet ? null : entryId;
 
   renderPrioList();
+}
+
+// True if a Supabase/PostgREST error is "this table doesn't exist" in
+// any of its several real-world shapes — a plain Postgres error
+// ("relation ... does not exist", code 42P01) or a PostgREST
+// schema-cache miss ("Could not find the table ... in the schema
+// cache"), which is what actually comes back most of the time right
+// after a table is created until PostgREST reloads its cache.
+function isMissingTableError(err) {
+  if (!err) return false;
+  if (err.code === '42P01' || err.code === 'PGRST205') return true;
+  const msg = (err.message || '') + ' ' + (err.hint || '') + ' ' + (err.details || '');
+  return /does not exist|could not find the table|schema cache/i.test(msg);
 }
 
 // "See all timestamps" — admin-only. Fetches this employee's full
@@ -6680,7 +6722,7 @@ async function openPriolistTimestampsModal(entryId, empName) {
 
   if (error) {
     openModal(`${empName} — Status Timestamps`,
-      `<p class="muted">Couldn't load timestamps${error.message && error.message.includes('does not exist') ? ' — the logging table hasn\'t been set up yet.' : '.'}</p>`,
+      `<p class="muted">Couldn't load timestamps${isMissingTableError(error) ? ' — the logging table hasn\'t been set up yet. Run add_priolist_status_log_table.sql in Supabase, then try again.' : '.'}</p>`,
       { width: '520px' });
     return;
   }
