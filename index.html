@@ -883,6 +883,7 @@ const state = {
   lqPlaybookVisible: false,  // live app-wide toggle (app_settings.lq_playbook_visible) — controlled by Jeinna; defaults FALSE (hidden from everyone else) until she explicitly turns it on, per explicit requirement — the opposite default from PrioList
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
+  priolistTimestampsEntryId: null, // entry id whose "see all timestamps" modal is currently loading/open (null = closed)
   priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
   redFiles: [],             // priolist_red_files rows
   liVerificationStatus: [], // LinkedIn verification status per employee
@@ -1878,7 +1879,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-24-yesterday-catchup-fix';
+const APP_VERSION = '2026-09-29-priolist-status-timestamps';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6279,6 +6280,8 @@ function renderPrioList() {
     return;
   }
 
+  const admin = isAdmin();
+
   const rows = state.priolistEntries.map(entry => {
     const emp = state.employees.find(e => e.id === entry.employee_id);
     return { entry, emp };
@@ -6357,23 +6360,30 @@ function renderPrioList() {
           ? `<input type="number" min="0" step="1" class="priolist-input leads-input" data-id="${entry.id}" value="${entry.leads}" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12.5px;">`
           : `<span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;">${entry.leads}</span>`}
         <span style="font-weight:600;">${total}</span>
-        <div class="status-filecolor-dropdown" style="position:relative;">
-          <button type="button" class="status-dropdown-trigger" data-id="${entry.id}"
-            style="display:flex; align-items:center; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:${triggerBg}; cursor:pointer; font-family:inherit; font-size:12px; color:${triggerTextColor}; font-weight:700;">
-            <span>${statusLabel}</span>
-            <span style="margin-left:auto; font-size:9px; opacity:0.8;">▾</span>
-          </button>
-          <div class="status-filecolor-menu" data-id="${entry.id}"
-            style="display:${menuIsOpen ? 'block' : 'none'}; position:absolute; top:100%; left:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:150px;">
-            <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 10px 4px;">1. Pick a file</div>
-            <div style="display:flex; gap:6px; padding:0 6px 8px;">
-              ${fileButton('blue')}${fileButton('yellow')}${fileButton('red')}${fileButton('none')}
+        <div style="display:flex; align-items:center; gap:4px;">
+          ${admin ? `
+            <button type="button" class="priolist-timestamps-btn" data-id="${entry.id}" data-emp="${escapeHtml(emp.display_name)}"
+              title="See all Break/Inactive timestamps for ${escapeHtml(emp.display_name)}"
+              style="flex-shrink:0; width:22px; height:22px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; font-family:inherit; font-size:13px; line-height:1; color:var(--ink-soft); display:flex; align-items:center; justify-content:center;">⋮</button>
+          ` : ''}
+          <div class="status-filecolor-dropdown" style="position:relative; flex:1; min-width:0;">
+            <button type="button" class="status-dropdown-trigger" data-id="${entry.id}"
+              style="display:flex; align-items:center; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:${triggerBg}; cursor:pointer; font-family:inherit; font-size:12px; color:${triggerTextColor}; font-weight:700;">
+              <span>${statusLabel}</span>
+              <span style="margin-left:auto; font-size:9px; opacity:0.8;">▾</span>
+            </button>
+            <div class="status-filecolor-menu" data-id="${entry.id}"
+              style="display:${menuIsOpen ? 'block' : 'none'}; position:absolute; top:100%; left:0; margin-top:4px; background:var(--paper-raised); border:1px solid var(--line); border-radius:8px; box-shadow:var(--shadow-md); padding:6px; z-index:25; min-width:150px;">
+              <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 10px 4px;">1. Pick a file</div>
+              <div style="display:flex; gap:6px; padding:0 6px 8px;">
+                ${fileButton('blue')}${fileButton('yellow')}${fileButton('red')}${fileButton('none')}
+              </div>
+              <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 10px 4px; border-top:1px solid var(--line-soft); padding-top:8px;">2. Pick a status${statusLocked ? ' (choose a file first)' : ''}</div>
+              ${statusOptionRow('', '—')}
+              ${statusOptionRow('Active', 'Active')}
+              ${statusOptionRow('Break', 'Break')}
+              ${statusOptionRow('Inactive', 'Inactive')}
             </div>
-            <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; padding:2px 10px 4px; border-top:1px solid var(--line-soft); padding-top:8px;">2. Pick a status${statusLocked ? ' (choose a file first)' : ''}</div>
-            ${statusOptionRow('', '—')}
-            ${statusOptionRow('Active', 'Active')}
-            ${statusOptionRow('Break', 'Break')}
-            ${statusOptionRow('Inactive', 'Inactive')}
           </div>
         </div>
         <input type="text" class="priolist-input note-input" data-id="${entry.id}" value="${escapeHtml(entry.note || '')}" placeholder="—" style="width:100%; padding:5px 7px; border-radius:6px; border:1px solid var(--line); font-family:inherit; font-size:12px;">
@@ -6564,6 +6574,12 @@ function attachPriolistHandlers() {
       savePriolistFieldKeepingMenuOpen(btn.dataset.id, 'file_color', btn.dataset.color);
     });
   });
+  document.querySelectorAll('.priolist-timestamps-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPriolistTimestampsModal(btn.dataset.id, btn.dataset.emp);
+    });
+  });
   closeAllStatusFileColorMenusOnOutsideClick();
 }
 
@@ -6620,6 +6636,27 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
   updates[field] = value;
   const { error } = await sb.from('priolist_entries').update(updates).eq('id', entryId);
   if (error) { showToast('Could not save.', true); return; }
+
+  // Every status change (including clearing it back to blank) gets its
+  // own permanent log row, so admins can later see exactly when someone
+  // went on Break/Inactive and for how long. Fire-and-forget — a log
+  // failure shouldn't block the status change itself, and there's no
+  // realtime subscription on this table (kept egress-free; it's only
+  // ever read on-demand when an admin opens "see all timestamps").
+  if (field === 'status') {
+    const changedEntry = state.priolistEntries.find(e => e.id === entryId);
+    if (changedEntry) {
+      sb.from('priolist_status_log').insert({
+        entry_id: entryId,
+        employee_id: changedEntry.employee_id,
+        status: value,
+        changed_by: state.profile.employee_id,
+      }).then(({ error: logError }) => {
+        if (logError) console.warn('priolist_status_log insert failed (table may not exist yet):', logError);
+      });
+    }
+  }
+
   await loadPriolistEntries();
 
   const updatedEntry = state.priolistEntries.find(e => e.id === entryId);
@@ -6627,6 +6664,89 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
   state.priolistOpenMenuId = bothSet ? null : entryId;
 
   renderPrioList();
+}
+
+// "See all timestamps" — admin-only. Fetches this employee's full
+// priolist_status_log history on demand (no realtime, no polling — the
+// egress-friendly design the log was built for) and renders every
+// Break/Inactive stretch with how long it lasted.
+async function openPriolistTimestampsModal(entryId, empName) {
+  openModal(`${empName} — Status Timestamps`, '<div class="loading-row">Loading…</div>', { width: '520px' });
+
+  const { data, error } = await sb.from('priolist_status_log')
+    .select('*')
+    .eq('entry_id', entryId)
+    .order('changed_at', { ascending: true });
+
+  if (error) {
+    openModal(`${empName} — Status Timestamps`,
+      `<p class="muted">Couldn't load timestamps${error.message && error.message.includes('does not exist') ? ' — the logging table hasn\'t been set up yet.' : '.'}</p>`,
+      { width: '520px' });
+    return;
+  }
+
+  const rows = data || [];
+
+  if (!rows.length) {
+    openModal(`${empName} — Status Timestamps`,
+      `<p class="muted">No status changes logged yet for ${escapeHtml(empName)}.</p>`,
+      { width: '520px' });
+    return;
+  }
+
+  // Walk the log in order, pairing each Break/Inactive entry with the
+  // timestamp of whatever comes right after it (the next status change,
+  // or "now" if it's still the current status) to get a duration.
+  const segments = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.status !== 'Break' && row.status !== 'Inactive') continue;
+    const next = rows[i + 1];
+    const startMs = new Date(row.changed_at).getTime();
+    const endMs = next ? new Date(next.changed_at).getTime() : Date.now();
+    segments.push({
+      status: row.status,
+      startedAt: row.changed_at,
+      endedAt: next ? next.changed_at : null, // null = still ongoing
+      durationMs: Math.max(0, endMs - startMs),
+    });
+  }
+
+  const formatDuration = (ms) => {
+    const totalMinutes = Math.round(ms / 60000);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    if (h === 0) return `${m}m`;
+    return `${h}h ${m}m`;
+  };
+
+  const totalByStatus = { Break: 0, Inactive: 0 };
+  segments.forEach(s => { totalByStatus[s.status] += s.durationMs; });
+
+  const segmentRowsHtml = segments.slice().reverse().map(s => `
+    <div style="display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line-soft); font-size:12.5px;">
+      <span style="font-weight:700; width:64px; flex-shrink:0; color:${PRIOLIST_STATUS_COLORS[s.status]};">${s.status}</span>
+      <span style="flex:1; color:var(--ink);">${formatDateTime(s.startedAt)} ${s.endedAt ? `→ ${formatDateTime(s.endedAt)}` : '<span style="color:var(--coral); font-weight:600;">→ ongoing</span>'}</span>
+      <span style="font-weight:600; color:var(--ink-soft); flex-shrink:0;">${formatDuration(s.durationMs)}</span>
+    </div>
+  `).join('');
+
+  const bodyHtml = `
+    <div style="display:flex; gap:10px; margin-bottom:16px;">
+      <div style="flex:1; background:var(--amber-wash, rgba(181,139,0,0.1)); border-radius:8px; padding:10px 12px;">
+        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">Total Break</div>
+        <div style="font-size:16px; font-weight:700; color:${PRIOLIST_STATUS_COLORS.Break};">${formatDuration(totalByStatus.Break)}</div>
+      </div>
+      <div style="flex:1; background:rgba(123,79,160,0.1); border-radius:8px; padding:10px 12px;">
+        <div class="faint" style="font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:0.04em;">Total Inactive</div>
+        <div style="font-size:16px; font-weight:700; color:${PRIOLIST_STATUS_COLORS.Inactive};">${formatDuration(totalByStatus.Inactive)}</div>
+      </div>
+    </div>
+    ${segments.length ? segmentRowsHtml : '<p class="muted">No Break or Inactive periods logged yet — only Active/cleared changes so far.</p>'}
+    <p class="faint" style="font-size:10.5px; margin-top:12px; margin-bottom:0;">Logging started when this feature was added — earlier status changes weren't recorded.</p>
+  `;
+
+  openModal(`${empName} — Status Timestamps`, bodyHtml, { width: '520px' });
 }
 
 // Resets PrioList output AND Red Files together, in one action — the
