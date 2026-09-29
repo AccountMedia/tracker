@@ -1896,7 +1896,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-29-priolist-log-diagnostics';
+const APP_VERSION = '2026-09-29-priolist-timestamps-daily-reset';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -2404,6 +2404,20 @@ function currentPriolistResetBoundary() {
     boundaryPh.setUTCDate(boundaryPh.getUTCDate() - 1);
   }
   return boundaryPh.toISOString().slice(0, 10);
+}
+
+// Same boundary as currentPriolistResetBoundary(), but as a real,
+// queryable UTC timestamp (ISO string) rather than just a date string —
+// e.g. for filtering Supabase queries to "since this PrioList day
+// started." Anything logged before this instant belongs to a prior
+// PrioList day and should already be gone/reset, same as every other
+// PrioList column at this same 7am PHT boundary.
+function currentPriolistResetBoundaryTimestamp() {
+  const boundaryDateStr = currentPriolistResetBoundary(); // 'YYYY-MM-DD', the PH calendar date this reset period started on
+  const [y, m, d] = boundaryDateStr.split('-').map(Number);
+  const boundaryUtc = new Date(Date.UTC(y, m - 1, d, 7, 0, 0)); // 7:00 AM on that PH date, expressed as if it were UTC...
+  boundaryUtc.setUTCMinutes(boundaryUtc.getUTCMinutes() - PH_UTC_OFFSET_MINUTES); // ...then shifted back to the real UTC instant
+  return boundaryUtc.toISOString();
 }
 
 // ── PrioList MD Output real-time sync from completion_log ──────────────
@@ -6717,16 +6731,22 @@ function isMissingTableError(err) {
   return /does not exist|could not find the table|schema cache/i.test(msg);
 }
 
-// "See all timestamps" — admin-only. Fetches this employee's full
-// priolist_status_log history on demand (no realtime, no polling — the
-// egress-friendly design the log was built for) and renders every
-// Break/Inactive stretch with how long it lasted.
+// "See all timestamps" — admin-only. Fetches this employee's
+// priolist_status_log entries for the CURRENT PrioList day only (no
+// realtime, no polling — the egress-friendly design the log was built
+// for) and renders every Break/Inactive stretch with how long it
+// lasted. Scoped to the same 7am PHT reset boundary as every other
+// PrioList column (Peer Review, MD Task, Leads, Status/File, Note) —
+// once a new PrioList day starts, yesterday's timestamps stop showing
+// here too, even though the underlying rows are never deleted (kept
+// only as a quiet permanent record, same as before).
 async function openPriolistTimestampsModal(entryId, empName) {
   openModal(`${empName} — Status Timestamps`, '<div class="loading-row">Loading…</div>', { width: '520px' });
 
   const { data, error } = await sb.from('priolist_status_log')
     .select('*')
     .eq('entry_id', entryId)
+    .gte('changed_at', currentPriolistResetBoundaryTimestamp())
     .order('changed_at', { ascending: true });
 
   if (error) {
@@ -6741,7 +6761,8 @@ async function openPriolistTimestampsModal(entryId, empName) {
 
   if (!rows.length) {
     openModal(`${empName} — Status Timestamps`,
-      `<p class="muted">No status changes logged yet for ${escapeHtml(empName)}.</p>`,
+      `<p class="muted">No status changes logged for ${escapeHtml(empName)} yet today.</p>
+       <p class="faint" style="font-size:10.5px; margin-top:10px; margin-bottom:0;">Resets at 7:00 AM, same as the rest of PrioList.</p>`,
       { width: '520px' });
     return;
   }
@@ -6795,7 +6816,7 @@ async function openPriolistTimestampsModal(entryId, empName) {
       </div>
     </div>
     ${segments.length ? segmentRowsHtml : '<p class="muted">No Break or Inactive periods logged yet — only Active/cleared changes so far.</p>'}
-    <p class="faint" style="font-size:10.5px; margin-top:12px; margin-bottom:0;">Logging started when this feature was added — earlier status changes weren't recorded.</p>
+    <p class="faint" style="font-size:10.5px; margin-top:12px; margin-bottom:0;">Showing today only — resets at 7:00 AM, same as the rest of PrioList.</p>
   `;
 
   openModal(`${empName} — Status Timestamps`, bodyHtml, { width: '520px' });
