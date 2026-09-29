@@ -884,6 +884,8 @@ const state = {
   priolistPollHandle: null, // setInterval handle for live re-sort while viewing PrioList
   priolistOpenMenuId: null, // entry id of the Status/File menu currently forced open (kept open until both status + file are picked)
   priolistTimestampsEntryId: null, // entry id whose "see all timestamps" modal is currently loading/open (null = closed)
+  priolistStatusLogToday: [], // ALL employees' priolist_status_log rows for the current PrioList day — admin-only, fetched once per tab-visit/status-change (not per row) and re-used to compute each row's Break+Inactive total for the timer-icon red highlight
+  priolistStatusLogRepaintHandle: null, // setInterval handle that re-renders PrioList periodically so an ongoing Break/Inactive stretch can cross the red-highlight threshold even without a status change happening
   priolistTab: (() => { const saved = sessionStorage.getItem('registry_priolist_tab'); return saved === 'red-files' ? 'red-files' : 'priolist'; })(),  // 'priolist' | 'red-files' — persisted so a refresh stays on whichever sub-tab was open
   redFiles: [],             // priolist_red_files rows
   liVerificationStatus: [], // LinkedIn verification status per employee
@@ -1896,7 +1898,7 @@ function renderCurrentView() {
 // has to remember to hard-refresh. Uses a tiny Supabase table
 // (app_version: key text primary key, value text) so it works across
 // every browser without needing a server push.
-const APP_VERSION = '2026-09-29-priolist-timestamps-daily-reset';
+const APP_VERSION = '2026-09-29-priolist-break-inactive-alert';
 
 async function checkAppVersionAndReloadIfStale() {
   try {
@@ -6253,6 +6255,20 @@ function startPriolistPolling() {
   });
   startPriolistMdOutputRealtimeSync();
   startPriolistPeerReviewRealtimeSync();
+
+  // Timer-icon red highlight: admin-only, no realtime subscription (kept
+  // egress-free on purpose) — one fetch on tab-entry, refreshed after any
+  // status change, plus a plain client-side repaint every 60s so an
+  // ONGOING Break/Inactive stretch can cross the 1h10m threshold and go
+  // red even if nobody touches a status in the meantime. The repaint
+  // itself does no network call — it just re-runs the same local math
+  // against Date.now().
+  if (isAdmin()) {
+    loadPriolistStatusLogToday().then(renderPrioList);
+    state.priolistStatusLogRepaintHandle = setInterval(() => {
+      if (state.currentView === 'priolist') renderPrioList();
+    }, 60000);
+  }
 }
 
 function stopPriolistPolling() {
@@ -6261,6 +6277,10 @@ function stopPriolistPolling() {
   unsubscribeRealtime('priolist_employees');
   stopPriolistMdOutputRealtimeSync();
   stopPriolistPeerReviewRealtimeSync();
+  if (state.priolistStatusLogRepaintHandle) {
+    clearInterval(state.priolistStatusLogRepaintHandle);
+    state.priolistStatusLogRepaintHandle = null;
+  }
 }
 
 // Entry point when switching INTO the PrioList tab. Paints instantly
@@ -6392,18 +6412,7 @@ function renderPrioList() {
           : `<span class="faint" style="padding:5px 7px; border:1px solid transparent; display:block; box-sizing:border-box;">${entry.leads}</span>`}
         <span style="font-weight:600;">${total}</span>
         <div style="display:flex; align-items:center; gap:4px;">
-          ${admin ? `
-            <button type="button" class="priolist-timestamps-btn" data-id="${entry.id}" data-emp="${escapeHtml(emp.display_name)}"
-              title="See all Break/Inactive timestamps for ${escapeHtml(emp.display_name)}"
-              style="flex-shrink:0; width:22px; height:22px; border-radius:6px; border:1px solid var(--line); background:var(--paper-raised); cursor:pointer; color:var(--ink-soft); display:flex; align-items:center; justify-content:center;">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="13" r="8"/>
-                <path d="M12 9v4l2.5 2.5"/>
-                <path d="M9 2h6"/>
-                <path d="M18.5 5.5l1-1"/>
-              </svg>
-            </button>
-          ` : ''}
+          ${admin ? priolistTimestampsButtonHtml(entry, emp) : ''}
           <div class="status-filecolor-dropdown" style="position:relative; flex:1; min-width:0;">
             <button type="button" class="status-dropdown-trigger" data-id="${entry.id}"
               style="display:flex; align-items:center; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:${triggerBg}; cursor:pointer; font-family:inherit; font-size:12px; color:${triggerTextColor}; font-weight:700;">
@@ -6693,7 +6702,7 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
         employee_id: employeeIdForLog,
         status: value,
         changed_by: state.profile.employee_id,
-      }).then(({ error: logError }) => {
+      }).then(async ({ error: logError }) => {
         if (logError) {
           console.warn('priolist_status_log insert failed:', logError);
           showToast(
@@ -6702,7 +6711,13 @@ async function savePriolistFieldKeepingMenuOpen(entryId, field, value) {
               : `Status saved, but the timestamp log failed: ${logError.message || 'unknown error'}`,
             true
           );
+          return;
         }
+        // Refresh the cached today's-log so the timer icon's red
+        // highlight (and anyone with the timestamps modal open) reflects
+        // this change immediately, rather than waiting for the 60s repaint.
+        await loadPriolistStatusLogToday();
+        renderPrioList();
       });
     } else {
       console.warn('priolist_status_log insert skipped — update() returned no row for', entryId);
@@ -6729,6 +6744,96 @@ function isMissingTableError(err) {
   if (err.code === '42P01' || err.code === 'PGRST205') return true;
   const msg = (err.message || '') + ' ' + (err.hint || '') + ' ' + (err.details || '');
   return /does not exist|could not find the table|schema cache/i.test(msg);
+}
+
+// Walks a priolist_status_log row list (already sorted ascending by
+// changed_at) and pairs each Break/Inactive row with whatever comes
+// right after it (the next status change, or "now" if it's still the
+// current status) to get a duration. Shared by the "see all
+// timestamps" modal and the timer-icon red-highlight total below, so
+// the two always agree on exactly how a duration is measured.
+function computeBreakInactiveSegments(rows) {
+  const segments = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.status !== 'Break' && row.status !== 'Inactive') continue;
+    const next = rows[i + 1];
+    const startMs = new Date(row.changed_at).getTime();
+    const endMs = next ? new Date(next.changed_at).getTime() : Date.now();
+    segments.push({
+      status: row.status,
+      startedAt: row.changed_at,
+      endedAt: next ? next.changed_at : null, // null = still ongoing
+      durationMs: Math.max(0, endMs - startMs),
+    });
+  }
+  return segments;
+}
+
+function formatPriolistDuration(ms) {
+  const totalMinutes = Math.round(ms / 60000);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (h === 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
+// How long combined Break+Inactive time has to reach before the timer
+// icon turns red — 1 hour 10 minutes, in milliseconds.
+const PRIOLIST_BREAK_INACTIVE_ALERT_MS = 70 * 60 * 1000;
+
+// Renders the timer-icon button for one PrioList row, using the
+// already-cached today's log (priolistBreakInactiveTotalMsToday reads
+// from state, no fetch) to decide whether it should highlight red.
+function priolistTimestampsButtonHtml(entry, emp) {
+  const breakInactiveMs = priolistBreakInactiveTotalMsToday(entry.id);
+  const overAlert = breakInactiveMs > PRIOLIST_BREAK_INACTIVE_ALERT_MS;
+  const iconColor = overAlert ? 'var(--coral)' : 'var(--ink-soft)';
+  const iconTitle = overAlert
+    ? `${emp.display_name} — ${formatPriolistDuration(breakInactiveMs)} Break+Inactive today (over 1h 10m)`
+    : `See all Break/Inactive timestamps for ${emp.display_name}`;
+  return `
+    <button type="button" class="priolist-timestamps-btn" data-id="${entry.id}" data-emp="${escapeHtml(emp.display_name)}"
+      title="${escapeHtml(iconTitle)}"
+      style="flex-shrink:0; width:22px; height:22px; border-radius:6px; border:1px solid ${overAlert ? 'var(--coral)' : 'var(--line)'}; background:${overAlert ? 'var(--coral-wash, rgba(181,73,91,0.12))' : 'var(--paper-raised)'}; cursor:pointer; color:${iconColor}; display:flex; align-items:center; justify-content:center;">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="13" r="8"/>
+        <path d="M12 9v4l2.5 2.5"/>
+        <path d="M9 2h6"/>
+        <path d="M18.5 5.5l1-1"/>
+      </svg>
+    </button>
+  `;
+}
+
+// Admin-only, fetched ONCE per PrioList tab-visit (via startPriolistPolling)
+// and refreshed after any status change — not per row, not on a timer
+// subscription. Pulls every employee's status-log rows for the CURRENT
+// PrioList day in one query, so each row's red-highlight total can be
+// computed locally afterward with zero extra network cost.
+async function loadPriolistStatusLogToday() {
+  if (!isAdmin()) { state.priolistStatusLogToday = []; return; }
+  const { data, error } = await sb.from('priolist_status_log')
+    .select('*')
+    .gte('changed_at', currentPriolistResetBoundaryTimestamp())
+    .order('changed_at', { ascending: true });
+  if (error) {
+    if (!isMissingTableError(error)) console.warn('loadPriolistStatusLogToday failed:', error);
+    state.priolistStatusLogToday = [];
+    return;
+  }
+  state.priolistStatusLogToday = data || [];
+}
+
+// Today's combined Break+Inactive total for one PrioList entry, read
+// from the already-cached state.priolistStatusLogToday (no fetch) —
+// safe to call on every render, including the ongoing segment's
+// duration ticking up live via Date.now().
+function priolistBreakInactiveTotalMsToday(entryId) {
+  const rows = state.priolistStatusLogToday.filter(r => r.entry_id === entryId);
+  if (!rows.length) return 0;
+  const segments = computeBreakInactiveSegments(rows);
+  return segments.reduce((sum, s) => sum + s.durationMs, 0);
 }
 
 // "See all timestamps" — admin-only. Fetches this employee's
@@ -6767,31 +6872,8 @@ async function openPriolistTimestampsModal(entryId, empName) {
     return;
   }
 
-  // Walk the log in order, pairing each Break/Inactive entry with the
-  // timestamp of whatever comes right after it (the next status change,
-  // or "now" if it's still the current status) to get a duration.
-  const segments = [];
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    if (row.status !== 'Break' && row.status !== 'Inactive') continue;
-    const next = rows[i + 1];
-    const startMs = new Date(row.changed_at).getTime();
-    const endMs = next ? new Date(next.changed_at).getTime() : Date.now();
-    segments.push({
-      status: row.status,
-      startedAt: row.changed_at,
-      endedAt: next ? next.changed_at : null, // null = still ongoing
-      durationMs: Math.max(0, endMs - startMs),
-    });
-  }
-
-  const formatDuration = (ms) => {
-    const totalMinutes = Math.round(ms / 60000);
-    const h = Math.floor(totalMinutes / 60);
-    const m = totalMinutes % 60;
-    if (h === 0) return `${m}m`;
-    return `${h}h ${m}m`;
-  };
+  const segments = computeBreakInactiveSegments(rows);
+  const formatDuration = formatPriolistDuration;
 
   const totalByStatus = { Break: 0, Inactive: 0 };
   segments.forEach(s => { totalByStatus[s.status] += s.durationMs; });
